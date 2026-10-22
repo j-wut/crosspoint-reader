@@ -51,6 +51,8 @@
 #include "html/assets/webCss.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "html/js/pdf2epubJs.generated.h"
+#include "html/js/pdfjs_minJs.generated.h"
+#include "html/js/pdfjs_worker_minJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
@@ -207,6 +209,15 @@ void CrossPointWebServer::begin() {
   server->on("/js/jszip.min.js", HTTP_GET, [this] { handleJszip(); });
   server->on("/js/pdf2epub.js", HTTP_GET, [this] {
     sendStaticContent(server.get(), pdf2epubJs, pdf2epubJsCompressedSize, pdf2epubJsETag, "application/javascript");
+  });
+  // pdf.js 4.10.38 (Mozilla, Apache-2.0), used by the upload page to read PDFs. Trimmed build
+  // (no XFA, forms, JPEG 2000, JBIG2 or viewer layers), about 280 KB gzipped.
+  server->on("/js/pdfjs.min.js", HTTP_GET, [this] {
+    sendStaticContent(server.get(), pdfjs_minJs, pdfjs_minJsCompressedSize, pdfjs_minJsETag, "text/javascript");
+  });
+  server->on("/js/pdfjs.worker.min.js", HTTP_GET, [this] {
+    sendStaticContent(server.get(), pdfjs_worker_minJs, pdfjs_worker_minJsCompressedSize, pdfjs_worker_minJsETag,
+                      "text/javascript");
   });
 
   server->on("/assets/web.css", HTTP_GET,

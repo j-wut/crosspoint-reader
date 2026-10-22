@@ -1661,7 +1661,7 @@
           </div>
 
           <div class="convert-info" id="pdfConvertInfo" style="display:none; margin-bottom: 10px;">
-            PDFs are converted to EPUB first: running headers, footers and page numbers are removed, and paragraphs and hyphenated words are rejoined. The PDF reader (pdf.js, about 600 KB) is downloaded from the internet the first time.
+            PDFs are converted to EPUB in your browser first: running headers, footers and page numbers are removed, and paragraphs and hyphenated words are rejoined.
           </div>
           <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;">
           </div>
@@ -5772,9 +5772,8 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
   });
 }
 
-// PDF to EPUB conversion. The converter (/js/pdf2epub.js) is served by the reader; pdf.js is too
-// big for flash, so it comes from a CDN the first time a PDF is converted.
-const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/';
+// PDF to EPUB conversion. The reader serves the converter (/js/pdf2epub.js) and pdf.js 4.10.38
+// (legacy build), so it works offline and in hotspot mode. Loaded only when a PDF is converted.
 let pdfToolsPromise = null;
 function loadPdfTools() {
   if (!pdfToolsPromise) {
@@ -5790,11 +5789,11 @@ function loadPdfTools() {
       }
       let pdfjsLib;
       try {
-        pdfjsLib = await import(PDFJS_CDN + 'pdf.min.mjs');
+        pdfjsLib = await import('/js/pdfjs.min.js');
       } catch (e) {
-        throw new Error('could not download the PDF reader (pdf.js). PDF conversion needs internet access the first time.');
+        throw new Error('could not load the PDF reader (pdf.js) from the reader.');
       }
-      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + 'pdf.worker.min.mjs';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/js/pdfjs.worker.min.js';
       return pdfjsLib;
     })().catch(e => { pdfToolsPromise = null; throw e; });
   }
