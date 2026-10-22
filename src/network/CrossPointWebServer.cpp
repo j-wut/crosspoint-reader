@@ -50,6 +50,7 @@
 #include "html/assets/iconsSvg.generated.h"
 #include "html/assets/webCss.generated.h"
 #include "html/js/jszip_minJs.generated.h"
+#include "html/js/pdf2epubJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
@@ -204,6 +205,9 @@ void CrossPointWebServer::begin() {
   server->on("/", HTTP_GET, [this] { handleRoot(); });
   server->on("/files", HTTP_GET, [this] { handleFileList(); });
   server->on("/js/jszip.min.js", HTTP_GET, [this] { handleJszip(); });
+  server->on("/js/pdf2epub.js", HTTP_GET, [this] {
+    sendStaticContent(server.get(), pdf2epubJs, pdf2epubJsCompressedSize, pdf2epubJsETag, "application/javascript");
+  });
 
   server->on("/assets/web.css", HTTP_GET,
              [this] { sendStaticContent(server.get(), webCss, sizeof(webCss), webCssETag, "text/css"); });

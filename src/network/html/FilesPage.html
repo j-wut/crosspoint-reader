@@ -1650,8 +1650,8 @@
         <div class="convert-options" id="convertOptions" style="display:none;">
           <div class="convert-row">
             <label class="convert-checkbox">
-              <input type="checkbox" id="convertBeforeUpload" onchange="toggleConvertOptions()">
-              <span>Optimize EPUB</span>
+              <input type="checkbox" id="convertBeforeUpload" onchange="convertAutoForPdf = false; toggleConvertOptions()">
+              <span id="convertLabel">Optimize EPUB</span>
             </label>
             <span class="convert-separator">—</span>
             <span class="advanced-options-toggle" id="advancedOptionsToggle" onclick="toggleAdvancedOptions()">
@@ -1660,6 +1660,9 @@
             </span>
           </div>
 
+          <div class="convert-info" id="pdfConvertInfo" style="display:none; margin-bottom: 10px;">
+            PDFs are converted to EPUB first: running headers, footers and page numbers are removed, and paragraphs and hyphenated words are rejoined. The PDF reader (pdf.js, about 600 KB) is downloaded from the internet the first time.
+          </div>
           <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;">
           </div>
 
@@ -2336,9 +2339,11 @@
     const uploadBtn = document.getElementById('uploadBtn');
     document.getElementById('convertWarning').style.display = checked ? 'block' : 'none';
     document.getElementById('convertInfo').style.display = checked ? 'block' : 'none';
+    const pdfSelected = Array.from(document.getElementById('fileInput').files).some(f => f.name.toLowerCase().endsWith('.pdf'));
+    document.getElementById('pdfConvertInfo').style.display = checked && pdfSelected ? 'block' : 'none';
     // Update button text and style
     if (checked) {
-      uploadBtn.textContent = 'Optimize & Upload';
+      uploadBtn.textContent = pdfSelected ? 'Convert & Upload' : 'Optimize & Upload';
       uploadBtn.classList.add('optimize');
     } else {
       uploadBtn.textContent = 'Upload';
@@ -3365,9 +3370,22 @@
     const convertOptions = document.getElementById('convertOptions');
     fileInput.classList.toggle('has-files', files.length > 0);
 
-    // Show convert options only when at least one selected file is an EPUB.
+    // Show convert options when at least one selected file is an EPUB or a PDF.
     const hasEpub = Array.from(files).some(f => f.name.toLowerCase().endsWith('.epub'));
-    if (files.length > 0 && hasEpub) {
+    const hasPdf = Array.from(files).some(f => f.name.toLowerCase().endsWith('.pdf'));
+    const convertCheckbox = document.getElementById('convertBeforeUpload');
+    document.getElementById('convertLabel').textContent =
+      hasPdf ? (hasEpub ? 'Convert PDF & optimize EPUB' : 'Convert to EPUB & optimize') : 'Optimize EPUB';
+    // The reader can't open PDFs, so conversion is switched on for them. It is not saved as the
+    // preference, and switches back off when the selection no longer has a PDF.
+    if (hasPdf && !convertCheckbox.checked) {
+      convertCheckbox.checked = true;
+      convertAutoForPdf = true;
+    } else if (!hasPdf && convertAutoForPdf) {
+      convertCheckbox.checked = false;
+      convertAutoForPdf = false;
+    }
+    if (files.length > 0 && (hasEpub || hasPdf)) {
       convertOptions.style.display = 'block';
       toggleConvertOptions();
     } else {
@@ -3472,10 +3490,11 @@ const DEFAULT_UPLOAD_SETTINGS = Object.freeze({
   exportLog: false
 });
 let suppressUploadSettingsSave = false;
+let convertAutoForPdf = false; // conversion was switched on only because a PDF is selected
 
 function getCurrentUploadSettings() {
   return {
-    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked,
+    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked && !convertAutoForPdf,
     renameFromMetadata: !!document.getElementById('renameFromMetadataToggle')?.checked,
     quality: parseInt(document.getElementById('qualitySlider')?.value || JPEG_QUALITY, 10),
     autoCrop: !!document.getElementById('autoCropToggle')?.checked,
@@ -3491,6 +3510,7 @@ function applyUploadSettings(settings = {}) {
   suppressUploadSettingsSave = true;
   try {
     document.getElementById('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
+    convertAutoForPdf = false;
     document.getElementById('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
     document.getElementById('autoCropToggle').checked = !!merged.autoCrop;
     document.getElementById('export-log-checkbox').checked = !!merged.exportLog;
@@ -5752,6 +5772,50 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
   });
 }
 
+// PDF to EPUB conversion. The converter (/js/pdf2epub.js) is served by the reader; pdf.js is too
+// big for flash, so it comes from a CDN the first time a PDF is converted.
+const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/';
+let pdfToolsPromise = null;
+function loadPdfTools() {
+  if (!pdfToolsPromise) {
+    pdfToolsPromise = (async () => {
+      if (!window.Pdf2Epub) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = '/js/pdf2epub.js';
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('could not load the converter from the reader.'));
+          document.head.appendChild(s);
+        });
+      }
+      let pdfjsLib;
+      try {
+        pdfjsLib = await import(PDFJS_CDN + 'pdf.min.mjs');
+      } catch (e) {
+        throw new Error('could not download the PDF reader (pdf.js). PDF conversion needs internet access the first time.');
+      }
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + 'pdf.worker.min.mjs';
+      return pdfjsLib;
+    })().catch(e => { pdfToolsPromise = null; throw e; });
+  }
+  return pdfToolsPromise;
+}
+
+async function convertPdfFile(file, onProgress) {
+  const pdfjsLib = await loadPdfTools();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const result = await window.Pdf2Epub.convertPdf(pdfjsLib, JSZip, data, {
+    fileName: file.name,
+    onProgress: (done, total) => {
+      if (operationCancelled) throw new Error('Cancelled by user');
+      onProgress(done, total);
+    },
+  });
+  const s = result.summary;
+  console.log(`[PDF] ${file.name}: ${s.pages} pages, ${s.paragraphs} paragraphs, ${s.headerFooterLinesRemoved} header/footer lines removed`);
+  return new File([result.epub], file.name.replace(/\.pdf$/i, '') + '.epub', { type: 'application/epub+zip' });
+}
+
 async function uploadFile() {
   if (isUploadInProgress) return;
 
@@ -5793,7 +5857,7 @@ async function uploadFile() {
   let useWebSocket = true; // Try WebSocket first
 
   // Check if we should use batch logging mode
-  const epubFilesToConvert = files.filter(f => f.name.toLowerCase().endsWith('.epub') && convertEnabled);
+  const epubFilesToConvert = files.filter(f => /\.(epub|pdf)$/i.test(f.name) && convertEnabled);
   const useBatchLog = epubFilesToConvert.length > 1 && exportLogCheckbox && exportLogCheckbox.checked;
 
   // Start batch log mode if needed
@@ -5856,6 +5920,28 @@ async function uploadFile() {
     progressFill.style.backgroundColor = 'var(--success-color)';
     // Re-enable transition after a brief delay
     setTimeout(() => progressFill.classList.remove('no-transition'), 50);
+
+    // PDF to EPUB, before anything else, so the EPUB steps below (rename, optimize) apply to the result
+    if (file.name.toLowerCase().endsWith('.pdf') && convertEnabled) {
+      progressFill.style.backgroundColor = 'var(--secondary-color)';
+      progressText.style.color = '';
+      progressText.textContent = `Converting ${file.name} to EPUB (${currentIndex + 1}/${files.length})...`;
+      try {
+        file = await convertPdfFile(file, (done, total) => {
+          progressFill.style.width = Math.round((done / total) * 50) + '%';
+          progressText.textContent = `Converting ${originalFile.name} to EPUB: page ${done}/${total} (${currentIndex + 1}/${files.length})`;
+        });
+      } catch (pdfError) {
+        if (operationCancelled) { if (uploadGeneration === myGeneration) restoreAfterCancel(); return; }
+        // The reader can't open PDFs, so report the file as failed instead of uploading it as is.
+        console.error('PDF conversion error:', pdfError);
+        failedFiles.push({ name: originalFile.name, error: `PDF conversion failed: ${pdfError.message}`, file: originalFile });
+        currentIndex++;
+        uploadNextFile();
+        return;
+      }
+      progressFill.style.backgroundColor = 'var(--success-color)';
+    }
 
     // Check if file is an EPUB and conversion is enabled
     const isEpub = file.name.toLowerCase().endsWith('.epub');
