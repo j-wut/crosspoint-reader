@@ -1224,6 +1224,41 @@ void ChapterHtmlSlimParser::finishTableRow() {
     }
   };
 
+  // Keep a row together: when the whole row fits on an empty page but not in the
+  // space left on this one, start a new page instead of splitting the row.
+  if (currentPage && !currentPage->elements.empty()) {
+    int rowHeight = maxTopPadding + maxBottomPadding + 2 * cellGap;
+    for (size_t lineIndex = 0; lineIndex < maxLineCount; ++lineIndex) {
+      int h = lineHeight;
+      for (size_t column = 0; column < columnCount; ++column) {
+        if (lineIndex < tableCellLines[column].size()) {
+          const TextBlock& line = *tableCellLines[column][lineIndex];
+          const int lineFontId = line.blockFontId(fontId);
+          h = std::max(h, renderer.getLineHeight(lineFontId, lineCompression) + line.extraAscent(renderer, fontId) +
+                              line.getRubyShift(renderer.getFontAscenderSize(lineFontId)));
+        }
+      }
+      rowHeight += h;
+    }
+    if (rowHeight <= viewportHeight && currentPageNextY + rowHeight > viewportHeight) {
+      setCurrentPageVisibleOffset(tableLineVisibleOffsets.empty() ? visibleTextOffset : tableLineVisibleOffsets[0]);
+      emitCurrentPage();
+      completedPageCount++;
+      if (stopRequested) {
+        clearLayoutLines();
+        return;
+      }
+      currentPage = makeUniqueNoThrow<Page>();
+      if (!currentPage) {
+        LOG_ERR("EHP", "OOM: page for table row");
+        clearLayoutLines();
+        return;
+      }
+      currentPageNextY = 0;
+      currentPageVisibleOffsetSet = false;
+    }
+  }
+
   for (size_t lineIndex = 0; lineIndex < maxLineCount; ++lineIndex) {
     const uint32_t lineVisibleOffset =
         lineIndex < tableLineVisibleOffsets.size() ? tableLineVisibleOffsets[lineIndex] : visibleTextOffset;
