@@ -1150,6 +1150,25 @@ function unifyEdges(pages, edgesByPage) {
   }
 }
 
+// In a book that indents paragraphs, an indented line after a full one is normally a new
+// paragraph. It continues a hanging entry when the lines after it follow the hanging
+// pattern: an indented line that is full is followed by another indented line, and one that
+// ends short is followed by a line back at the margin. Paragraphs do the opposite (a full
+// first line is followed by one at the margin, a one-line paragraph by another indented
+// line). b is checked, and so is the line after it when it is indented too, because a
+// one-line paragraph can happen to fill the line.
+function hangingNext(a, b, eb, st) {
+  const follows = (l, n) => {
+    if (!n || n.page !== l.page || n.col !== l.col || n.y0 <= l.y0 || (n.y1 - l.y1) / st.leading > 1.35 ||
+        LIST_MARK_RE.test(lstrip(lineText(n)))) return null;
+    const full = eb[1] - l.x1 < firstWordWidth(n, n.size) + 0.5 * n.size;
+    return full ? Math.abs(n.x0 - l.x0) < 1.5 : Math.abs(n.x0 - a.x0) < 1.5;
+  };
+  const c = b._next;
+  if (!follows(b, c)) return false;
+  return !(Math.abs(c.x0 - b.x0) < 1.5 && follows(c, c._next) === false);
+}
+
 function paragraphBreak(a, b, st, edgesByPage) {
   const ea = edgesByPage.get(a.page).get(a.col) || [a.x0, a.x1];
   const eb = edgesByPage.get(b.page).get(b.col) || [b.x0, b.x1];
@@ -1165,13 +1184,21 @@ function paragraphBreak(a, b, st, edgesByPage) {
   const bl = lstrip(bt);
   if (bl && BULLET_CHARS.slice(0, -3).includes(bl[0]) && bl.slice(1, 2) === " ") return [true, false];
   // Hanging indent (reference lists): the entry's first line sticks out to the left and
-  // the rest is indented. In a book that doesn't indent paragraphs, that step in is not a
-  // new paragraph.
-  // Only when line a is full, i.e. the next word did not fit on it.
+  // the rest is indented. Only when line a is full, i.e. the next word did not fit on it.
+  // In a book that doesn't indent paragraphs, that step in is not a new paragraph. In one
+  // that does, it is a new paragraph unless the line after b shows otherwise.
   const step = b.x0 - a.x0;
-  if (!st.indentStyle && sameFlow && step > 0.3 * b.size && step < 4 * b.size && Math.abs(a.x0 - ea[0]) < 3 * size &&
-      !LIST_MARK_RE.test(bl) &&
-      ea[1] - a.x1 < firstWordWidth(b, b.size) + 0.5 * b.size) return [false, false];
+  const aFull = ea[1] - a.x1 < firstWordWidth(b, b.size) + 0.5 * b.size;
+  if (sameFlow && step > 0.3 * b.size && step < 4 * b.size && Math.abs(a.x0 - ea[0]) < 3 * size &&
+      !LIST_MARK_RE.test(bl) && aFull && (!st.indentStyle || hangingNext(a, b, eb, st))) {
+    b._hang = true;
+    return [false, false];
+  }
+  // the next line of the same hanging entry
+  if (a._hang && sameFlow && Math.abs(b.x0 - a.x0) < 1.5 && aFull) {
+    b._hang = true;
+    return [false, false];
+  }
   // right-aligned lines (an epigraph's credit) that wrap: same right edge, away from the margin
   if (sameFlow && Math.abs(a.x1 - b.x1) < 1.5 && a.x0 - ea[0] > 3 * size && b.x0 - eb[0] > 3 * size &&
       ea[1] - a.x1 > 2 * size) return [false, false];
@@ -1199,6 +1226,10 @@ function buildBlocks(pages, st, dehy) {
   for (const pg of pages) edgesByPage.set(pg.number, columnEdges(pg, st));
   unifyEdges(pages, edgesByPage);
 
+  for (const pg of pages) {
+    const body = pg.lines.filter(l => l.kind === "body");
+    body.forEach((l, i) => { l._next = body[i + 1] || null; });
+  }
   let indented = 0, total = 0;
   for (const pg of pages) {
     const e = edgesByPage.get(pg.number);
