@@ -229,6 +229,7 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
   const words = []; // word boxes, for rebuilding table cells
   let cur = null;
   const finish = () => {
+    if (cur) cur.segs = dropPaddingSpaces(cur.segs);
     if (cur && cur.segs.length && strip(lineText(cur))) {
       const vis = cur.segs.filter(s => strip(s.text));
       cur.size = weightedMode(cur._sizes.map(([sz, n]) => [sz, n]));
@@ -323,6 +324,7 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
   }
   pg.lines = mergeSameBaseline(kept);
   markDrawnBullets(shapes, pg.lines);
+  await markCallouts(page, shapes.images, pg.lines);
   if (opts.images) {
     for (const im of shapes.images) {
       // skip decorations, rules and tiny ornaments
@@ -556,6 +558,64 @@ function tableHtml(t) {
 
 // --------------------------------------------------------------------------- images
 
+// Code callouts (❶ ❷ ...) are often tiny pictures, which the image filter drops. Each becomes a
+// placeholder carrying the picture's fingerprint. The explanation list after a listing numbers
+// its items 1, 2, 3...; a marker in the code gets the number of the same picture in a list.
+const CALLOUT = "\u0001", CALLOUT_END = "\u0002";
+async function markCallouts(page, images, lines) {
+  for (const im of images) {
+    const w = im.x1 - im.x0, h = im.y1 - im.y0;
+    if (!(w >= 5 && w <= 16 && h >= 5 && h <= 16 && Math.abs(w - h) < 2)) continue;
+    const cy = (im.y0 + im.y1) / 2;
+    // on a text line, or at the end of a code line (which may run past the visible box)
+    const line = lines.find(l => l.kind !== "image" && l.y0 <= cy && cy <= l.y1 && im.x0 > l.x0 - 25 &&
+      (im.x0 < l.x1 + 25 || l.segs.some(x => x.mono)));
+    if (!line) continue;
+    let key = String(im.id || "");
+    try {
+      const obj = im.inline || (im.id ? await pdfObject(page, im.id) : null);
+      if (obj && obj.data) {
+        let hsh = 0;
+        for (let k = 0; k < obj.data.length; k++) hsh = (hsh * 31 + obj.data[k]) | 0;
+        key = `${obj.width}x${obj.height}:${hsh}`;
+      }
+    } catch (e) { /* keep the id */ }
+    const mark = CALLOUT + key + CALLOUT_END;
+    if (im.x1 <= line.x0 + 2) {
+      // explanation list: "❶ First find ..." becomes its own paragraph
+      line.segs.unshift(seg(mark + " "));
+      line.startsPara = true;
+      line.x0 = Math.min(line.x0, im.x0);
+    } else {
+      const mono = line.segs.length > 0 && line.segs[line.segs.length - 1].mono;
+      line.segs.push(seg(" " + mark, false, false, mono));
+    }
+  }
+}
+
+function numberCallouts(blocks) {
+  const RE = /\u0001([^\u0002]*)\u0002/g;
+  const byKey = new Map();
+  let n = 0;
+  for (const b of blocks) {
+    const first = b.segs.length ? b.segs[0].text : "";
+    const m = b.kind === "p" ? first.match(/^\u0001([^\u0002]*)\u0002/) : null;
+    if (!m) { n = 0; continue; }
+    n++;
+    if (!byKey.has(m[1])) byKey.set(m[1], n);
+    b._callout = n;
+  }
+  for (const b of blocks) {
+    b.segs.forEach((x, k) => {
+      x.text = x.text.replace(RE, (all, key, at) => {
+        const num = b._callout && k === 0 && at === 0 ? b._callout : byKey.get(key);
+        return num ? `(${num})` : "(*)";
+      });
+    });
+    delete b._callout;
+  }
+}
+
 // pdf.js hands decoded images over once the operator list is done; wait a little if not yet.
 function pdfObject(page, id) {
   const objs = id.startsWith("g_") ? page.commonObjs : page.objs;
@@ -644,6 +704,19 @@ async function imageToJpeg(page, im, encode) {
   return (encode || encodeJpegBrowser)(f.g, f.w, f.h);
 }
 
+// Inline code is often drawn on a padded background, so the gap before "," or after "("
+// looks like a space. Plain spaces that sit only between a word and such punctuation go.
+const CLOSE_PUNCT = /^[,.;:!?)\]}’”%]/u, OPEN_PUNCT = /[(\[{“‘]$/u;
+function dropPaddingSpaces(segs) {
+  return segs.filter((sg, i) => {
+    if (sg.mono || !/^ +$/.test(sg.text)) return true; // code keeps its spacing
+    const next = segs.slice(i + 1).find(x => x.text.length), prevS = segs.slice(0, i).reverse().find(x => x.text.length);
+    if (!next || !prevS || /\s$/u.test(prevS.text)) return true;
+    // ...but not when the punctuation belongs to code (":WITHIN", ":-")
+    return !((CLOSE_PUNCT.test(next.text) && !next.mono) || (OPEN_PUNCT.test(prevS.text) && !prevS.mono));
+  });
+}
+
 function markDrawnBullets(shapes, lines) {
   for (const r of shapes) {
     if (!r.fill) continue;
@@ -673,7 +746,8 @@ function mergeSameBaseline(lines) {
       const gap = l.x0 - p.x1;
       if (sameRow && gap > -1 && gap < 2 * l.size) {
         const pt = lineText(p);
-        if (gap > 0.15 * l.size && !pt.endsWith(" ") && !lineText(l).startsWith(" ")) {
+        if (gap > 0.15 * l.size && !pt.endsWith(" ") && !lineText(l).startsWith(" ") &&
+            !CLOSE_PUNCT.test(lineText(l)) && !OPEN_PUNCT.test(pt)) {
           const last = p.segs[p.segs.length - 1];
           p.segs.push(seg(" ", last.bold, last.italic));
         }
@@ -1090,6 +1164,17 @@ function paragraphBreak(a, b, st, edgesByPage) {
   }
   const bl = lstrip(bt);
   if (bl && BULLET_CHARS.slice(0, -3).includes(bl[0]) && bl.slice(1, 2) === " ") return [true, false];
+  // Hanging indent (reference lists): the entry's first line sticks out to the left and
+  // the rest is indented. In a book that doesn't indent paragraphs, that step in is not a
+  // new paragraph.
+  // Only when line a is full, i.e. the next word did not fit on it.
+  const step = b.x0 - a.x0;
+  if (!st.indentStyle && sameFlow && step > 0.3 * b.size && step < 4 * b.size && Math.abs(a.x0 - ea[0]) < 3 * size &&
+      !LIST_MARK_RE.test(bl) &&
+      ea[1] - a.x1 < firstWordWidth(b, b.size) + 0.5 * b.size) return [false, false];
+  // right-aligned lines (an epigraph's credit) that wrap: same right edge, away from the margin
+  if (sameFlow && Math.abs(a.x1 - b.x1) < 1.5 && a.x0 - ea[0] > 3 * size && b.x0 - eb[0] > 3 * size &&
+      ea[1] - a.x1 > 2 * size) return [false, false];
   const ind = b.x0 - eb[0];
   let prevInd = st.indentStyle ? 0 : Math.max(0, a.x0 - ea[0]);
   if (LIST_MARK_RE.test(lstrip(at))) prevInd = Math.max(prevInd, ind);
@@ -1143,15 +1228,19 @@ function buildBlocks(pages, st, dehy) {
   }
   if (starts.length >= 10) st.indentStyle = starts.filter(Boolean).length >= 0.6 * starts.length;
 
-  for (const pg of pages) {
+  // indentation of code lines is measured from the leftmost line of their listing,
+  // which may continue on the next page
+  {
     let run = [];
     const close = () => {
       if (run.length) { const m = Math.min(...run.map(l => l.x0)); for (const l of run) l._indentFrom = m; }
       run = [];
     };
-    for (const l of pg.lines) {
-      if (l.kind === "code") run.push(l);
-      else if (l.kind !== "dropcap") close();
+    for (const pg of pages) {
+      for (const l of pg.lines) {
+        if (l.kind === "code") run.push(l);
+        else if (l.kind !== "dropcap") close();
+      }
     }
     close();
   }
@@ -1537,6 +1626,7 @@ async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
     }
     const dehy = new Dehyphenator(pages);
     const blocks = buildBlocks(pages, st, dehy);
+    numberCallouts(blocks);
     let cover = null;
     if (o.cover) { try { cover = await renderCoverBrowser(pdf); } catch (e) { cover = null; } }
     const { epub, nFiles, nToc, nImages } = await writeEpub(JSZip, blocks, { title, author },
