@@ -59,6 +59,7 @@ class ChapterHtmlSlimParser {
   uint16_t viewportHeight;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
+  bool keepTableRowsTogether = true;
   const CssParser* cssParser;
   bool embeddedStyle;
   uint8_t imageRendering;
@@ -288,6 +289,8 @@ class ChapterHtmlSlimParser {
   static void XMLCALL endElement(void* userData, const XML_Char* name);
 
  public:
+  // Off: table rows split line by line at page ends, as upstream does.
+  void setKeepTableRowsTogether(const bool on) { keepTableRowsTogether = on; }
   explicit ChapterHtmlSlimParser(
       std::shared_ptr<Epub> epub, const std::string& filepath, GfxRenderer& renderer, const int fontId,
       const float lineCompression, const bool extraParagraphSpacing, const uint8_t paragraphAlignment,

@@ -1226,7 +1226,7 @@ void ChapterHtmlSlimParser::finishTableRow() {
 
   // Keep a row together: when the whole row fits on an empty page but not in the
   // space left on this one, start a new page instead of splitting the row.
-  if (currentPage && !currentPage->elements.empty()) {
+  if (keepTableRowsTogether && currentPage && !currentPage->elements.empty()) {
     int rowHeight = maxTopPadding + maxBottomPadding + 2 * cellGap;
     for (size_t lineIndex = 0; lineIndex < maxLineCount; ++lineIndex) {
       int h = lineHeight;

@@ -24,6 +24,8 @@ struct ReaderRenderSpec {
   bool embeddedStyle = true;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
+  // Move a table row to the next page instead of splitting it, when it fits on one page.
+  bool keepTableRowsTogether = true;
 };
 
 // Stable signature for clipping anchors. Page-local word ordinals are valid
@@ -46,5 +48,6 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
   mix(spec.embeddedStyle);
   mix(spec.imageRendering);
   mix(spec.focusReadingEnabled);
+  mix(spec.keepTableRowsTogether);
   return signature == 0 ? 1 : signature;
 }
