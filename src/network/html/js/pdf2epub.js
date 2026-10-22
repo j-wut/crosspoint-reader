@@ -12,8 +12,8 @@
 //
 //   const { epub, title, summary } = await convertPdf(pdfjsLib, JSZip, pdfBytes, { title: "..." });
 //
-// Not ported yet (the Python tool does these): tables rebuilt from ruled cells, and images
-// inside the text. Table text comes out as ordinary paragraphs; images are left out.
+// Like the Python tool it also rebuilds ruled tables cell by cell and keeps images, turned
+// gray and shrunk to fit the 480x800 screen.
 
 const VERSION = "1.0.0-js";
 
@@ -155,32 +155,51 @@ function drawings(opList, OPS, view) {
   let ctm = [1, 0, 0, 1, 0, 0];
   let pending = null;
   const H = view[3];
+  const toPage = ([x, y]) => [ctm[0] * x + ctm[2] * y + ctm[4] - view[0], H - (ctm[1] * x + ctm[3] * y + ctm[5])];
+  out.images = [];
   for (let i = 0; i < opList.fnArray.length; i++) {
     const fn = opList.fnArray[i], args = opList.argsArray[i];
     if (fn === OPS.save) stack.push(ctm);
     else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
     else if (fn === OPS.transform) ctm = mul(ctm, args);
-    else if (fn === OPS.constructPath) {
+    else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+      // images are drawn into the unit square of the current transform
+      const c = [[0, 0], [1, 0], [0, 1], [1, 1]].map(toPage);
+      const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+      const box = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+      if (fn === OPS.paintImageXObject) out.images.push({ ...box, id: args[0], w: args[1], h: args[2] });
+      else if (args[0]) out.images.push({ ...box, inline: args[0], w: args[0].width, h: args[0].height });
+    } else if (fn === OPS.constructPath) {
       // Bounding box from the path's own points (pdf.js' minMax is unreliable for curves).
       const [pathOps, coords] = args;
       const local = [];
-      let k = 0;
+      const segs = []; // straight pieces, for table rules
+      let k = 0, at = null, start = null;
       for (const op of pathOps || []) {
         if (op === OPS.rectangle) {
           const [x, y, w, h] = coords.slice(k, k + 4);
           local.push([x, y], [x + w, y + h]);
+          segs.push([[x, y], [x + w, y]], [[x + w, y], [x + w, y + h]], [[x + w, y + h], [x, y + h]], [[x, y + h], [x, y]]);
+          at = start = [x, y];
           k += 4;
         } else {
           const n = op === OPS.moveTo || op === OPS.lineTo ? 2 : op === OPS.curveTo ? 6
             : op === OPS.curveTo2 || op === OPS.curveTo3 ? 4 : 0;
           for (let q = 0; q < n; q += 2) local.push([coords[k + q], coords[k + q + 1]]);
+          const end = n ? [coords[k + n - 2], coords[k + n - 1]] : null;
+          if (op === OPS.moveTo) start = end;
+          else if (op === OPS.lineTo && at) segs.push([at, end]);
+          else if (op === OPS.closePath && at && start) segs.push([at, start]);
+          if (end) at = end;
+          else if (op === OPS.closePath) at = start;
           k += n;
         }
       }
       if (!local.length) { pending = null; continue; }
-      const pts = local.map(([x, y]) => [ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]]);
+      const pts = local.map(toPage);
       const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-      pending = { x0: Math.min(...xs) - view[0], x1: Math.max(...xs) - view[0], y0: H - Math.max(...ys), y1: H - Math.min(...ys) };
+      pending = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys),
+        segs: segs.map(([a, b]) => [toPage(a), toPage(b)]) };
     } else if (pending) {
       const fill = fn === OPS.fill || fn === OPS.eoFill || fn === OPS.fillStroke || fn === OPS.eoFillStroke ||
         fn === OPS.closeFillStroke || fn === OPS.closeEOFillStroke;
@@ -198,7 +217,7 @@ function drawings(opList, OPS, view) {
   return out;
 }
 
-async function extractPage(pdf, OPS, pno, pageNo) {
+async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
   const page = await pdf.getPage(pno + 1);
   const view = page.view;
   const width = view[2] - view[0], height = view[3] - view[1];
@@ -207,6 +226,7 @@ async function extractPage(pdf, OPS, pno, pageNo) {
   const pg = { number: pageNo, width, height, twoCol: false, lines: [] };
 
   const raw = [];
+  const words = []; // word boxes, for rebuilding table cells
   let cur = null;
   const finish = () => {
     if (cur && cur.segs.length && strip(lineText(cur))) {
@@ -239,6 +259,12 @@ async function extractPage(pdf, OPS, pno, pageNo) {
     const fi = fontInfo(page, it.fontName);
     const t = cleanText(it.str);
     if (t) {
+      // word positions, spread over the item by character count
+      const chars = [...t], cw = it.width / (chars.length || 1);
+      for (const m of t.matchAll(/\S+/gu)) {
+        const a = [...t.slice(0, m.index)].length, n = [...m[0]].length;
+        words.push({ x0: x0 + a * cw, x1: x0 + (a + n) * cw, y0, y1, text: m[0], bold: fi.bold, mono: fi.mono });
+      }
       // Same visual line: continues to the right (accents may step back a little) and overlaps
       // vertically, so superscripts and footnote marks stay on their line.
       let sameLine = false;
@@ -284,10 +310,338 @@ async function extractPage(pdf, OPS, pno, pageNo) {
   }
   finish();
   for (const l of raw) if (!l._sizes) { /* already finalised */ }
-  pg.lines = mergeSameBaseline(raw.filter(l => l.size));
-  markDrawnBullets(drawings(opList, OPS, view), pg.lines);
+  const shapes = drawings(opList, OPS, view);
+  pg.tables = findTables(shapes, words, pageNo, width, height);
+  let kept = raw.filter(l => l.size);
+  if (pg.tables.length) {
+    // text inside a table is rebuilt cell by cell; drop the flowing copy
+    const inside = l => {
+      const cx = (l.x0 + l.x1) / 2, cy = (l.y0 + l.y1) / 2;
+      return pg.tables.some(t => t.x0 - 2 <= cx && cx <= t.x1 + 2 && t.y0 - 2 <= cy && cy <= t.y1 + 2);
+    };
+    kept = kept.filter(l => !inside(l));
+  }
+  pg.lines = mergeSameBaseline(kept);
+  markDrawnBullets(shapes, pg.lines);
+  if (opts.images) {
+    for (const im of shapes.images) {
+      // skip decorations, rules and tiny ornaments
+      if (!(im.w >= 64 && im.h >= 64 && im.x1 - im.x0 > 40 && im.y1 - im.y0 > 40)) continue;
+      if (im.x1 < 0 || im.x0 > width || im.y1 < 0 || im.y0 > height) continue;
+      let jpg = null;
+      try { jpg = await imageToJpeg(page, im, opts.encodeJpeg); } catch (e) { jpg = null; }
+      if (!jpg) continue;
+      const l = newLine(pageNo, im.x0, im.y0, im.x1, im.y1, [], 0, "", false, false);
+      l.kind = "image"; l.image = jpg;
+      pg.lines.push(l);
+    }
+  }
   page.cleanup();
   return pg;
+}
+
+// --------------------------------------------------------------------------- tables
+
+// Tables drawn with rules or shaded rows, found the way PyMuPDF's find_tables(strategy="lines")
+// and pdfplumber do it: straight edges are snapped and joined, their crossings found, and
+// the smallest rectangles between crossings become cells. Each table becomes a Line(kind "table").
+const SNAP = 3, JOIN = 3, ISECT = 3, MIN_EDGE = 3;
+
+function tableEdges(shapes, width, height) {
+  const hs = [], vs = [];
+  const cl = (v, hi) => Math.min(Math.max(v, 0), hi);
+  for (const sh of shapes) {
+    for (let [[ax, ay], [bx, by]] of sh.segs || []) {
+      // only the part on the page counts
+      if (Math.max(ax, bx) < 0 || Math.min(ax, bx) > width || Math.max(ay, by) < 0 || Math.min(ay, by) > height) continue;
+      ax = cl(ax, width); bx = cl(bx, width); ay = cl(ay, height); by = cl(by, height);
+      if (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) >= MIN_EDGE) hs.push({ a: Math.min(ax, bx), b: Math.max(ax, bx), at: (ay + by) / 2 });
+      else if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) >= MIN_EDGE) vs.push({ a: Math.min(ay, by), b: Math.max(ay, by), at: (ax + bx) / 2 });
+    }
+  }
+  const snapJoin = edges => {
+    // snap: edges whose positions are within SNAP of each other share their average
+    edges.sort((p, q) => p.at - q.at);
+    const out = [];
+    let group = [];
+    const close = () => {
+      if (!group.length) return;
+      const avg = group.reduce((n, e) => n + e.at, 0) / group.length;
+      for (const e of group) e.at = avg;
+      group.sort((p, q) => p.a - q.a);
+      // join: collinear pieces that touch or nearly touch become one edge
+      let cur = null;
+      for (const e of group) {
+        if (cur && e.a <= cur.b + JOIN) cur.b = Math.max(cur.b, e.b);
+        else { if (cur) out.push(cur); cur = { ...e }; }
+      }
+      if (cur) out.push(cur);
+      group = [];
+    };
+    for (const e of edges) {
+      if (group.length && e.at - group[0].at > SNAP) close();
+      group.push(e);
+    }
+    close();
+    return out.filter(e => e.b - e.a >= MIN_EDGE);
+  };
+  return [snapJoin(hs), snapJoin(vs)];
+}
+
+function tableCells(hs, vs) {
+  // crossings, keyed by point, with the edges that meet there
+  const pts = new Map();
+  for (const [vi, v] of vs.entries()) {
+    for (const [hi, h] of hs.entries()) {
+      if (v.at >= h.a - ISECT && v.at <= h.b + ISECT && h.at >= v.a - ISECT && h.at <= v.b + ISECT) {
+        const k = v.at + "," + h.at;
+        if (!pts.has(k)) pts.set(k, { x: v.at, y: h.at, v: new Set(), h: new Set() });
+        pts.get(k).v.add(vi); pts.get(k).h.add(hi);
+      }
+    }
+  }
+  const list = [...pts.values()].sort((p, q) => p.y - q.y || p.x - q.x);
+  const share = (A, B) => { for (const x of A) if (B.has(x)) return true; return false; };
+  const cells = [];
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    const below = list.filter(q => q.x === p.x && q.y > p.y).sort((a, b) => a.y - b.y);
+    const right = list.filter(q => q.y === p.y && q.x > p.x).sort((a, b) => a.x - b.x);
+    let found = null;
+    for (const b of below) {
+      if (!share(p.v, b.v)) continue;
+      for (const r of right) {
+        if (!share(p.h, r.h)) continue;
+        const br = pts.get(r.x + "," + b.y);
+        if (br && share(br.h, b.h) && share(br.v, r.v)) { found = { x0: p.x, y0: p.y, x1: r.x, y1: b.y }; break; }
+      }
+      if (found) break;
+    }
+    if (found) cells.push(found);
+  }
+  return cells;
+}
+
+function groupCells(cells) {
+  // cells that share a corner belong to the same table
+  const corners = c => [[c.x0, c.y0], [c.x1, c.y0], [c.x0, c.y1], [c.x1, c.y1]].map(([x, y]) => x + "," + y);
+  const tables = [];
+  const left = cells.slice();
+  while (left.length) {
+    const t = [left.shift()];
+    const seen = new Set(corners(t[0]));
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (let i = 0; i < left.length; i++) {
+        if (corners(left[i]).some(k => seen.has(k))) {
+          for (const k of corners(left[i])) seen.add(k);
+          t.push(left.splice(i, 1)[0]);
+          i--; grew = true;
+        }
+      }
+    }
+    if (t.length > 1) tables.push(t);
+  }
+  return tables;
+}
+
+function cellText(words, r) {
+  const ws = words.filter(w => {
+    const cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+    return cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1;
+  });
+  // reading order: by line, then left to right
+  ws.sort((a, b) => a.y0 - b.y0);
+  const lines = [];
+  for (const w of ws) {
+    const ln = lines.find(l => Math.min(l.y1, w.y1) - Math.max(l.y0, w.y0) > 0.5 * Math.min(l.y1 - l.y0, w.y1 - w.y0));
+    if (ln) { ln.ws.push(w); ln.y0 = Math.min(ln.y0, w.y0); ln.y1 = Math.max(ln.y1, w.y1); }
+    else lines.push({ y0: w.y0, y1: w.y1, ws: [w] });
+  }
+  lines.sort((a, b) => a.y0 - b.y0);
+  const out = [];
+  for (const l of lines) {
+    for (const w of l.ws.sort((a, b) => a.x0 - b.x0)) {
+      const t = w.text;
+      const last = out[out.length - 1];
+      if (last && last.endsWith("-") && last.length > 1 && /\p{L}/u.test(last[last.length - 2]) && /^\p{Ll}/u.test(t)) {
+        out[out.length - 1] = last.slice(0, -1) + t; // word split across lines inside the cell
+      } else out.push(t);
+    }
+  }
+  const vis = ws.filter(w => strip(w.text));
+  return [strip(out.join(" ")), vis.length > 0 && vis.every(w => w.bold)];
+}
+
+function findTables(shapes, words, pageNo, width, height) {
+  // only try on pages with several rules or cell fills
+  if (shapes.filter(sh => Math.max(sh.width, sh.height) > 30).length < 4) return [];
+  const [hs, vs] = tableEdges(shapes, width, height);
+  if (hs.length < 2 || vs.length < 2) return [];
+  const result = [];
+  for (const cells of groupCells(tableCells(hs, vs))) {
+    const x0 = Math.min(...cells.map(c => c.x0)), y0 = Math.min(...cells.map(c => c.y0));
+    const x1 = Math.max(...cells.map(c => c.x1)), y1 = Math.max(...cells.map(c => c.y1));
+    // rows: cells with the same top edge
+    const tops = [...new Set(cells.map(c => c.y0))].sort((a, b) => a - b);
+    const colXs = [...new Set(cells.map(c => c.x0))].sort((a, b) => a - b);
+    const rows = tops.map(y => {
+      const rc = cells.filter(c => c.y0 === y);
+      return { cells: colXs.map(x => rc.find(c => c.x0 === x) || null),
+        y0: y, y1: Math.max(...rc.map(c => c.y1)) };
+    });
+    if (rows.length < 2) continue;
+    // column edges from the row that has the most separate cells
+    let best = rows[0];
+    for (const r of rows) if (r.cells.filter(Boolean).length > best.cells.filter(Boolean).length) best = r;
+    const bc = best.cells.filter(Boolean);
+    if (bc.length < 2) continue;
+    const xs = bc.map(c => c.x0).concat([bc[bc.length - 1].x1]);
+    const inTable = words.filter(w => {
+      const cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+      return cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1;
+    });
+    // a shaded code listing is not a table
+    const nChars = inTable.reduce((n, w) => n + w.text.length, 0);
+    if (nChars && inTable.filter(w => w.mono).reduce((n, w) => n + w.text.length, 0) > 0.5 * nChars) continue;
+    let caption = null, header = 0;
+    const outRows = [];
+    for (const r of rows) {
+      const rw = inTable.filter(w => r.y0 - 1 <= (w.y0 + w.y1) / 2 && (w.y0 + w.y1) / 2 <= r.y1 + 1);
+      if (!rw.length) continue;
+      // a row whose words straddle a column edge spans the whole width (title, note)
+      const spans = rw.some(w => xs.slice(1, -1).some(e => w.x0 < e - 1 && w.x1 > e + 1));
+      if (spans) {
+        const [text] = cellText(inTable, { x0: xs[0], y0: r.y0, x1: xs[xs.length - 1], y1: r.y1 });
+        if (!outRows.length && caption === null) caption = text;
+        else outRows.push([text]);
+        continue;
+      }
+      const row = [];
+      for (let c = 0; c + 1 < xs.length; c++) row.push(cellText(inTable, { x0: xs[c], y0: r.y0, x1: xs[c + 1], y1: r.y1 }));
+      if (!row.some(([t]) => t)) continue;
+      if (!outRows.length && row.filter(([t]) => t).every(([, b]) => b)) header = 1;
+      outRows.push(row.map(([t]) => t));
+    }
+    if (outRows.length < 2) continue;
+    const l = newLine(pageNo, x0, y0, x1, y1, [], 0, "", false, false);
+    l.kind = "table";
+    l.table = { caption, rows: outRows, header, cols: xs.length - 1 };
+    result.push(l);
+  }
+  return result;
+}
+
+function tableHtml(t) {
+  // CrossPoint gives every cell the reader's paragraph indent unless the first word
+  // is laid out with preserved whitespace; the "ni" span does that and nothing else.
+  const e = x => {
+    if (!x) return "";
+    const i = x.indexOf(" ");
+    const first = i < 0 ? x : x.slice(0, i), rest = i < 0 ? "" : x.slice(i + 1);
+    return `<span class="ni">${escapeHtml(first, false)}</span>` + (rest ? " " + escapeHtml(rest, false) : "");
+  };
+  const out = [];
+  if (t.caption) out.push(`<p class="caption"><b>${e(t.caption)}</b></p>`);
+  out.push("<table>");
+  t.rows.forEach((row, i) => {
+    const tag = i < t.header ? "th" : "td";
+    if (row.length === 1 && t.cols > 1) out.push(`<tr><${tag} colspan="${t.cols}">${e(row[0])}</${tag}></tr>`);
+    else out.push("<tr>" + row.map(c => `<${tag}>${e(c)}</${tag}>`).join("") + "</tr>");
+  });
+  out.push("</table>");
+  return out.join("\n");
+}
+
+// --------------------------------------------------------------------------- images
+
+// pdf.js hands decoded images over once the operator list is done; wait a little if not yet.
+function pdfObject(page, id) {
+  const objs = id.startsWith("g_") ? page.commonObjs : page.objs;
+  if (objs.has(id)) return Promise.resolve(objs.get(id));
+  return new Promise(resolve => {
+    const t = setTimeout(() => resolve(null), 5000);
+    objs.get(id, v => { clearTimeout(t); resolve(v); });
+  });
+}
+
+// Image pixels as 8-bit gray, transparent parts on white. Returns null for formats we can't read.
+function toGray(img) {
+  const { width: w, height: h, kind, data } = img;
+  if (!w || !h || !data) return null;
+  const g = new Uint8Array(w * h);
+  if (kind === 1) { // 1 bit per pixel, rows padded to whole bytes, 1 = white
+    const rb = (w + 7) >> 3;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      g[y * w + x] = data[y * rb + (x >> 3)] & (128 >> (x & 7)) ? 255 : 0;
+    }
+  } else if (kind === 2) { // RGB
+    for (let i = 0, j = 0; i < g.length; i++, j += 3) g[i] = (299 * data[j] + 587 * data[j + 1] + 114 * data[j + 2]) / 1000;
+  } else if (kind === 3) { // RGBA
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+      const a = data[j + 3] / 255;
+      const v = (299 * data[j] + 587 * data[j + 1] + 114 * data[j + 2]) / 1000;
+      g[i] = v * a + 255 * (1 - a);
+    }
+  } else return null;
+  return { w, h, g };
+}
+
+// Shrink to fit the screen by averaging pixel areas.
+function fitGray({ w, h, g }, maxW = SCREEN_W, maxH = SCREEN_H) {
+  const scale = Math.min(1, maxW / w, maxH / h);
+  if (scale >= 1) return { w, h, g };
+  const W2 = Math.max(1, Math.round(w * scale)), H2 = Math.max(1, Math.round(h * scale));
+  const out = new Uint8Array(W2 * H2);
+  const fx = w / W2, fy = h / H2;
+  for (let y = 0; y < H2; y++) {
+    const sy0 = Math.floor(y * fy), sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * fy));
+    for (let x = 0; x < W2; x++) {
+      const sx0 = Math.floor(x * fx), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * fx));
+      let sum = 0;
+      for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) sum += g[yy * w + xx];
+      out[y * W2 + x] = sum / ((sy1 - sy0) * (sx1 - sx0));
+    }
+  }
+  return { w: W2, h: H2, g: out };
+}
+
+// Gray pixels to JPEG (quality 80) with a canvas. Node callers pass their own encodeJpeg(g, w, h).
+async function encodeJpegBrowser(g, w, h) {
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) { rgba[j] = rgba[j + 1] = rgba[j + 2] = g[i]; rgba[j + 3] = 255; }
+  const imgData = new ImageData(rgba, w, h);
+  let blob;
+  if (typeof OffscreenCanvas !== "undefined") {
+    const c = new OffscreenCanvas(w, h);
+    c.getContext("2d").putImageData(imgData, 0, 0);
+    blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+  } else {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d").putImageData(imgData, 0, 0);
+    blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.8));
+  }
+  return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+}
+
+async function imageToJpeg(page, im, encode) {
+  const obj = im.inline || await pdfObject(page, im.id);
+  if (!obj) return null;
+  let gray = null;
+  if (obj.bitmap && typeof OffscreenCanvas !== "undefined") {
+    const c = new OffscreenCanvas(obj.bitmap.width, obj.bitmap.height);
+    const ctx = c.getContext("2d");
+    ctx.drawImage(obj.bitmap, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    gray = toGray({ width: c.width, height: c.height, kind: 3, data: d.data });
+  } else {
+    gray = toGray(obj);
+  }
+  if (!gray) return null;
+  const f = fitGray(gray);
+  return (encode || encodeJpegBrowser)(f.g, f.w, f.h);
 }
 
 function markDrawnBullets(shapes, lines) {
@@ -804,7 +1158,30 @@ function buildBlocks(pages, st, dehy) {
 
   for (const pg of pages) {
     for (const l of pg.lines) {
-      if (l.kind === "dropcap" || l.kind === "image") continue;
+      if (l.kind === "dropcap") continue;
+      if (l.kind === "image") {
+        flush();
+        blocks.push({ kind: "img", segs: [], image: l.image, level: 1, page: pg.number });
+        prev = null;
+        continue;
+      }
+      if (l.kind === "table") {
+        flush();
+        const last = blocks[blocks.length - 1];
+        if (last && last.kind === "table" && last.page === pg.number - 1 &&
+            last.table.cols === l.table.cols && !l.table.caption) {
+          // the same table continued on the next page
+          const same = l.table.rows.length && last.table.rows.length &&
+            l.table.rows[0].join("\u0000") === last.table.rows[0].join("\u0000");
+          const rows = last.table.header && same ? l.table.rows.slice(l.table.header) : l.table.rows;
+          last.table.rows.push(...rows);
+          last.page = pg.number;
+        } else {
+          blocks.push({ kind: "table", segs: [], table: l.table, level: 1, page: pg.number });
+        }
+        prev = null;
+        continue;
+      }
       if (l.kind === "code") {
         flush();
         const segs = l.segs.map(x => seg(x.text, x.bold, x.italic, x.mono));
@@ -914,7 +1291,8 @@ function splitChapters(blocks, maxBytes, top) {
   for (const ch of chapters) {
     let part = [], size = 0;
     for (const b of ch) {
-      const est = 40 + b.segs.reduce((n, s) => n + s.text.length, 0) * 1.1;
+      let est = 40 + b.segs.reduce((n, s) => n + s.text.length, 0) * 1.1;
+      if (b.kind === "table") est += b.table.rows.reduce((n, r) => n + r.reduce((m, c) => m + c.length + 12, 0), 0);
       if (part.length && size + est > maxBytes && (b.kind === "p" || b.kind === "sep" || b.kind === "img")) {
         out.push(part);
         part = []; size = 0;
@@ -977,6 +1355,7 @@ async function writeEpub(JSZip, blocks, meta, opts, cover) {
   const modified = new Date().toISOString().replace(/\.\d+Z$/, "Z");
   const { title, author } = meta;
   const files = [];
+  const images = [];
   let toc = [];
   chapters.forEach((ch, idx) => {
     const i = idx + 1;
@@ -1002,6 +1381,12 @@ async function writeEpub(JSZip, blocks, meta, opts, cover) {
         body.push(`<p>${segsToHtml(b.segs, styles)}</p>`);
       } else if (b.kind === "sep") {
         body.push('<p class="sep">* * *</p>');
+      } else if (b.kind === "img") {
+        const iname = `images/img${String(images.length + 1).padStart(4, "0")}.jpg`;
+        images.push([iname, b.image]);
+        body.push(`<p class="sep"><img src="${iname}" alt=""/></p>`);
+      } else if (b.kind === "table") {
+        body.push(tableHtml(b.table));
       } else if (b.kind === "code") {
         const line = escapeHtml(b.segs.map(x => x.text).join(""), false);
         if (j > 0 && ch[j - 1].kind === "code" && body.length && body[body.length - 1].endsWith("</pre>")) {
@@ -1030,6 +1415,7 @@ async function writeEpub(JSZip, blocks, meta, opts, cover) {
     manifest.push(`<item id="c${k + 1}" href="${name}" media-type="application/xhtml+xml"/>`);
     spine.push(`<itemref idref="c${k + 1}"/>`);
   });
+  images.forEach(([iname], k) => manifest.push(`<item id="img${k + 1}" href="${iname}" media-type="image/jpeg"/>`));
   let coverMeta = "";
   if (cover) {
     manifest.push('<item id="cover-image" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>');
@@ -1067,9 +1453,10 @@ ${spine.join("\n")}
   z.file("OEBPS/toc.ncx", tocNcx(toc, title, bookId), def);
   if (css) z.file("OEBPS/style.css", CSS, def);
   for (const [name, data] of files) z.file("OEBPS/" + name, data, def);
+  for (const [iname, data] of images) z.file("OEBPS/" + iname, data, { compression: "STORE" });
   if (cover) z.file("OEBPS/images/cover.jpg", cover, { compression: "STORE" });
   const epub = await z.generateAsync({ type: "uint8array", mimeType: "application/epub+zip" });
-  return { epub, nFiles: files.length, nToc: toc.length };
+  return { epub, nFiles: files.length, nToc: toc.length, nImages: images.length };
 }
 
 // --------------------------------------------------------------------------- driver
@@ -1119,8 +1506,10 @@ async function renderCoverBrowser(pdf) {
  */
 async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
   const o = Object.assign({ lang: "en", margin: 0.12, strip: [], keepHeaders: false, noHeadings: false,
-    cover: true, css: true, styles: true, maxKb: 80 }, opts);
-  const pdf = await pdfjsLib.getDocument({ data, verbosity: 0, isEvalSupported: false, fontExtraProperties: true }).promise;
+    cover: true, images: true, css: true, styles: true, maxKb: 80 }, opts);
+  // plain pixel arrays for images (not ImageBitmaps), so they can be turned gray and resized here
+  const pdf = await pdfjsLib.getDocument({ data, verbosity: 0, isEvalSupported: false, fontExtraProperties: true,
+    isOffscreenCanvasSupported: false, isImageDecoderSupported: false }).promise;
   try {
     let md = {};
     try { md = (await pdf.getMetadata()).info || {}; } catch (e) { /* no metadata */ }
@@ -1130,7 +1519,7 @@ async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
     const sel = parsePages(o.pages, pdf.numPages);
     const pages = [];
     for (let k = 0; k < sel.length; k++) {
-      pages.push(await extractPage(pdf, pdfjsLib.OPS, sel[k], sel[k] + 1));
+      pages.push(await extractPage(pdf, pdfjsLib.OPS, sel[k], sel[k] + 1, { images: o.images, encodeJpeg: o.encodeJpeg }));
       if (o.onProgress) o.onProgress(k + 1, sel.length);
     }
     const st = bodyStats(pages);
@@ -1139,14 +1528,22 @@ async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
     if (!o.keepHeaders) removed = stripHeadersFooters(pages, st, o.margin, patterns);
     for (const pg of pages) assignColumns(pg);
     if (!o.noHeadings) markHeadings(pages, st);
+    for (const pg of pages) {
+      for (const t of pg.tables || []) {
+        let pos = pg.lines.findIndex(l => l.y0 > t.y0 && l.col === 0);
+        if (pos < 0) pos = pg.lines.length;
+        pg.lines.splice(pos, 0, t);
+      }
+    }
     const dehy = new Dehyphenator(pages);
     const blocks = buildBlocks(pages, st, dehy);
     let cover = null;
     if (o.cover) { try { cover = await renderCoverBrowser(pdf); } catch (e) { cover = null; } }
-    const { epub, nFiles, nToc } = await writeEpub(JSZip, blocks, { title, author },
+    const { epub, nFiles, nToc, nImages } = await writeEpub(JSZip, blocks, { title, author },
       { lang: o.lang, css: o.css, maxKb: o.maxKb, styles: o.styles }, cover);
     const nPar = blocks.filter(b => b.kind === "p").length;
     const summary = { pages: pages.length, paragraphs: nPar, tocEntries: nToc, files: nFiles,
+      images: nImages, tables: blocks.filter(b => b.kind === "table").length,
       headerFooterLinesRemoved: removed.total(), hyphenationsRejoined: dehy.joined, hyphensKept: dehy.kept };
     const report = {
       body: `${st.bodySize}pt '${st.bodyFont}', line spacing ${st.leading.toFixed(1)}pt`,
