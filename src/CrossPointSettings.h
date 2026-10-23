@@ -206,8 +206,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // What a pair of page buttons does in the EPUB reader. Scroll moves by scrollAmount and may cut
   // lines or images at the screen edges.
   enum PAGE_BUTTON_ACTION { BUTTONS_FLIP_PAGE = 0, BUTTONS_SCROLL = 1, PAGE_BUTTON_ACTION_COUNT };
-  // Scroll stops per page: 2, 3 or 4. A flip moves one page worth of stops.
-  enum SCROLL_AMOUNT { SCROLL_HALF = 0, SCROLL_THIRD = 1, SCROLL_QUARTER = 2, SCROLL_AMOUNT_COUNT };
+  // Text lines one scroll moves: value + 1.
+  enum SCROLL_AMOUNT {
+    SCROLL_1_LINE = 0,
+    SCROLL_2_LINES = 1,
+    SCROLL_3_LINES = 2,
+    SCROLL_4_LINES = 3,
+    SCROLL_5_LINES = 4,
+    SCROLL_AMOUNT_COUNT
+  };
   enum VIBRATION { VIBRATION_TOUCH = 0, VIBRATION_TOUCH_PAGE = 1, VIBRATION_OFF = 2 };
   uint8_t vibration = VIBRATION_OFF;
   enum HAPTIC_INTENSITY { HAPTIC_LOW = 0, HAPTIC_MEDIUM = 1, HAPTIC_HIGH = 2 };
@@ -348,8 +355,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t embeddedStyle = 1;
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
-  // Move a table row that fits on one page to the next page instead of splitting it (1 = on)
-  uint8_t keepTableRowsTogether = 1;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
@@ -378,7 +383,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t tiltPageTurn = TILT_OFF;
   uint8_t sidePageButtons = BUTTONS_FLIP_PAGE;
   uint8_t frontPageButtons = BUTTONS_FLIP_PAGE;
-  uint8_t scrollAmount = SCROLL_HALF;
+  uint8_t scrollAmount = SCROLL_3_LINES;
   bool epubScrollEnabled() const { return sidePageButtons == BUTTONS_SCROLL || frontPageButtons == BUTTONS_SCROLL; }
   // Master reader-touch toggle on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;

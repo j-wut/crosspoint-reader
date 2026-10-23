@@ -25,7 +25,7 @@ struct ReaderRenderSpec {
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
   // Move a table row to the next page instead of splitting it, when it fits on one page.
-  bool keepTableRowsTogether = true;
+  bool keepTableRowsTogether = false;
 };
 
 // Stable signature for clipping anchors. Page-local word ordinals are valid

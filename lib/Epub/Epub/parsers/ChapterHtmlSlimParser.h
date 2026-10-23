@@ -59,7 +59,7 @@ class ChapterHtmlSlimParser {
   uint16_t viewportHeight;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
-  bool keepTableRowsTogether = true;
+  bool keepTableRowsTogether = false;
   const CssParser* cssParser;
   bool embeddedStyle;
   uint8_t imageRendering;
