@@ -309,11 +309,11 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Side Page Buttons** and **Front Page Buttons**: Set what each pair of page buttons does in EPUB books:
   - "Flip Page" (default) - Turn to the previous or next page.
-  - "Scroll" - Move the view up or down by the **Scroll Amount**. Pages join together, so lines, images and tables can be cut at the screen edges. With **Keep Table Rows Together** on, table rows that fit on the screen are not cut.
+  - "Scroll" - Move the view up or down by the **Scroll Amount**. Pages join together, so lines, images and table rows can be cut at the screen edges.
 
-  The two pairs are set separately, so one pair can scroll while the other flips. When scrolling is on, a flip moves the same distance as several scrolls and never skips text that was not shown.
+  The two pairs are set separately, so one pair can scroll while the other flips. When scrolling is on, a flip moves as many lines as the screen showed and never skips text that was not shown.
 
-- **Scroll Amount**: How far one scroll moves: "1/2 Page" (default), "1/3 Page" or "1/4 Page".
+- **Scroll Amount**: How many text lines one scroll moves: "1 Line" to "5 Lines" (default "3 Lines"). Images move one line height per step. Small triangles in the left margin and faint dotted lines across the screen mark each line a scroll will bring to the top.
 
 - **Long-press Chapter Skip**: Set whether long-pressing page turn buttons skips to the next/previous chapter:
   

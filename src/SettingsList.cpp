@@ -124,8 +124,6 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                            StrId::STR_CAT_READER)
            .withTextSettings());
-  emit(SettingInfo::Toggle(StrId::STR_KEEP_TABLE_ROWS, &CrossPointSettings::keepTableRowsTogether,
-                           "keepTableRowsTogether", StrId::STR_CAT_READER));
   emit(SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                          {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                          "imageRendering", StrId::STR_CAT_READER));
@@ -181,8 +179,9 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Enum(StrId::STR_FRONT_PAGE_BUTTONS, &CrossPointSettings::frontPageButtons,
                          {StrId::STR_FLIP_PAGE, StrId::STR_SCROLL}, "frontPageButtons", StrId::STR_CAT_CONTROLS));
   emit(SettingInfo::Enum(StrId::STR_SCROLL_AMOUNT, &CrossPointSettings::scrollAmount,
-                         {StrId::STR_SCROLL_HALF, StrId::STR_SCROLL_THIRD, StrId::STR_SCROLL_QUARTER}, "scrollAmount",
-                         StrId::STR_CAT_CONTROLS));
+                         {StrId::STR_SCROLL_1_LINE, StrId::STR_SCROLL_2_LINES, StrId::STR_SCROLL_3_LINES,
+                          StrId::STR_SCROLL_4_LINES, StrId::STR_SCROLL_5_LINES},
+                         "scrollAmount", StrId::STR_CAT_CONTROLS));
   emit(buildLongPressMenuSetting());
   // Double-click power frontlight shortcut only exists on the X4 Pro.
   if (BoardConfig::isX4Pro())

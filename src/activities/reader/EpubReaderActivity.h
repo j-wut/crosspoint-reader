@@ -43,27 +43,35 @@ class EpubReaderActivity final : public ReaderActivity {
   bool nextTurnScrolls = false;
   bool pendingManualTurnScroll = false;
   int currentScrollOffset() const;
-  // Scroll stops: each page splits into scrollChunksPerPage() chunks; a scroll moves one, a flip
-  // moves one page worth.
-  // A page is at most two screens tall, so at most 2 * 4 chunks.
-  static constexpr int MAX_SCROLL_CHUNKS = 8;
-  struct ScrollChunks {
-    int16_t offsets[MAX_SCROLL_CHUNKS] = {};
+  // Scroll stops are line tops (plus one every line height through images); a scroll moves
+  // scrollLineCount() of them. A page holds about 40 lines at the smallest font; a taller image gets
+  // fewer stops when this is full.
+  static constexpr int MAX_LINE_STOPS = 64;
+  struct LineStops {
+    int16_t offsets[MAX_LINE_STOPS] = {};
     uint8_t count = 0;
   };
-  struct ChunkCacheEntry {
+  struct StopCacheEntry {
     uint32_t generation = 0;
     int page = -1;
-    ScrollChunks chunks;
+    LineStops stops;
   };
-  // Stops of the pages around the view; about 28 bytes each.
-  std::array<ChunkCacheEntry, 8> chunkCache{};
-  size_t chunkCacheNext = 0;
-  ScrollChunks uncachedChunks;
+  // Stops of the pages around the view; about 140 bytes each.
+  std::array<StopCacheEntry, 4> stopCache{};
+  size_t stopCacheNext = 0;
+  LineStops uncachedStops;
   // Bumped for every new Section, so cached stops never outlive a re-layout.
   uint32_t sectionGeneration = 1;
-  static int scrollChunksPerPage();
-  const ScrollChunks& scrollChunks(int pageNumber);
+  static int scrollLineCount();
+  int scrollTarget(bool isForwardTurn, int steps, int& page, int& offset);
+  // Screen y of the lines the next forward scrolls move to the top (one marker per scroll).
+  static constexpr int MAX_SCROLL_MARKERS = 40;
+  int16_t scrollMarkerY[MAX_SCROLL_MARKERS] = {};
+  int scrollMarkerCount = 0;
+  void drawScrollMarkers(int orientedMarginLeft, int viewBottom) const;
+  const LineStops& lineStops(int pageNumber);
+  // Moves (page, offset) by delta pixels inside the chapter.
+  void shiftScrollPosition(int delta, int& page, int& offset);
   bool nextScrollStop(bool isForwardTurn, int& page, int& offset, int& distance);
   int scrollPageHeight(int pageNumber);
   struct HeightCacheEntry {
@@ -76,8 +84,6 @@ class EpubReaderActivity final : public ReaderActivity {
   size_t heightCacheNext = 0;
   // Height of the content the last render showed; a flip never moves further, so nothing is skipped.
   int visibleViewHeight = 0;
-  // Scroll distance that shows a kept row the last render left off the bottom; 0 when none.
-  int hiddenRowShift = 0;
   bool changeChapter(bool isForwardTurn);
   struct ViewPage {
     std::unique_ptr<Page> page;
