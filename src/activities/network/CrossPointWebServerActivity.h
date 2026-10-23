@@ -49,6 +49,8 @@ class CrossPointWebServerActivity final : public Activity {
 
   // Set when Back or Home is seen while an upload holds handleClient().
   bool leaveRequested = false;
+  // Set when the web page asks to flash its uploaded firmware; onExit() reboots into the update.
+  bool flashOnExit = false;
 
   // Sustained WiFi-loss tracking; abandon only after WIFI_ABANDON_MS.
   int consecutiveDisconnects = 0;

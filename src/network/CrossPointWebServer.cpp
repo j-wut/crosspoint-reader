@@ -21,6 +21,7 @@
 #include <base64.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
+#include <esp_ota_ops.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/hash.h>
 
@@ -33,6 +34,7 @@
 
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
+#include "FirmwareFlasher.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
 #include "ProtectedPaths.h"
@@ -230,6 +232,7 @@ void CrossPointWebServer::begin() {
   });
 
   server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
+  server->on("/api/firmware/flash", HTTP_POST, [this] { handleFirmwareFlash(); });
   server->on("/api/files", HTTP_GET, [this] { handleFileListData(); });
   server->on("/download", HTTP_GET, [this] { handleDownload(); });
 
@@ -988,6 +991,26 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
   }
+}
+
+void CrossPointWebServer::handleFirmwareFlash() {
+  // The page uploads the image first. The file transfer activity then reboots into
+  // SdFirmwareUpdateActivity, which validates the file and asks for confirmation on the device.
+  if (!firmwareFlashHandler) {
+    server->send(409, "text/plain", "Open File Transfer on the reader to update firmware");
+    return;
+  }
+  // Boards with a single app slot (Picco) cannot be updated this way.
+  if (!esp_ota_get_next_update_partition(nullptr)) {
+    server->send(501, "text/plain", "This device cannot update firmware from the SD card");
+    return;
+  }
+  if (!Storage.exists(firmware_flash::WEB_UPLOAD_PATH)) {
+    server->send(404, "text/plain", "No /firmware.bin on the SD card");
+    return;
+  }
+  firmwareFlashHandler();
+  server->send(200, "text/plain", "Confirm the update on the reader");
 }
 
 void CrossPointWebServer::handleUploadPost(UploadState& state) const {

@@ -71,6 +71,10 @@ class CrossPointWebServer {
   // Get the port number
   uint16_t getPort() const { return port; }
 
+  // Called when the web page asks to flash firmware_flash::WEB_UPLOAD_PATH. Without one,
+  // the request is refused (e.g. Calibre Connect cannot hand over to the update).
+  void setFirmwareFlashHandler(std::function<void()> handler) { firmwareFlashHandler = std::move(handler); }
+
  private:
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
@@ -82,6 +86,7 @@ class CrossPointWebServer {
   bool udpActive = false;
   std::function<bool()> uploadCancelCheck;
   bool dropUploadIfCancelled() const;
+  std::function<void()> firmwareFlashHandler;
 
   // WebSocket upload state
   void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
@@ -98,6 +103,7 @@ class CrossPointWebServer {
   void handleJszip() const;
   void handleNotFound() const;
   void handleStatus() const;
+  void handleFirmwareFlash();
   void handleFileList() const;
   void handleFileListData() const;
   void handleDownload() const;

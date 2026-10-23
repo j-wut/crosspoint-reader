@@ -215,6 +215,18 @@
   <div id="opds-container"></div>
   <div id="plugin-container"></div>
 
+  <div class="card">
+    <h2>Firmware Update</h2>
+    <p style="color:var(--label-color);">Upload a firmware .bin. The reader restarts, checks the file and asks you to confirm on the device.</p>
+    <div class="setting-row">
+      <span class="setting-control"><input type="file" id="firmware-file"></span>
+    </div>
+    <p id="firmware-status" style="color:var(--label-color);"></p>
+    <div style="margin-top:12px;text-align:center;">
+      <button class="btn-small btn-add" id="firmware-btn" onclick="uploadFirmware()">Upload and Update</button>
+    </div>
+  </div>
+
   </main>
 <!--#include file="shared/Footer.html.inc" -->
 
@@ -768,6 +780,65 @@
       await loadOpdsServers();
     } catch (e) {
       showWebToast('Error: ' + e.message, true);
+    }
+  }
+
+  // --- Firmware Update ---
+  // Uploads the image to /firmware.bin (replacing an older one), then asks the
+  // reader to flash it. The reader reboots and asks for confirmation on the device.
+  async function uploadFirmware() {
+    const file = document.getElementById('firmware-file').files[0];
+    const status = document.getElementById('firmware-status');
+    const btn = document.getElementById('firmware-btn');
+    if (!file) {
+      showWebToast('Choose a .bin file first.', true);
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith('.bin')) {
+      showWebToast('Firmware must be a .bin file.', true);
+      return;
+    }
+    if (!await showWebConfirm('Upload ' + file.name + ' and update the reader?')) return;
+
+    btn.disabled = true;
+    try {
+      // A missing file is fine here; only an existing one blocks the upload.
+      await fetch('/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'path=' + encodeURIComponent('/firmware.bin')
+      });
+
+      await new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file, 'firmware.bin');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload?path=%2F', true);
+        xhr.upload.onprogress = function(e) {
+          if (e.lengthComputable) {
+            status.textContent = 'Uploading: ' + Math.floor(e.loaded * 100 / e.total) + '%';
+          }
+        };
+        xhr.onload = function() {
+          if (xhr.status === 200) resolve();
+          else reject(new Error(xhr.responseText || 'Upload failed'));
+        };
+        xhr.onerror = function() { reject(new Error('Network error during upload')); };
+        xhr.send(formData);
+      });
+
+      let resp;
+      try {
+        resp = await fetch('/api/firmware/flash', {method: 'POST'});
+      } catch (e) {
+        resp = null;  // The reader may restart before the reply arrives.
+      }
+      if (resp && !resp.ok) throw new Error(await resp.text());
+      status.textContent = 'Uploaded. The reader is restarting: confirm the update on the device.';
+    } catch (e) {
+      status.textContent = '';
+      showWebToast('Error: ' + e.message, true);
+      btn.disabled = false;
     }
   }
 

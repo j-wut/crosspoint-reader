@@ -129,7 +129,11 @@ void CrossPointWebServerActivity::onExit() {
       WiFi.disconnect(false);
     }
     delay(30);
-    silentRestart();
+    if (flashOnExit) {
+      silentRestartToWebFirmwareUpdate();
+    } else {
+      silentRestart();
+    }
   }
 
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
@@ -313,6 +317,7 @@ void CrossPointWebServerActivity::startWebServer() {
                      mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture();
     return leaveRequested;
   });
+  webServer->setFirmwareFlashHandler([this] { flashOnExit = true; });
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -430,6 +435,11 @@ void CrossPointWebServerActivity::loop() {
         }
       }
       lastHandleClientTime = millis();
+
+      if (flashOnExit) {
+        onGoHome();
+        return;
+      }
     }
 
     // Also check outside the request-processing loop.
