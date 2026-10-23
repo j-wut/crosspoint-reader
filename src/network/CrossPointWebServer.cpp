@@ -52,6 +52,8 @@
 #include "html/assets/iconsSvg.generated.h"
 #include "html/assets/webCss.generated.h"
 #include "html/js/jszip_minJs.generated.h"
+#include "html/js/marked_minJs.generated.h"
+#include "html/js/md2epubJs.generated.h"
 #include "html/js/pdf2epubJs.generated.h"
 #include "html/js/pdfjs_minJs.generated.h"
 #include "html/js/pdfjs_worker_minJs.generated.h"
@@ -211,6 +213,14 @@ void CrossPointWebServer::begin() {
   server->on("/js/jszip.min.js", HTTP_GET, [this] { handleJszip(); });
   server->on("/js/pdf2epub.js", HTTP_GET, [this] {
     sendStaticContent(server.get(), pdf2epubJs, pdf2epubJsCompressedSize, pdf2epubJsETag, "application/javascript");
+  });
+  // Markdown to EPUB converter for the upload page, and marked 18.0.14 (MIT), the Markdown parser it uses.
+  server->on("/js/md2epub.js", HTTP_GET, [this] {
+    sendStaticContent(server.get(), md2epubJs, md2epubJsCompressedSize, md2epubJsETag, "application/javascript");
+  });
+  server->on("/js/marked.min.js", HTTP_GET, [this] {
+    sendStaticContent(server.get(), marked_minJs, marked_minJsCompressedSize, marked_minJsETag,
+                      "application/javascript");
   });
   // pdf.js 4.10.38 (Mozilla, Apache-2.0), used by the upload page to read PDFs. Trimmed build
   // (no XFA, forms, JPEG 2000, JBIG2 or viewer layers), about 280 KB gzipped.
