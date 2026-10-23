@@ -352,6 +352,13 @@ bool Page::serialize(HalFile& file) const {
     serialization::writePod(file, link.height);
   }
 
+  serialization::writePod(file, contentHeight);
+  const uint8_t bandCount = static_cast<uint8_t>(std::min<size_t>(keepBands.size(), MAX_KEEP_BANDS));
+  serialization::writePod(file, bandCount);
+  for (uint8_t i = 0; i < bandCount; i++) {
+    serialization::writePod(file, keepBands[i].top);
+    serialization::writePod(file, keepBands[i].bottom);
+  }
   return true;
 }
 
@@ -458,5 +465,17 @@ std::unique_ptr<Page> Page::deserialize(HalFile& file) {
     }
   }
 
+  serialization::readPod(file, page->contentHeight);
+  uint8_t bandCount;
+  serialization::readPod(file, bandCount);
+  if (bandCount > MAX_KEEP_BANDS) {
+    LOG_ERR("PGE", "Invalid keep band count %u", bandCount);
+    return nullptr;
+  }
+  page->keepBands.resize(bandCount);
+  for (auto& band : page->keepBands) {
+    serialization::readPod(file, band.top);
+    serialization::readPod(file, band.bottom);
+  }
   return page;
 }

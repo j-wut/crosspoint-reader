@@ -203,6 +203,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   enum READER_MENU_STYLE { READER_MENU_LIST = 0, READER_MENU_TOOLBAR = 1, READER_MENU_STYLE_COUNT };
 
   enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_NVERTED = 2, TILT_PAGE_TURN_COUNT };
+  // What a pair of page buttons does in the EPUB reader. Scroll moves by scrollAmount and may cut
+  // lines or images at the screen edges.
+  enum PAGE_BUTTON_ACTION { BUTTONS_FLIP_PAGE = 0, BUTTONS_SCROLL = 1, PAGE_BUTTON_ACTION_COUNT };
+  // Scroll stops per page: 2, 3 or 4. A flip moves one page worth of stops.
+  enum SCROLL_AMOUNT { SCROLL_HALF = 0, SCROLL_THIRD = 1, SCROLL_QUARTER = 2, SCROLL_AMOUNT_COUNT };
   enum VIBRATION { VIBRATION_TOUCH = 0, VIBRATION_TOUCH_PAGE = 1, VIBRATION_OFF = 2 };
   uint8_t vibration = VIBRATION_OFF;
   enum HAPTIC_INTENSITY { HAPTIC_LOW = 0, HAPTIC_MEDIUM = 1, HAPTIC_HIGH = 2 };
@@ -371,6 +376,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
+  uint8_t sidePageButtons = BUTTONS_FLIP_PAGE;
+  uint8_t frontPageButtons = BUTTONS_FLIP_PAGE;
+  uint8_t scrollAmount = SCROLL_HALF;
+  bool epubScrollEnabled() const { return sidePageButtons == BUTTONS_SCROLL || frontPageButtons == BUTTONS_SCROLL; }
   // Master reader-touch toggle on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
   // Which gestures turn the page in each direction (PAGE_TURN_GESTURE).

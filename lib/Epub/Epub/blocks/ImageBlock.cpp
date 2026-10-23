@@ -6,6 +6,7 @@
 #include <Memory.h>
 #include <Serialization.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -161,14 +162,16 @@ bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, u
   return true;
 }
 
-void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y) {
+// Draws cached rows [rowBegin, rowEnd); a scrolled reader page shows only part of an image.
+void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y, int rowBegin, int rowEnd) {
   const int bytesPerRow = (pxcSlotWidth + 3) / 4;
   uint8_t tempRow[PXC_MAX_BYTES_PER_ROW];
 
   DirectPixelWriter pw;
   pw.init(renderer);
 
-  for (int row = 0; row < pxcSlotHeight; row++) {
+  rowEnd = std::min(rowEnd, static_cast<int>(pxcSlotHeight));
+  for (int row = rowBegin; row < rowEnd; row++) {
     const uint8_t* rowBuffer = pxcRowPtr((size_t)row * bytesPerRow, bytesPerRow, tempRow);
     pw.beginRow(y + row);
     int colStart, colEnd;
@@ -183,12 +186,12 @@ void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y) {
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight) {
+                     int expectedHeight, int rowBegin, int rowEnd) {
   // A later pass of the same page render: the payload is already in RAM, skip
   // the file entirely.
   const uint64_t cacheHash = imagePathHash(cachePath);
   if (pxcSlotHash == cacheHash && pxcSlotWidth != 0) {
-    renderRowsFromPxcSlot(renderer, x, y);
+    renderRowsFromPxcSlot(renderer, x, y, rowBegin, rowEnd);
     return true;
   }
 
@@ -215,14 +218,16 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   // (all the SD traffic of streaming plus the slot alloc churn); instead later
   // images take the streaming path below, unchanged from pre-cache behavior.
   if (pxcSlotHash == 0 && loadPxcSlot(cacheHash, cacheFile, cachedWidth, cachedHeight, bytesPerRow)) {
-    renderRowsFromPxcSlot(renderer, x, y);
+    renderRowsFromPxcSlot(renderer, x, y, rowBegin, rowEnd);
     LOG_DBG("IMG", "Cache render complete (payload now in RAM)");
     return true;
   }
 
   // Streaming fallback (slot didn't fit). A failed slot load may have consumed
-  // part of the payload; rewind to just past the header.
-  cacheFile.seek(4);
+  // part of the payload; rewind to the first visible row just past the header.
+  rowEnd = std::min(rowEnd, static_cast<int>(cachedHeight));
+  if (rowBegin >= rowEnd) return true;
+  cacheFile.seek(4 + static_cast<size_t>(rowBegin) * bytesPerRow);
 
   // Read several rows per SD access. A one-row-per-read loop here means
   // cachedHeight (~728) tiny reads through the storage mutex + SdFat; batching
@@ -230,7 +235,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   // whole image.
   int rowsPerRead = 4096 / bytesPerRow;
   if (rowsPerRead < 1) rowsPerRead = 1;
-  if (rowsPerRead > cachedHeight) rowsPerRead = cachedHeight;
+  if (rowsPerRead > rowEnd - rowBegin) rowsPerRead = rowEnd - rowBegin;
   uint8_t* readBuffer = (uint8_t*)malloc((size_t)rowsPerRead * bytesPerRow);
   if (!readBuffer) {
     // Fall back to a single-row buffer under memory pressure.
@@ -247,9 +252,9 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
   int rowsInBuffer = 0;
   int bufferRow = 0;
-  for (int row = 0; row < cachedHeight; row++) {
+  for (int row = rowBegin; row < rowEnd; row++) {
     if (bufferRow >= rowsInBuffer) {
-      const int toRead = (cachedHeight - row < rowsPerRead) ? (cachedHeight - row) : rowsPerRead;
+      const int toRead = (rowEnd - row < rowsPerRead) ? (rowEnd - row) : rowsPerRead;
       const size_t bytes = (size_t)toRead * bytesPerRow;
       if (cacheFile.read(readBuffer, bytes) != static_cast<int>(bytes)) {
         LOG_ERR("IMG", "Cache read error at row %d", row);
@@ -323,8 +328,15 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
 
+  // Rows inside the screen and the renderer's clip. A scrolled reader page clips images at the viewport edges.
+  const auto clipRect = renderer.getClipRect();
+  const int visibleTop = std::max({0, clipRect[1], y});
+  const int visibleBottom = std::min({screenHeight, clipRect[1] + clipRect[3], y + height});
+  if (visibleTop >= visibleBottom) return;
+  const bool clipped = visibleTop > y || visibleBottom < y + height;
+
   // Bounds check render position using logical screen dimensions
-  if (x < 0 || y < 0 || x + width > screenWidth || y + height > screenHeight) {
+  if (x < 0 || x + width > screenWidth || (!clipped && (y < 0 || y + height > screenHeight))) {
     LOG_ERR("IMG", "Invalid render position: (%d,%d) size (%dx%d) screen (%dx%d)", x, y, width, height, screenWidth,
             screenHeight);
     return;
@@ -347,9 +359,16 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
+  if (renderFromCache(renderer, cachePath, x, y, width, height, visibleTop - y, visibleBottom - y)) {
     renderer.preserveImagePolarity(x, y, width, height);
     return;  // Successfully rendered from cache
+  }
+
+  // Decoders draw every row, so a clipped image is drawn only from its cache.
+  // The scrolling reader decodes such images unclipped first, so the cache exists here.
+  if (clipped) {
+    renderPlaceholder(renderer, x, y);
+    return;
   }
 
   // The build only header-probed the image for dimensions; pull the actual

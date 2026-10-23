@@ -73,7 +73,8 @@ namespace {
 // v63: Rebuild for corrected paragraph boundaries and supported static GIF images.
 // v64: Explicit font inheritance preserves parent emphasis and changes text layout.
 // v65: "Keep table rows together" setting in the header (cache validation).
-constexpr uint8_t SECTION_FILE_VERSION = 65;
+// v66: Each page stores its content height (scroll mode joins pages at it) and kept table rows.
+constexpr uint8_t SECTION_FILE_VERSION = 66;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

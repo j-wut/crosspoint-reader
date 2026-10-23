@@ -307,6 +307,14 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Side Button Layout (reader)**: Swap the order of the up and down side buttons from "Prev/Next" (default) to "Next/Prev". You can also disable them entirely. This change is only in effect when reading.
 
+- **Side Page Buttons** and **Front Page Buttons**: Set what each pair of page buttons does in EPUB books:
+  - "Flip Page" (default) - Turn to the previous or next page.
+  - "Scroll" - Move the view up or down by the **Scroll Amount**. Pages join together, so lines, images and tables can be cut at the screen edges. With **Keep Table Rows Together** on, table rows that fit on the screen are not cut.
+
+  The two pairs are set separately, so one pair can scroll while the other flips. When scrolling is on, a flip moves the same distance as several scrolls and never skips text that was not shown.
+
+- **Scroll Amount**: How far one scroll moves: "1/2 Page" (default), "1/3 Page" or "1/4 Page".
+
 - **Long-press Chapter Skip**: Set whether long-pressing page turn buttons skips to the next/previous chapter:
   
   - "Chapter Skip" (default) - Long-pressing skips to next/previous chapter
@@ -633,7 +641,7 @@ Once you have opened a book, the button layout changes to facilitate reading.
 | **Previous Page** | Press **Left** _or_ **Side Up**    |
 | **Next Page**     | Press **Right** _or_ **Side Down** |
 
-The role of the side buttons can be swapped in the **[Controls Settings](#363-controls)**.
+The role of the side buttons can be swapped in the **[Controls Settings](#363-controls)**. In EPUB books, either pair can scroll instead of flipping (**Side Page Buttons** and **Front Page Buttons**).
 
 If the **Short Power Button Click** setting is set to "Page Turn", you can also turn to the next page by briefly pressing the Power button.
 

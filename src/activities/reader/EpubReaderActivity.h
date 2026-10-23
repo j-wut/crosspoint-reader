@@ -5,6 +5,7 @@
 #include <Epub/PageLink.h>
 #include <Epub/Section.h>
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -32,6 +33,59 @@ class EpubReaderActivity final : public ReaderActivity {
   std::optional<uint32_t> cachedVisibleTextOffset;
   std::optional<uint32_t> currentPageVisibleOffset;
   std::optional<uint32_t> pendingOffsetJump;
+  // Scrolling (page buttons bound to Scroll): pixels the view is scrolled down from the top of
+  // scrollPage in scrollSpine. Following pages are drawn below, joined at their content height.
+  // Any other change of page (jump, link, chapter change) leaves the position mismatched, which reads as 0.
+  int scrollOffset = 0;
+  int scrollSpine = -1;
+  int scrollPage = -1;
+  // Set by the input handler: the next pageTurn() scrolls instead of flipping.
+  bool nextTurnScrolls = false;
+  bool pendingManualTurnScroll = false;
+  int currentScrollOffset() const;
+  // Scroll stops: each page splits into scrollChunksPerPage() chunks; a scroll moves one, a flip
+  // moves one page worth.
+  // A page is at most two screens tall, so at most 2 * 4 chunks.
+  static constexpr int MAX_SCROLL_CHUNKS = 8;
+  struct ScrollChunks {
+    int16_t offsets[MAX_SCROLL_CHUNKS] = {};
+    uint8_t count = 0;
+  };
+  struct ChunkCacheEntry {
+    uint32_t generation = 0;
+    int page = -1;
+    ScrollChunks chunks;
+  };
+  // Stops of the pages around the view; about 28 bytes each.
+  std::array<ChunkCacheEntry, 8> chunkCache{};
+  size_t chunkCacheNext = 0;
+  ScrollChunks uncachedChunks;
+  // Bumped for every new Section, so cached stops never outlive a re-layout.
+  uint32_t sectionGeneration = 1;
+  static int scrollChunksPerPage();
+  const ScrollChunks& scrollChunks(int pageNumber);
+  bool nextScrollStop(bool isForwardTurn, int& page, int& offset, int& distance);
+  int scrollPageHeight(int pageNumber);
+  struct HeightCacheEntry {
+    uint32_t generation = 0;
+    int page = -1;
+    int16_t height = 0;
+  };
+  // Content heights of recently used pages; 12 bytes each.
+  std::array<HeightCacheEntry, 8> heightCache{};
+  size_t heightCacheNext = 0;
+  // Height of the content the last render showed; a flip never moves further, so nothing is skipped.
+  int visibleViewHeight = 0;
+  // Scroll distance that shows a kept row the last render left off the bottom; 0 when none.
+  int hiddenRowShift = 0;
+  bool changeChapter(bool isForwardTurn);
+  struct ViewPage {
+    std::unique_ptr<Page> page;
+    int number;
+    int top;  // y of the page top on screen
+  };
+  // Short pages (one per TOC entry) can take several to fill the screen; their memory follows their content.
+  static constexpr size_t MAX_VIEW_PAGES = 8;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   int8_t pendingManualTurn = 0;
@@ -212,9 +266,13 @@ class EpubReaderActivity final : public ReaderActivity {
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
 
-  void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
+  // pages[0] is the current page. With more than one, they are joined into a scrolled view and
+  // clipped to the viewport.
+  // viewBottom: screen y where drawing stops (above a kept table row cut by the viewport bottom).
+  void renderContents(std::vector<ViewPage> pages, int viewBottom, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
-  void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
+  void drawClippingHighlights(const Page& page, int pageNumber, int fontId, int orientedMarginTop,
+                              int orientedMarginLeft) const;
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);
   void applyInitialOrientation() override;
