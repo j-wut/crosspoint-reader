@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 
 #include "activities/Activity.h"
 
@@ -14,8 +15,9 @@
  *  4) On confirm: stream the file into the OTA partition via the Arduino Update API,
  *     drawing a progress bar; on success ESP.restart().
  *
- * Used both from Settings -> System -> "SD Card Firmware Update", and as the only
- * activity launched in boot recovery mode (left side button + power on X3).
+ * Used from Settings -> System -> "SD Card Firmware Update", as the only activity
+ * launched in boot recovery mode (left side button + power on X3), and by the web
+ * page's firmware upload, which passes the uploaded path and skips step 1.
  */
 class SdFirmwareUpdateActivity : public Activity {
  public:
@@ -30,6 +32,10 @@ class SdFirmwareUpdateActivity : public Activity {
 
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode = false)
       : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode) {}
+
+  // Starts at validation for an already chosen file instead of opening the picker.
+  SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path)
+      : Activity("SdFirmwareUpdate", renderer, mappedInput), firmwarePath(std::move(path)) {}
 
   void onEnter() override;
   void loop() override;
@@ -49,6 +55,7 @@ class SdFirmwareUpdateActivity : public Activity {
 
   void launchPicker();
   void onPickerResult(const ActivityResult& result);
+  void validateAndConfirm();
   bool validateFirmware();
   void promptConfirmation();
   void onConfirmationResult(const ActivityResult& result);

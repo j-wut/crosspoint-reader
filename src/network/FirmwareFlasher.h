@@ -14,6 +14,9 @@
 
 namespace firmware_flash {
 
+// Where the web page uploads a firmware image before asking the reader to flash it.
+inline constexpr char WEB_UPLOAD_PATH[] = "/firmware.bin";
+
 enum class Result {
   OK,
   OPEN_FAIL,

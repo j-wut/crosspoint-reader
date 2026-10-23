@@ -18,6 +18,10 @@ void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
   // Build-identity marker — confirms which firmware build owns the SD update flow.
   LOG_INF("FW", "SdFirmwareUpdateActivity build=%s %s recovery=%d", __DATE__, __TIME__, recoveryMode ? 1 : 0);
+  if (!firmwarePath.empty()) {
+    validateAndConfirm();
+    return;
+  }
   state = State::PICKING;
   launchPicker();
 }
@@ -48,7 +52,10 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
   }
   firmwarePath = path->path;
   LOG_DBG("FW", "Selected: %s", firmwarePath.c_str());
+  validateAndConfirm();
+}
 
+void SdFirmwareUpdateActivity::validateAndConfirm() {
   {
     RenderLock lock(*this);
     state = State::VALIDATING;

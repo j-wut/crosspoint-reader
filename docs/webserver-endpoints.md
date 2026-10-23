@@ -211,6 +211,25 @@ Form parameters:
 deleted. Hidden items (names that start with `.`) can be deleted. Non-empty
 folders are rejected. EPUB cache data for deleted files is cleared.
 
+## Firmware Update
+
+### `POST /api/firmware/flash`
+
+Asks the reader to install `/firmware.bin`. Upload the file first with
+`POST /upload?path=/`. The reader leaves File Transfer, restarts, checks the
+image and asks for confirmation on the device before flashing.
+
+```bash
+curl -X POST http://crosspoint.local/api/firmware/flash
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Request accepted; the reader restarts |
+| `404` | `/firmware.bin` is missing |
+| `409` | The current mode cannot start an update (for example Calibre Connect) |
+| `501` | The device has no second app slot (BOOX Picco) |
+
 ## Settings API
 
 ### `GET /api/settings`
