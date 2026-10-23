@@ -20,6 +20,8 @@ the IP address shown on the device screen.
 | `GET` | `/settings` | Web settings page |
 | `GET` | `/fonts` | SD-card font manager page |
 | `GET` | `/js/jszip.min.js` | JavaScript asset used by the file manager |
+| `GET` | `/js/md2epub.js` | Markdown to EPUB converter used by the upload dialog |
+| `GET` | `/js/marked.min.js` | Markdown parser (marked 18.0.14) used by `/js/md2epub.js` |
 
 ## Device Status
 

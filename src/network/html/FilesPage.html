@@ -1650,7 +1650,7 @@
         <div class="convert-options" id="convertOptions" style="display:none;">
           <div class="convert-row">
             <label class="convert-checkbox">
-              <input type="checkbox" id="convertBeforeUpload" onchange="convertAutoForPdf = false; toggleConvertOptions()">
+              <input type="checkbox" id="convertBeforeUpload" onchange="convertAutoOn = false; toggleConvertOptions()">
               <span id="convertLabel">Optimize EPUB</span>
             </label>
             <span class="convert-separator">—</span>
@@ -1662,6 +1662,9 @@
 
           <div class="convert-info" id="pdfConvertInfo" style="display:none; margin-bottom: 10px;">
             PDFs are converted to EPUB in your browser first: running headers, footers and page numbers are removed, and paragraphs and hyphenated words are rejoined.
+          </div>
+          <div class="convert-info" id="mdConvertInfo" style="display:none; margin-bottom: 10px;">
+            Markdown files are converted to EPUB in your browser first: headings become chapters and the table of contents, and lists, tables, code and images are kept. Select the images together with the Markdown file to include them (matched by file name); web images are downloaded if this computer is online. Untick to upload the file unchanged (.md files open as plain text).
           </div>
           <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;">
           </div>
@@ -2339,11 +2342,14 @@
     const uploadBtn = document.getElementById('uploadBtn');
     document.getElementById('convertWarning').style.display = checked ? 'block' : 'none';
     document.getElementById('convertInfo').style.display = checked ? 'block' : 'none';
-    const pdfSelected = Array.from(document.getElementById('fileInput').files).some(f => f.name.toLowerCase().endsWith('.pdf'));
+    const selected = Array.from(document.getElementById('fileInput').files);
+    const pdfSelected = selected.some(f => f.name.toLowerCase().endsWith('.pdf'));
+    const mdSelected = selected.some(f => isMarkdownName(f.name));
     document.getElementById('pdfConvertInfo').style.display = checked && pdfSelected ? 'block' : 'none';
+    document.getElementById('mdConvertInfo').style.display = checked && mdSelected ? 'block' : 'none';
     // Update button text and style
     if (checked) {
-      uploadBtn.textContent = pdfSelected ? 'Convert & Upload' : 'Optimize & Upload';
+      uploadBtn.textContent = selected.some(f => convertsToEpub(f.name)) ? 'Convert & Upload' : 'Optimize & Upload';
       uploadBtn.classList.add('optimize');
     } else {
       uploadBtn.textContent = 'Upload';
@@ -3370,22 +3376,25 @@
     const convertOptions = document.getElementById('convertOptions');
     fileInput.classList.toggle('has-files', files.length > 0);
 
-    // Show convert options when at least one selected file is an EPUB or a PDF.
+    // Show convert options when at least one selected file is an EPUB, a PDF or a Markdown file.
     const hasEpub = Array.from(files).some(f => f.name.toLowerCase().endsWith('.epub'));
     const hasPdf = Array.from(files).some(f => f.name.toLowerCase().endsWith('.pdf'));
+    const hasMd = Array.from(files).some(f => isMarkdownName(f.name));
+    const hasConvertible = Array.from(files).some(f => convertsToEpub(f.name));
     const convertCheckbox = document.getElementById('convertBeforeUpload');
+    const convertKind = hasPdf ? (hasMd ? 'PDF/Markdown' : 'PDF') : 'Markdown';
     document.getElementById('convertLabel').textContent =
-      hasPdf ? (hasEpub ? 'Convert PDF & optimize EPUB' : 'Convert to EPUB & optimize') : 'Optimize EPUB';
-    // The reader can't open PDFs, so conversion is switched on for them. It is not saved as the
-    // preference, and switches back off when the selection no longer has a PDF.
-    if (hasPdf && !convertCheckbox.checked) {
+      hasConvertible ? (hasEpub ? `Convert ${convertKind} & optimize EPUB` : 'Convert to EPUB & optimize') : 'Optimize EPUB';
+    // The reader can't open PDFs and shows Markdown as plain text, so conversion is switched on for
+    // them. It is not saved as the preference, and switches back off when the selection no longer has one.
+    if (hasConvertible && !convertCheckbox.checked) {
       convertCheckbox.checked = true;
-      convertAutoForPdf = true;
-    } else if (!hasPdf && convertAutoForPdf) {
+      convertAutoOn = true;
+    } else if (!hasConvertible && convertAutoOn) {
       convertCheckbox.checked = false;
-      convertAutoForPdf = false;
+      convertAutoOn = false;
     }
-    if (files.length > 0 && (hasEpub || hasPdf)) {
+    if (files.length > 0 && (hasEpub || hasConvertible)) {
       convertOptions.style.display = 'block';
       toggleConvertOptions();
     } else {
@@ -3490,11 +3499,11 @@ const DEFAULT_UPLOAD_SETTINGS = Object.freeze({
   exportLog: false
 });
 let suppressUploadSettingsSave = false;
-let convertAutoForPdf = false; // conversion was switched on only because a PDF is selected
+let convertAutoOn = false; // conversion was switched on only because a PDF or Markdown file is selected
 
 function getCurrentUploadSettings() {
   return {
-    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked && !convertAutoForPdf,
+    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked && !convertAutoOn,
     renameFromMetadata: !!document.getElementById('renameFromMetadataToggle')?.checked,
     quality: parseInt(document.getElementById('qualitySlider')?.value || JPEG_QUALITY, 10),
     autoCrop: !!document.getElementById('autoCropToggle')?.checked,
@@ -3510,7 +3519,7 @@ function applyUploadSettings(settings = {}) {
   suppressUploadSettingsSave = true;
   try {
     document.getElementById('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
-    convertAutoForPdf = false;
+    convertAutoOn = false;
     document.getElementById('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
     document.getElementById('autoCropToggle').checked = !!merged.autoCrop;
     document.getElementById('export-log-checkbox').checked = !!merged.exportLog;
@@ -5815,11 +5824,88 @@ async function convertPdfFile(file, onProgress) {
   return new File([result.epub], file.name.replace(/\.pdf$/i, '') + '.epub', { type: 'application/epub+zip' });
 }
 
+// Markdown to EPUB conversion. The reader serves marked (Markdown parser) and the converter;
+// both are loaded only when a Markdown file is converted.
+const isMarkdownName = name => /\.(md|markdown)$/i.test(name);
+// Files that are converted to EPUB before upload when the convert option is on.
+const convertsToEpub = name => /\.pdf$/i.test(name) || isMarkdownName(name);
+// Markdown images are matched to selected files by file name only ("img/a.png" -> "a.png").
+function mdImageKey(ref) {
+  let p = ref.split(/[?#]/)[0];
+  try { p = decodeURIComponent(p); } catch (e) { /* keep it as written */ }
+  return p.replace(/^.*[\\/]/, '').toLowerCase();
+}
+let mdToolsPromise = null;
+function loadMarkdownTools() {
+  const load = src => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`could not load ${src} from the reader.`));
+    document.head.appendChild(s);
+  });
+  if (!mdToolsPromise) {
+    mdToolsPromise = (async () => {
+      if (!window.marked) await load('/js/marked.min.js');
+      if (!window.Md2Epub) await load('/js/md2epub.js');
+    })().catch(e => { mdToolsPromise = null; throw e; });
+  }
+  return mdToolsPromise;
+}
+
+// Finds the selected images that the selected Markdown files use (matched by file name) and
+// takes them out of the upload list. Returns the remaining files and a name -> File map.
+async function takeMarkdownImages(files) {
+  await loadMarkdownTools();
+  const byName = new Map();
+  for (const f of files) if (/\.(png|jpe?g|gif|webp)$/i.test(f.name)) byName.set(f.name.toLowerCase(), f);
+  const used = new Map();
+  for (const f of files.filter(f => isMarkdownName(f.name))) {
+    for (const ref of window.Md2Epub.imageRefs(window.marked, await f.text())) {
+      if (/^[a-z]+:/i.test(ref)) continue;
+      const img = byName.get(mdImageKey(ref));
+      if (img) used.set(mdImageKey(ref), img);
+    }
+  }
+  const usedFiles = new Set(used.values());
+  return { files: files.filter(f => !usedFiles.has(f)), mdImages: used };
+}
+
+async function convertMarkdownFile(file, mdImages) {
+  await loadMarkdownTools();
+  const resolveImage = async href => {
+    if (/^https?:\/\//i.test(href)) {
+      // Web images only load when this computer is online and the server allows it.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      try {
+        const r = await fetch(href, { signal: ctrl.signal });
+        return r.ok ? { data: new Uint8Array(await r.arrayBuffer()) } : null;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (/^[a-z]+:/i.test(href)) return null;
+    const img = mdImages.get(mdImageKey(href));
+    return img ? { data: new Uint8Array(await img.arrayBuffer()) } : null;
+  };
+  const result = await window.Md2Epub.convertMarkdown(window.marked, JSZip, await file.text(), {
+    fileName: file.name,
+    resolveImage,
+  });
+  const s = result.summary;
+  console.log(`[MD] ${file.name}: ${s.chapters} chapters, ${s.headings} headings, ${s.images} images, ${s.missingImages} images not found`);
+  // A README is named after the book's title, since every repository has one.
+  let name = file.name.replace(/\.(md|markdown)$/i, '');
+  if (/^readme$/i.test(name) && result.title) name = result.title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim() || name;
+  return new File([result.epub], name + '.epub', { type: 'application/epub+zip' });
+}
+
 async function uploadFile() {
   if (isUploadInProgress) return;
 
   const fileInput = document.getElementById('fileInput');
-  const files = Array.from(fileInput.files);
+  let files = Array.from(fileInput.files);
   const convertEnabled = document.getElementById('convertBeforeUpload').checked;
 
   if (files.length === 0) {
@@ -5828,6 +5914,19 @@ async function uploadFile() {
   }
 
   isUploadInProgress = true;
+  // Images used by a selected Markdown file go inside its EPUB instead of being uploaded on their own.
+  let mdImages = new Map();
+  // A failed Markdown file keeps its images, so a retry converts it with them again.
+  const keepMdImages = f => (isMarkdownName(f.file.name) && mdImages.size ? { ...f, extraFiles: [...mdImages.values()] } : f);
+  if (convertEnabled && files.some(f => isMarkdownName(f.name))) {
+    try {
+      ({ files, mdImages } = await takeMarkdownImages(files));
+    } catch (error) {
+      isUploadInProgress = false;
+      showWebAlert('Failed to read the Markdown file: ' + error.message);
+      return;
+    }
+  }
   let usedFileNames;
   try {
     usedFileNames = await fetchExistingUploadNames();
@@ -5856,7 +5955,7 @@ async function uploadFile() {
   let useWebSocket = true; // Try WebSocket first
 
   // Check if we should use batch logging mode
-  const epubFilesToConvert = files.filter(f => /\.(epub|pdf)$/i.test(f.name) && convertEnabled);
+  const epubFilesToConvert = files.filter(f => (/\.epub$/i.test(f.name) || convertsToEpub(f.name)) && convertEnabled);
   const useBatchLog = epubFilesToConvert.length > 1 && exportLogCheckbox && exportLogCheckbox.checked;
 
   // Start batch log mode if needed
@@ -5900,7 +5999,7 @@ async function uploadFile() {
         // Use local failedFiles, not the global shared variable
         if (failedFiles.length > 0) {
           // Accumulate failed uploads to global (don't replace)
-          failedUploadsGlobal = failedUploadsGlobal.concat(failedFiles);
+          failedUploadsGlobal = failedUploadsGlobal.concat(failedFiles.map(keepMdImages));
           // Clear flag and close modal, then show banner with retry options
           isUploadInProgress = false;
           document.getElementById('uploadModalClose').classList.remove('disabled');
@@ -5939,6 +6038,25 @@ async function uploadFile() {
         uploadNextFile();
         return;
       }
+      progressFill.style.backgroundColor = 'var(--success-color)';
+    }
+
+    // Markdown to EPUB, also before the EPUB steps below
+    if (isMarkdownName(file.name) && convertEnabled) {
+      progressFill.style.backgroundColor = 'var(--secondary-color)';
+      progressText.style.color = '';
+      progressText.textContent = `Converting ${file.name} to EPUB (${currentIndex + 1}/${files.length})...`;
+      try {
+        file = await convertMarkdownFile(file, mdImages);
+      } catch (mdError) {
+        if (operationCancelled) { if (uploadGeneration === myGeneration) restoreAfterCancel(); return; }
+        console.error('Markdown conversion error:', mdError);
+        failedFiles.push({ name: originalFile.name, error: `Markdown conversion failed: ${mdError.message}`, file: originalFile });
+        currentIndex++;
+        uploadNextFile();
+        return;
+      }
+      progressFill.style.width = '50%';
       progressFill.style.backgroundColor = 'var(--success-color)';
     }
 
@@ -6021,7 +6139,7 @@ async function uploadFile() {
         });
 
         // Show retry banner immediately with all failed files
-        failedUploadsGlobal = failedUploadsGlobal.concat(failedFiles);
+        failedUploadsGlobal = failedUploadsGlobal.concat(failedFiles.map(keepMdImages));
         isUploadInProgress = false;
         document.getElementById('uploadModalClose').classList.remove('disabled');
         closeUploadModal();
@@ -6160,6 +6278,7 @@ function retrySingleUpload(index) {
   // Create a DataTransfer to set the file input
   const dt = new DataTransfer();
   dt.items.add(failedFile.file);
+  (failedFile.extraFiles || []).forEach(f => dt.items.add(f));
 
   const fileInput = document.getElementById('fileInput');
   fileInput.files = dt.files;
@@ -6182,8 +6301,12 @@ function retryAllFailedUploads() {
 
   // Create a DataTransfer with all failed files
   const dt = new DataTransfer();
+  const added = new Set();
   failedUploadsGlobal.forEach(failedFile => {
-    dt.items.add(failedFile.file);
+    [failedFile.file, ...(failedFile.extraFiles || [])].forEach(f => {
+      if (!added.has(f)) dt.items.add(f);
+      added.add(f);
+    });
   });
 
   const fileInput = document.getElementById('fileInput');
