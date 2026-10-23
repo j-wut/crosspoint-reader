@@ -84,6 +84,20 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   return {prev, next, tiltPrev || tiltNext};
 }
 
+// True when this frame's page turn came from a page button pair bound to Scroll (EPUB reader).
+inline bool pageTurnScrolls(const MappedInputManager& input) {
+  const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
+  const auto triggered = [&](const MappedInputManager::Button button) {
+    if (usePress) return input.wasPressed(button);
+    return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
+  };
+  const bool side =
+      triggered(MappedInputManager::Button::PageBack) || triggered(MappedInputManager::Button::PageForward);
+  const bool front = triggered(MappedInputManager::Button::Left) || triggered(MappedInputManager::Button::Right);
+  return (side && SETTINGS.sidePageButtons == CrossPointSettings::BUTTONS_SCROLL) ||
+         (front && SETTINGS.frontPageButtons == CrossPointSettings::BUTTONS_SCROLL);
+}
+
 struct TouchPageTurn {
   bool prev;
   bool next;

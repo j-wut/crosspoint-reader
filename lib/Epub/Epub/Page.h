@@ -136,6 +136,23 @@ class Page {
   // progress without a second section-file open per page turn.
   uint32_t visibleTextOffset = 0;
 
+  // Height of the laid-out content, from the page top to below its last element and its bottom
+  // spacing (can pass the viewport by that spacing). Scroll mode joins pages at this height, so space
+  // left by a block moved to the next page is not shown.
+  uint16_t contentHeight = 0;
+
+  // Table rows kept together on this page (top, bottom in page coordinates). Scrolling does not
+  // cut these at the screen edges.
+  struct KeepBand {
+    int16_t top;
+    int16_t bottom;
+  };
+  std::vector<KeepBand> keepBands;
+  static constexpr uint8_t MAX_KEEP_BANDS = 32;
+  void addKeepBand(const int16_t top, const int16_t bottom) {
+    if (bottom > top && keepBands.size() < MAX_KEEP_BANDS) keepBands.push_back({top, bottom});
+  }
+
   void addFootnote(const char* number, const char* href) {
     if (footnotes.size() >= MAX_FOOTNOTES_PER_PAGE) return;  // Cap per-page footnotes
     FootnoteEntry entry;

@@ -43,14 +43,15 @@ int main() {
   int order = 0;
   struct Page {
     int& order;
-    void render(GfxRenderer&, int, int, int) { assert(++order == 2); }
-    void renderImages(GfxRenderer&, int, int, int) { assert(++order == 2); }
+    void renderImages(GfxRenderer&, int, int, int) const { assert(++order == 2); }
   };
   auto page = std::make_unique<Page>(order);
-  const int fontId = 0, orientedMarginTop = 0, orientedMarginLeft = 0;
+  const int fontId = 0, orientedMarginLeft = 0;
   const bool absoluteImageGrayscale = false;
   bool needsTextGrayscale = true;
-  auto drawClippingHighlights = [&](Page&, int, int, int) { assert(++order == 1); };
+  auto forEachVisiblePage = [&](auto&& draw) { draw(*page, 0, 0); };
+  auto drawHighlights = [&] { assert(++order == 1); };
+  auto renderPages = [&] { assert(++order == 2); };
   auto renderStatusBar = [&] { assert(++order == 3); };
 """ + render + r"""
   BoardConfig::a4 = true;

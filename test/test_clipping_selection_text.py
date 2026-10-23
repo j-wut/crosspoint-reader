@@ -228,7 +228,7 @@ struct EpubReaderActivity {
   Section* section = &sectionData;
   int currentSpineIndex = 0, buildViewportWidth = 480, buildViewportHeight = 800;
   int clippingAtPoint(const Page&, int, int) const;
-  void drawClippingHighlights(const Page&, int, int, int) const;
+  void drawClippingHighlights(const Page&, int, int, int, int) const;
 };
 """ + word_font + word_rect + saved_hit + saved_draw + r"""
 int loadLine(ClipSelectionActivity& activity, const std::vector<std::string>& logical,
@@ -353,7 +353,7 @@ int main() {
     savedClippings.clipping.startOffset = 0;
     savedClippings.clipping.endOffset = 3;
     activity.renderer.fills.clear();
-    reader.drawClippingHighlights(*activity.pages[0], 0, 0, 0);
+    reader.drawClippingHighlights(*activity.pages[0], 0, 0, 0, 0);
     assert(activity.renderer.fills.size() == 1);
     const int width = activity.words[0].width;
     assert(activity.renderer.fills[0].width == width);

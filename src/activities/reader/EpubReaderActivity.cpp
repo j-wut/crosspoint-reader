@@ -453,9 +453,11 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   startClipSelection(-1, -1, ClipSelectionActivity::Mode::Lookup);
 }
 
-void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,
+void EpubReaderActivity::startClipSelection(const int initialX, const int viewY,
                                             const ClipSelectionActivity::Mode mode) {
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return;
+  // Selection shows the current page from its top; map a touch on a scrolled view onto that page.
+  const int initialY = viewY >= 0 ? viewY + currentScrollOffset() : viewY;
 
   const int pageNumber = section->currentPage;
   const uint16_t pageCount = section->pageCount;
@@ -968,6 +970,7 @@ void EpubReaderActivity::loop() {
     }
     const bool forward = pendingManualTurn > 0;
     pendingManualTurn = 0;
+    nextTurnScrolls = pendingManualTurnScroll;
     const bool succeeded = pageTurn(forward);
     notePageTurn(forward, succeeded);
     if (succeeded && pendingManualTurnTouch) haptic_feedback::touchAction();
@@ -1022,9 +1025,11 @@ void EpubReaderActivity::loop() {
   if (turnGuardActive) {
     pendingManualTurn = prevTriggered ? -1 : 1;
     pendingManualTurnTouch = touch.prev || touch.next;
+    pendingManualTurnScroll = ReaderUtils::pageTurnScrolls(mappedInput);
     return;
   }
 
+  nextTurnScrolls = ReaderUtils::pageTurnScrolls(mappedInput);
   const bool succeeded = pageTurn(!prevTriggered);
   notePageTurn(!prevTriggered, succeeded);
   if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction();
@@ -1420,6 +1425,62 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     RenderLock lock;
     clearDeferredReposition();
   }
+  const bool scroll = nextTurnScrolls;
+  nextTurnScrolls = false;
+  if (SETTINGS.epubScrollEnabled()) {
+    // Scroll moves one chunk, a flip moves one page worth of chunks. Neither moves further than what
+    // the screen showed, so nothing is skipped.
+    const int steps = scroll ? 1 : scrollChunksPerPage();
+    int moved = 0;
+    {
+      RenderLock lock;
+      const int limit = isForwardTurn && visibleViewHeight > 0 ? visibleViewHeight : buildViewportHeight;
+      const int startPage = section->currentPage;
+      const int startOffset = currentScrollOffset();
+      // The position delta pixels from the start of this turn.
+      const auto moveBy = [&](const int delta, int& targetPage, int& targetOffset) {
+        targetPage = startPage;
+        targetOffset = startOffset + delta;
+        while (targetOffset < 0 && targetPage > 0) targetOffset += scrollPageHeight(--targetPage);
+        while (targetOffset >= scrollPageHeight(targetPage) && targetPage + 1 < static_cast<int>(section->pageCount)) {
+          targetOffset -= scrollPageHeight(targetPage++);
+        }
+        targetOffset = std::max(targetOffset, 0);
+      };
+      int page = startPage;
+      int offset = startOffset;
+      int travelled = 0;
+      for (; moved < steps; ++moved) {
+        int nextPage = page;
+        int nextOffset = offset;
+        int distance = 0;
+        if (!nextScrollStop(isForwardTurn, nextPage, nextOffset, distance)) break;
+        if (travelled + distance > limit) {
+          if (moved > 0) break;
+          // One chunk taller than the screen showed: stop where the shown part ends.
+          moveBy(isForwardTurn ? limit : -limit, nextPage, nextOffset);
+          distance = limit;
+        }
+        page = nextPage;
+        offset = nextOffset;
+        travelled += distance;
+      }
+      // A kept row was left off the bottom of the screen: move far enough to show it whole instead of
+      // the same blank space, but not past what was shown.
+      if (isForwardTurn && moved > 0 && travelled < hiddenRowShift) {
+        moveBy(std::min(hiddenRowShift, limit), page, offset);
+      }
+      if (moved > 0) {
+        section->currentPage = page;
+        scrollOffset = offset;
+        scrollSpine = currentSpineIndex;
+        scrollPage = page;
+        lastPageTurnTime = millis();
+      }
+    }
+    if (moved > 0) return true;
+    return changeChapter(isForwardTurn);
+  }
   if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
@@ -1453,6 +1514,211 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     }
   }
   return false;
+}
+
+int EpubReaderActivity::currentScrollOffset() const {
+  if (!section || !SETTINGS.epubScrollEnabled()) return 0;
+  if (scrollSpine != currentSpineIndex || scrollPage != section->currentPage) return 0;
+  if (scrollOffset <= 0 || scrollOffset >= 2 * buildViewportHeight) return 0;
+  return scrollOffset;
+}
+
+int EpubReaderActivity::scrollChunksPerPage() {
+  if (SETTINGS.scrollAmount == CrossPointSettings::SCROLL_THIRD) return 3;
+  if (SETTINGS.scrollAmount == CrossPointSettings::SCROLL_QUARTER) return 4;
+  return 2;
+}
+
+bool EpubReaderActivity::changeChapter(const bool isForwardTurn) {
+  RenderLock lock;
+  if (isForwardTurn) {
+    if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
+      nextPageNumber = 0;
+      currentSpineIndex++;
+      section.reset();
+    } else {
+      currentSpineIndex = epub->getSpineItemsCount();
+    }
+    lastPageTurnTime = millis();
+    return true;
+  }
+  if (currentSpineIndex > 0) {
+    nextPageNumber = 0;
+    pendingPageJump = std::numeric_limits<uint16_t>::max();
+    currentSpineIndex--;
+    section.reset();
+    lastPageTurnTime = millis();
+    return true;
+  }
+  return false;
+}
+
+// Scroll stops of one page. The page splits into even chunks about 1/scrollChunksPerPage() screen
+// tall, then:
+// a stop inside a kept-together table row moves to the row top; a stop whose screen would cut a
+// kept row at the bottom moves on until that row fits; a stop past the chapter end is pulled back
+// to show the end at the bottom. Stops are cached per page, so scrolling back retraces them.
+const EpubReaderActivity::ScrollChunks& EpubReaderActivity::scrollChunks(const int pageNumber) {
+  for (const auto& entry : chunkCache) {
+    if (entry.generation == sectionGeneration && entry.page == pageNumber && entry.chunks.count > 0) {
+      return entry.chunks;
+    }
+  }
+
+  const int viewHeight = buildViewportHeight;
+  const int lastPage = static_cast<int>(section->pageCount) - 1;
+  const bool building = section->isBuilding();
+  struct Geometry {
+    int top = 0;
+    int height = 0;
+    std::vector<Page::KeepBand> bands;
+  };
+  Geometry pages[3];
+  int loaded = 0;
+  int end = 0;  // y after the last loaded page
+  for (int number = pageNumber; number <= lastPage && loaded < 3 && (loaded == 0 || end < pages[0].height + viewHeight);
+       ++number) {
+    auto page = section->loadPage(number);
+    if (!page) break;
+    pages[loaded].top = end;
+    pages[loaded].height = page->contentHeight > 0 ? page->contentHeight : viewHeight;
+    pages[loaded].bands = std::move(page->keepBands);
+    end += pages[loaded].height;
+    ++loaded;
+  }
+  const bool chapterEndKnown = !building && loaded > 0 && pageNumber + loaded - 1 == lastPage;
+  // Cached once the stops cannot change: the chapter end, three pages (the most read) or a full screen below.
+  const bool complete = loaded > 0 && (chapterEndKnown || loaded == 3 || end >= pages[0].height + viewHeight);
+
+  ScrollChunks result;
+  result.offsets[0] = 0;
+  result.count = 1;
+  const int height = loaded > 0 ? pages[0].height : viewHeight;
+  // Chunks stay about 1/N screen tall, so N chunks make one screen even on short or tall pages.
+  const int perScreen = scrollChunksPerPage();
+  const int perPage = std::clamp((perScreen * height + viewHeight / 2) / viewHeight, 1, MAX_SCROLL_CHUNKS);
+  // The kept row of this page that cuts a screen starting at stop, if any.
+  const auto rowAt = [&](const int stop) -> const Page::KeepBand* {
+    if (loaded == 0) return nullptr;
+    for (const auto& band : pages[0].bands) {
+      // A band ends 1 px into a bordered next row, at its shared border line.
+      if (band.bottom - band.top <= viewHeight && stop > band.top && stop < band.bottom - 1) return &band;
+    }
+    return nullptr;
+  };
+  for (int i = 1; i < perPage && loaded > 0; ++i) {
+    const int previous = result.offsets[result.count - 1];
+    const int even = i * height / perPage;
+    // A stop inside a row moves to the row top, or past the row when the top is too close to the
+    // previous stop.
+    const int minStep = height / (2 * perPage);
+    const auto rowEdge = [&](const int at) {
+      const auto* row = rowAt(at);
+      if (!row) return at;
+      return row->top >= previous + minStep ? static_cast<int>(row->top) : row->bottom - 1;
+    };
+    int stop = rowEdge(even);
+    // A row cut at the bottom: move on until it fits, unless that cuts a row at the top.
+    for (int g = 0; g < loaded; ++g) {
+      bool moved = false;
+      for (const auto& band : pages[g].bands) {
+        const int top = pages[g].top + band.top;
+        const int bottom = pages[g].top + band.bottom;
+        if (bottom - top <= viewHeight && top > stop && top < stop + viewHeight && bottom > stop + viewHeight) {
+          if (!rowAt(bottom - viewHeight)) stop = bottom - viewHeight;
+          moved = true;
+          break;
+        }
+      }
+      if (moved) break;
+    }
+    const bool pastEnd = chapterEndKnown && stop + viewHeight > end;
+    if (pastEnd) stop = end - viewHeight;
+    // Every page keeps perPage stops: a stop the rules pushed out of order goes back to the even split.
+    if (stop <= previous || stop >= height) stop = rowEdge(even);
+    // No row edge fits: this page gets one chunk fewer rather than a stop inside a row.
+    if (stop <= previous || stop >= height || rowAt(stop)) {
+      if (pastEnd) break;
+      continue;
+    }
+    if (stop > previous && stop < height) result.offsets[result.count++] = static_cast<int16_t>(stop);
+    if (pastEnd) break;
+  }
+
+  if (complete) {
+    auto& slot = chunkCache[chunkCacheNext];
+    chunkCacheNext = (chunkCacheNext + 1) % chunkCache.size();
+    slot.generation = sectionGeneration;
+    slot.page = pageNumber;
+    slot.chunks = result;
+    return slot.chunks;
+  }
+  uncachedChunks = result;
+  return uncachedChunks;
+}
+
+int EpubReaderActivity::scrollPageHeight(const int pageNumber) {
+  for (const auto& entry : heightCache) {
+    if (entry.generation == sectionGeneration && entry.page == pageNumber) return entry.height;
+  }
+  const auto page = section->loadPage(pageNumber);
+  // A page not built yet gets a guess that is not cached.
+  if (!page) return buildViewportHeight;
+  const int height = page->contentHeight > 0 ? page->contentHeight : buildViewportHeight;
+  auto& slot = heightCache[heightCacheNext];
+  heightCacheNext = (heightCacheNext + 1) % heightCache.size();
+  slot = {sectionGeneration, pageNumber, static_cast<int16_t>(height)};
+  return height;
+}
+
+// The scroll stop after (or before) (page, offset) inside the chapter, and the distance to it.
+// False when the move would leave the chapter. Requires the render lock.
+bool EpubReaderActivity::nextScrollStop(const bool isForwardTurn, int& page, int& offset, int& distance) {
+  const int lastPage = static_cast<int>(section->pageCount) - 1;
+  const bool building = section->isBuilding();
+  const ScrollChunks& chunks = scrollChunks(page);
+  int index = 0;
+  while (index + 1 < chunks.count && chunks.offsets[index + 1] <= offset) ++index;
+
+  if (isForwardTurn) {
+    // The chapter end is already on screen.
+    if (!building) {
+      int shown = -offset;
+      int number = page;
+      for (; number <= lastPage && number < page + static_cast<int>(MAX_VIEW_PAGES) && shown <= buildViewportHeight;
+           ++number) {
+        shown += scrollPageHeight(number);
+      }
+      if (number > lastPage && shown <= buildViewportHeight) return false;
+    }
+    if (index + 1 < chunks.count) {
+      distance = chunks.offsets[index + 1] - offset;
+      offset = chunks.offsets[index + 1];
+    } else if (page < lastPage || building) {
+      distance = scrollPageHeight(page) - offset;
+      ++page;
+      offset = 0;
+    } else {
+      return false;
+    }
+    return true;
+  }
+  if (offset > chunks.offsets[index]) {
+    distance = offset - chunks.offsets[index];
+    offset = chunks.offsets[index];
+  } else if (index > 0) {
+    distance = offset - chunks.offsets[index - 1];
+    offset = chunks.offsets[index - 1];
+  } else if (page > 0) {
+    --page;
+    const ScrollChunks& previous = scrollChunks(page);
+    const int stop = previous.offsets[previous.count - 1];
+    distance = offset + scrollPageHeight(page) - stop;
+    offset = stop;
+  } else {
+    return false;
+  }
+  return true;
 }
 
 bool EpubReaderActivity::skipPages(int amount) {
@@ -1651,6 +1917,8 @@ void EpubReaderActivity::renderBook() {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
+    ++sectionGeneration;
+    scrollSpine = -1;
     partialRebuildStartFailed = false;
 
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
@@ -1903,11 +2171,91 @@ void EpubReaderActivity::renderBook() {
     }
     pageLoadRetryCount = 0;
 
+    // Scrolling joins the following pages below the current one until the viewport is full.
+    const int viewTop = orientedMarginTop;
+    const int viewHeight = buildViewportHeight;
+    const auto heightOf = [viewHeight](const Page& page) {
+      return page.contentHeight > 0 ? page.contentHeight : viewHeight;
+    };
+    std::vector<ViewPage> pages;
+    pages.reserve(SETTINGS.epubScrollEnabled() ? MAX_VIEW_PAGES : 1);
+    const int firstTop = viewTop - currentScrollOffset();
+    const int firstBottom = firstTop + heightOf(*p);
     currentPageVisibleOffset = p->visibleTextOffset;
+    // The footnote menu opens the current page's footnotes only.
     currentPageFootnotes = std::move(p->footnotes);
     currentPageLinks = std::move(p->links);
     currentPageLinkMarginLeft = orientedMarginLeft;
     currentPageLinkMarginTop = orientedMarginTop;
+    // Tap targets of every page on screen, in viewport coordinates, at most one page worth.
+    const auto onScreen = [viewHeight](const PageLink& link, const int top) {
+      return top + link.height > 0 && top < viewHeight;
+    };
+    if (firstTop != viewTop) {
+      size_t kept = 0;
+      for (auto& link : currentPageLinks) {
+        const int top = link.y + firstTop - viewTop;
+        if (!onScreen(link, top)) continue;
+        link.y = static_cast<int16_t>(top);
+        currentPageLinks[kept++] = link;
+      }
+      currentPageLinks.resize(kept);
+    }
+    pages.push_back({std::move(p), section->currentPage, firstTop});
+    if (SETTINGS.epubScrollEnabled()) {
+      int bottom = firstBottom;
+      for (int number = section->currentPage + 1; bottom < viewTop + viewHeight && pages.size() < MAX_VIEW_PAGES;
+           ++number) {
+        while (section->isBuilding() && !section->isBuildComplete() &&
+               currentSpineIndex != backgroundBuildFailedSpine && number >= static_cast<int>(section->pageCount)) {
+          if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+            // The current page is drawn alone; the background build stops retrying this chapter.
+            LOG_ERR("ERS", "Section build failed below the scrolled view");
+            backgroundBuildFailedSpine = currentSpineIndex;
+            break;
+          }
+        }
+        if (number >= static_cast<int>(section->pageCount)) break;
+        auto next = section->loadPage(number);
+        if (!next) {
+          LOG_ERR("ERS", "Failed to load page %d below the scrolled view", number);
+          break;
+        }
+        for (const auto& link : next->links) {
+          const int top = link.y + bottom - viewTop;
+          if (!onScreen(link, top) || currentPageLinks.size() >= Page::MAX_LINKS_PER_PAGE) continue;
+          currentPageLinks.push_back(link);
+          currentPageLinks.back().y = static_cast<int16_t>(top);
+        }
+        // Drawing needs neither; free them while the other pages load.
+        std::vector<PageLink>().swap(next->links);
+        std::vector<FootnoteEntry>().swap(next->footnotes);
+        const int height = heightOf(*next);
+        pages.push_back({std::move(next), number, bottom});
+        bottom += height;
+      }
+    }
+
+    // With rows kept together, a table row cut by the bottom edge is left for the next scroll.
+    const int viewEnd = viewTop + viewHeight;
+    int viewBottom = viewEnd;
+    int hiddenBottom = 0;
+    for (const ViewPage& view : pages) {
+      for (const auto& band : view.page->keepBands) {
+        const int top = view.top + band.top;
+        // A band ends 1 px into a bordered next row, at its shared border line.
+        const int bottom = view.top + band.bottom - 1;
+        if (bottom - top <= viewHeight && top > viewTop && top < viewEnd && bottom > viewEnd && top < viewBottom) {
+          viewBottom = top;
+          hiddenBottom = bottom;
+        }
+      }
+    }
+    // How far the next scroll must move at least so the row left off shows whole.
+    hiddenRowShift = hiddenBottom > 0 ? hiddenBottom - viewEnd : 0;
+    // Joining stops at MAX_VIEW_PAGES; a flip must not move past what was drawn.
+    const int drawnBottom = pages.back().top + heightOf(*pages.back().page);
+    visibleViewHeight = std::max(1, std::min(viewBottom, drawnBottom) - viewTop);
 
     // The overlay and non-tiled grayscale renderer share the renderer's single
     // stored-BW slot. Release the old page snapshot before renderContents()
@@ -1915,7 +2263,8 @@ void EpubReaderActivity::renderBook() {
     discardOverlayPage();
 
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(std::move(pages), viewBottom, orientedMarginTop, orientedMarginRight, orientedMarginBottom,
+                   orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
     lastRenderCompleteMs = millis();
     markPageRendered();
@@ -2038,7 +2387,7 @@ void EpubReaderActivity::rememberCurrentContentOffset() {
   }
 }
 
-void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
+void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int viewBottom, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
@@ -2049,9 +2398,30 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }
   } pxcSlotGuard;
 
+  // Calls draw(page, pageNumber, top) for each page on screen. A joined (scrolled) view is clipped to
+  // the viewport so cut lines and images stay out of the margins and the status bar.
+  const bool joined = pages.size() > 1 || pages.front().top != orientedMarginTop;
+  const auto forEachVisiblePage = [&](auto&& draw) {
+    const auto savedClip = renderer.getClipRect();
+    if (joined) renderer.setClipRect(0, orientedMarginTop, renderer.getScreenWidth(), viewBottom - orientedMarginTop);
+    for (const ViewPage& view : pages) draw(*view.page, view.number, view.top);
+    if (joined) renderer.setClipRect(savedClip[0], savedClip[1], savedClip[2], savedClip[3]);
+  };
+  const auto anyPage = [&](auto&& test) {
+    return std::any_of(pages.begin(), pages.end(), [&](const ViewPage& view) { return test(*view.page); });
+  };
+  const auto renderPages = [&]() {
+    forEachVisiblePage([&](const Page& p, int, const int top) { p.render(renderer, fontId, orientedMarginLeft, top); });
+  };
+  const auto drawHighlights = [&]() {
+    forEachVisiblePage([&](const Page& p, const int number, const int top) {
+      drawClippingHighlights(p, number, fontId, top, orientedMarginLeft);
+    });
+  };
+
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  renderPages();
   // Scan the status bar too: a CJK book/chapter title redirected to the SD
   // fallback font joins the page's single batch prewarm instead of triggering
   // its own SD pass after the scope ends.
@@ -2059,8 +2429,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
-  const bool pageHasImages = page->hasImages();
-  const bool pageHasImagesNeedingDecode = pageHasImages && page->hasImagesNeedingDecode();
+  const bool pageHasImages = anyPage([](const Page& p) { return p.hasImages(); });
+  const bool pageHasImagesNeedingDecode =
+      pageHasImages && anyPage([](const Page& p) { return p.hasImagesNeedingDecode(); });
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
@@ -2081,25 +2452,48 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool overlapRefresh = tiledGrayscale && grayscale.asyncBase && !pageHasImages;
   auto renderGrayscalePass = [&]() {
     // A4 gray planes replace the full page, including its clipping highlights.
-    if (BoardConfig::isEegoA4()) drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
+    if (BoardConfig::isEegoA4()) drawHighlights();
     if (absoluteImageGrayscale || needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      renderPages();
     } else {
-      page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      forEachVisiblePage(
+          [&](const Page& p, int, const int top) { p.renderImages(renderer, fontId, orientedMarginLeft, top); });
     }
     // A4 replaces the whole frame with its gray planes, including the status bar.
     if (absoluteImageGrayscale || BoardConfig::isEegoA4()) renderStatusBar();
   };
 
   if (pageHasImagesNeedingDecode) {
-    page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    forEachVisiblePage([&](const Page& p, int, const int top) {
+      p.renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, top);
+    });
     renderStatusBar();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     renderer.clearScreen();
+    if (joined) {
+      // Decoders cannot clip, so decode cut images where they fit whole. The page passes then draw
+      // the visible rows from the image cache.
+      forEachVisiblePage([&](const Page& p, int, const int top) {
+        for (const auto& element : p.elements) {
+          if (element->getTag() != TAG_PageImage) continue;
+          auto& image = static_cast<PageImage&>(*element);
+          const int y = top + image.yPos;
+          const int bottom = y + image.getImageBlock().getHeight();
+          const bool cut = y < orientedMarginTop || bottom > viewBottom;
+          const bool onScreen = bottom > orientedMarginTop && y < viewBottom;
+          if (!cut || !onScreen || !image.getImageBlock().needsDecode()) continue;
+          const auto viewClip = renderer.getClipRect();
+          renderer.setClipRect(0, 0, renderer.getScreenWidth(), renderer.getScreenHeight());
+          image.render(renderer, fontId, orientedMarginLeft, orientedMarginTop - image.yPos);
+          renderer.setClipRect(viewClip[0], viewClip[1], viewClip[2], viewClip[3]);
+        }
+      });
+      renderer.clearScreen();
+    }
   }
 
-  drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  drawHighlights();
+  renderPages();
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -2322,9 +2716,9 @@ int EpubReaderActivity::clippingAtPoint(const Page& page, const int x, const int
   return -1;
 }
 
-void EpubReaderActivity::drawClippingHighlights(const Page& page, const int fontId, const int orientedMarginTop,
-                                                const int orientedMarginLeft) const {
-  if (!section || !CLIPPINGS.hasClippings() || section->currentPage < 0 || section->currentPage >= section->pageCount) {
+void EpubReaderActivity::drawClippingHighlights(const Page& page, const int pageNumber, const int fontId,
+                                                const int orientedMarginTop, const int orientedMarginLeft) const {
+  if (!section || !CLIPPINGS.hasClippings() || pageNumber < 0 || pageNumber >= section->pageCount) {
     return;
   }
 
@@ -2336,7 +2730,7 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
 
   const auto started = millis();
   size_t highlightedWords = 0;
-  const uint16_t currentPage = static_cast<uint16_t>(section->currentPage);
+  const uint16_t currentPage = static_cast<uint16_t>(pageNumber);
   const uint32_t layoutSignature =
       readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
   const auto isHighlighted = [&](const uint16_t wordIndex, const TextBlock::SourceRange range) {

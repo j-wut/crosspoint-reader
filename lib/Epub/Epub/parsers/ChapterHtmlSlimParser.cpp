@@ -353,6 +353,10 @@ void ChapterHtmlSlimParser::emitCurrentPage() {
     if (box.top >= 0) box.continued = true;
     box.top = box.bottom = -1;
   }
+  if (currentPage) {
+    currentPage->contentHeight = static_cast<uint16_t>(
+        std::clamp<int>(currentPageNextY > 0 ? currentPageNextY : viewportHeight, 1, 2 * viewportHeight));
+  }
   completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
   recentLineCount = 0;
   keepWithNextLines = 0;
@@ -1259,6 +1263,10 @@ void ChapterHtmlSlimParser::finishTableRow() {
     }
   }
 
+  // A kept-together row that stays on one page is recorded so scrolling does not cut it.
+  const int rowTop = currentPage ? currentPageNextY : 0;
+  const int rowPage = completedPageCount;
+
   for (size_t lineIndex = 0; lineIndex < maxLineCount; ++lineIndex) {
     const uint32_t lineVisibleOffset =
         lineIndex < tableLineVisibleOffsets.size() ? tableLineVisibleOffsets[lineIndex] : visibleTextOffset;
@@ -1280,6 +1288,8 @@ void ChapterHtmlSlimParser::finishTableRow() {
     if (!currentPage || pageFull) {
       if (pageFull) {
         if (bordered && sliceTop >= 0) frameCells(sliceTop, currentPageNextY + bottomGap);
+        // The split row's cell frame ends bottomGap below its last line.
+        currentPageNextY = static_cast<int16_t>(std::min<int>(currentPageNextY + bottomGap, viewportHeight));
         sliceTop = -1;
         setCurrentPageVisibleOffset(lineVisibleOffset);
         emitCurrentPage();
@@ -1332,7 +1342,11 @@ void ChapterHtmlSlimParser::finishTableRow() {
   if (bordered && sliceTop >= 0 && currentPage) {
     currentPageNextY = static_cast<int16_t>(std::min<int>(currentPageNextY + cellGap, viewportHeight));
     frameCells(sliceTop, currentPageNextY);
-  } else {
+  }
+  if (keepTableRowsTogether && currentPage && completedPageCount == rowPage) {
+    currentPage->addKeepBand(static_cast<int16_t>(rowTop), static_cast<int16_t>(currentPageNextY + 1));
+  }
+  if (!(bordered && sliceTop >= 0 && currentPage)) {
     addTableRowSeparator();
   }
   tableRowStacked = false;
@@ -3117,6 +3131,8 @@ void ChapterHtmlSlimParser::breakPageCarryingLines(const size_t carry, const siz
   }
 
   setCurrentPageVisibleOffset(visibleOffset);
+  // The carried lines no longer end this page.
+  if (carry > 0) currentPageNextY = carriedTop;
   emitCurrentPage();
   completedPageCount++;
   if (stopRequested) return;
