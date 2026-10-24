@@ -979,7 +979,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  auto [prevTriggered, nextTriggered, fromTilt, hold, scroll, repeated] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
@@ -988,7 +988,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) {
+  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered, repeated)) {
     return;
   }
 
@@ -997,9 +997,12 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
+  const bool fromTouch = touch.prev || touch.next;
+  const unsigned long heldMs = fromTouch ? touch.heldMs : mappedInput.getHeldTime();
   const bool longPress = !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
+  // Touch page turns use the side buttons' hold action.
+  if (fromTouch) hold = SETTINGS.longPressButtonBehavior;
+  if (longPress && hold == SETTINGS.CHAPTER_SKIP) {
     const bool succeeded = skipPages(nextTriggered ? 1 : -1);
     notePageTurn(false, succeeded);
     if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction(true);
@@ -1007,7 +1010,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
+  if (longPress && hold == SETTINGS.ORIENTATION_CHANGE) {
     const uint8_t newOrientation =
         nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
                       : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
@@ -1025,11 +1028,11 @@ void EpubReaderActivity::loop() {
   if (turnGuardActive) {
     pendingManualTurn = prevTriggered ? -1 : 1;
     pendingManualTurnTouch = touch.prev || touch.next;
-    pendingManualTurnScroll = ReaderUtils::pageTurnScrolls(mappedInput);
+    pendingManualTurnScroll = scroll;
     return;
   }
 
-  nextTurnScrolls = ReaderUtils::pageTurnScrolls(mappedInput);
+  nextTurnScrolls = scroll;
   const bool succeeded = pageTurn(!prevTriggered);
   notePageTurn(!prevTriggered, succeeded);
   if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction();

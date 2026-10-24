@@ -188,6 +188,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     OFF = 0,
     CHAPTER_SKIP = 1,
     ORIENTATION_CHANGE = 2,
+    HOLD_REPEAT = 3,  // Holding repeats the press action.
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
@@ -340,8 +341,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Long-press page turn button behavior
+  // Hold action of the side page buttons (and touch page turns). Key kept from when one setting
+  // covered all page buttons.
   uint8_t longPressButtonBehavior = OFF;
+  // Hold action of the front page buttons.
+  uint8_t frontLongPressBehavior = OFF;
   // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
   // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
