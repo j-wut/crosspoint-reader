@@ -129,22 +129,31 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
     return Action::LastPage;
   }
 
-  // Selection movement on the standard list navigation buttons (side Up/Down plus front
-  // Left/Right, orientation swap included). It follows the reader's page-turn semantics
-  // (press-triggered by default, release-triggered when a long-press behavior is
-  // configured, same rule as ReaderUtils::detectPageTurn). This matters on entry: with
-  // press-triggered turns, the press that turned the final page already fired in the
-  // reader, and its release must not double-fire into this menu.
-  const bool usePress = SETTINGS.longPressButtonBehavior == CrossPointSettings::OFF;
-  const auto triggered = [&](const MappedInputManager::Button button) {
-    return usePress ? input.wasPressed(button) : input.wasReleased(button);
+  // Selection movement on the side Up/Down and front Left/Right buttons (orientation swap included).
+  // Each pair follows its reader page-turn trigger (ReaderUtils::holdTurnsOnPress). This matters on entry:
+  // with press-triggered turns, the press that turned the final page already fired in the reader, and its release must
+  // not double-fire into this menu.
+  const auto triggered = [&](const MappedInputManager::Button button, const uint8_t hold) {
+    return ReaderUtils::holdTurnsOnPress(hold) ? input.wasPressed(button) : input.wasReleased(button);
+  };
+  const bool swapped = input.isNavDirectionSwapped();
+  const auto navTriggered = [&](const bool next) {
+    // A remote click is not orientation-swapped.
+    if (input.hasRemoteClick()) {
+      return input.wasPressed(next ? MappedInputManager::Button::NavNext : MappedInputManager::Button::NavPrevious);
+    }
+    const bool down = next != swapped;
+    return triggered(down ? MappedInputManager::Button::Down : MappedInputManager::Button::Up,
+                     SETTINGS.longPressButtonBehavior) ||
+           triggered(down ? MappedInputManager::Button::Right : MappedInputManager::Button::Left,
+                     SETTINGS.frontLongPressBehavior);
   };
   const int itemCount = static_cast<int>(names.size()) + 1;  // + "Home" entry
-  if (triggered(MappedInputManager::Button::NavPrevious)) {
+  if (navTriggered(false)) {
     selector.store(ButtonNavigator::previousIndex(selectedIndex, itemCount), std::memory_order_relaxed);
     return Action::Redraw;
   }
-  if (triggered(MappedInputManager::Button::NavNext)) {
+  if (navTriggered(true)) {
     selector.store(ButtonNavigator::nextIndex(selectedIndex, itemCount), std::memory_order_relaxed);
     return Action::Redraw;
   }

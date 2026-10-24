@@ -170,14 +170,18 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   if (!BoardConfig::hasTouch())
     emit(SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation,
                              "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS));
-  emit(SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
-                         {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
-                          StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
-                         "longPressButtonBehavior", StrId::STR_CAT_CONTROLS));
   emit(SettingInfo::Enum(StrId::STR_SIDE_PAGE_BUTTONS, &CrossPointSettings::sidePageButtons,
                          {StrId::STR_FLIP_PAGE, StrId::STR_SCROLL}, "sidePageButtons", StrId::STR_CAT_CONTROLS));
+  emit(SettingInfo::Enum(StrId::STR_SIDE_BUTTONS_HOLD, &CrossPointSettings::longPressButtonBehavior,
+                         {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
+                          StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_HOLD_REPEAT},
+                         "longPressButtonBehavior", StrId::STR_CAT_CONTROLS));
   emit(SettingInfo::Enum(StrId::STR_FRONT_PAGE_BUTTONS, &CrossPointSettings::frontPageButtons,
                          {StrId::STR_FLIP_PAGE, StrId::STR_SCROLL}, "frontPageButtons", StrId::STR_CAT_CONTROLS));
+  emit(SettingInfo::Enum(StrId::STR_FRONT_BUTTONS_HOLD, &CrossPointSettings::frontLongPressBehavior,
+                         {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
+                          StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_HOLD_REPEAT},
+                         "frontLongPressBehavior", StrId::STR_CAT_CONTROLS));
   emit(SettingInfo::Enum(StrId::STR_SCROLL_AMOUNT, &CrossPointSettings::scrollAmount,
                          {StrId::STR_SCROLL_1_LINE, StrId::STR_SCROLL_2_LINES, StrId::STR_SCROLL_3_LINES,
                           StrId::STR_SCROLL_4_LINES, StrId::STR_SCROLL_5_LINES},

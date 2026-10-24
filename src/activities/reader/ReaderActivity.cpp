@@ -200,8 +200,10 @@ bool ReaderActivity::handleEndOfBookMenu(const bool suppressConfirmRelease) {
   return false;
 }
 
-bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const bool nextTriggered) {
+bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const bool nextTriggered, const bool repeated) {
   if (!isAtEndOfBook()) return false;
+  // A held Repeat button stops at the end screen; leaving it takes a new press.
+  if (repeated) return true;
 
   if (endOfBookOptionsReady.load(std::memory_order_acquire) && endOfBookOptions->menuActive()) {
     return true;
@@ -223,15 +225,17 @@ void ReaderActivity::loop() {
   if (handleBackNavigation()) return;
 
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  auto [prevTriggered, nextTriggered, fromTilt, hold, scroll, repeated] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) return;
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) return;
+  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered, repeated)) return;
 
-  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool skip =
-      !fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP && heldMs >= ReaderUtils::SKIP_HOLD_MS;
+  const bool fromTouch = touch.prev || touch.next;
+  const unsigned long heldMs = fromTouch ? touch.heldMs : mappedInput.getHeldTime();
+  // Touch page turns use the side buttons' hold action.
+  if (fromTouch) hold = SETTINGS.longPressButtonBehavior;
+  const bool skip = !fromTilt && hold == SETTINGS.CHAPTER_SKIP && heldMs >= ReaderUtils::SKIP_HOLD_MS;
 
   const bool changed = skip ? skipPages(prevTriggered ? -10 : 10) : pageTurn(!prevTriggered);
   // A skip is navigation, not reading: it never counts toward session dwell.

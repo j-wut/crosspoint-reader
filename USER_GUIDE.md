@@ -315,10 +315,12 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Scroll Amount**: How many text lines one scroll moves: "1 Line" to "5 Lines" (default "3 Lines"). Images move one line height per step. Small triangles in the left margin and faint dotted lines across the screen mark each line a scroll will bring to the top.
 
-- **Long-press Chapter Skip**: Set whether long-pressing page turn buttons skips to the next/previous chapter:
-  
-  - "Chapter Skip" (default) - Long-pressing skips to next/previous chapter
-  - "Page Scroll" - Long-pressing scrolls a page up/down
+- **Side Buttons Hold** and **Front Buttons Hold**: Set what holding a page button does, separately for each pair. Touch page turns use **Side Buttons Hold** for Chapter Skip and Orientation Change; Repeat applies only to buttons:
+  - "Off" (default) - The page turns when the button is pressed. Holding does nothing more.
+  - "Chapter Skip" - Holding skips to the next/previous chapter. A short press turns the page when the button is released.
+  - "Orientation Change" - Holding rotates the screen. A short press turns the page when the button is released.
+  - "Repeat" - Holding repeats the press action (flip or scroll) about every 0.4 seconds, after a 0.5 second hold. It never starts a new turn while the screen is still drawing, and it stops at the end-of-book screen.
+
 - **Long-press Menu**: Selects the function bound to holding the menu button (Confirm) while reading an EPUB. **Cycles through the available functions** each time the setting is selected — additional functions may be added in future releases, so this is not a binary on/off toggle. A short press of Confirm always opens the reader menu as normal:
   - "Bookmark" (default) - Hold Confirm (~0.4 second) to drop a bookmark at the current page.
   - "CrossPoint Sync" - Hold Confirm (~1 second) to launch KOReader sync directly.
@@ -648,10 +650,10 @@ If the **Short Power Button Click** setting is set to "Page Turn", you can also 
 
 ### Chapter Navigation
 
-* **Next Chapter:** Press and **hold** the **Right** (or **Side Down**) button briefly, then release.
-* **Previous Chapter:** Press and **hold** the **Left** (or **Side Up**) button briefly, then release.
+When **Side Buttons Hold** or **Front Buttons Hold** in the **[Controls Settings](#363-controls)** is set to "Chapter Skip", holding a button of that pair skips a chapter:
 
-This feature can be disabled in the **[Controls Settings](#363-controls)** to help avoid changing chapters by mistake.
+* **Next Chapter:** Hold the **Right** (or **Side Down**) button.
+* **Previous Chapter:** Hold the **Left** (or **Side Up**) button.
 
 ### Auto Page Turn
 

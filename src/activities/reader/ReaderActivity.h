@@ -65,7 +65,7 @@ class ReaderActivity : public Activity {
   /** True while a toolbar, panel or menu over the page owns the device keys: a remote turn is refused. */
   virtual bool inputOverPage() const { return endOfBookMenuActive(); }
   bool handleEndOfBookMenu(bool suppressConfirmRelease = false);
-  bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
+  bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered, bool repeated);
   void clearEndOfBookOptionsIfNeeded();
   void disableFastInitialRefresh();
   void notePageTurn(bool forward, bool succeeded);

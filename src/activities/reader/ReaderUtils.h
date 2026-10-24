@@ -12,6 +12,7 @@
 #include "HapticFeedback.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "activities/RenderLock.h"
 
 namespace ReaderUtils {
 
@@ -61,41 +62,74 @@ struct PageTurnResult {
   bool prev;
   bool next;
   bool fromTilt;
+  // Hold action (LONG_PRESS_BUTTON_BEHAVIOR) of the page button pair that fired; OFF for other sources.
+  uint8_t hold;
+  // The turn came from a page button pair bound to Scroll (EPUB reader).
+  bool scroll;
+  // The turn is a Repeat tick of a held button, not a new press.
+  bool repeat;
 };
 
+// Hold to Repeat: first repeat after HOLD_REPEAT_START_MS, then one every HOLD_REPEAT_INTERVAL_MS.
+// A repeat waits while a page is drawing, so a slow refresh never queues extra turns.
+constexpr unsigned long HOLD_REPEAT_START_MS = 500;
+constexpr unsigned long HOLD_REPEAT_INTERVAL_MS = 400;
+// When the held page button may repeat next. Only one page button repeats at a time, and only
+// one reader activity polls it.
+inline unsigned long holdRepeatDueMs = 0;
+
+// Off and Repeat turn the page on press; Chapter Skip and Orientation Change turn it on release.
+constexpr bool holdTurnsOnPress(const uint8_t hold) {
+  return hold == CrossPointSettings::OFF || hold == CrossPointSettings::HOLD_REPEAT;
+}
+
+// See holdTurnsOnPress. With Chapter Skip or Orientation Change the hold action fires at SKIP_HOLD_MS.
+// Call once per button per frame: it consumes the long press and the repeat tick.
+// Sets repeated when the turn is a Repeat tick of a held button rather than a new press.
+inline bool pageButtonTriggered(const MappedInputManager& input, const MappedInputManager::Button button,
+                                const uint8_t hold, bool& repeated) {
+  if (hold == CrossPointSettings::OFF) return input.wasPressed(button);
+  if (hold == CrossPointSettings::HOLD_REPEAT) {
+    if (input.wasPressed(button)) {
+      holdRepeatDueMs = millis() + HOLD_REPEAT_START_MS;
+      return true;
+    }
+    // The held-time check covers a press another screen consumed, which left the deadline stale.
+    if (!input.isPressed(button) || input.getHeldTime() < HOLD_REPEAT_START_MS ||
+        static_cast<long>(millis() - holdRepeatDueMs) < 0 || RenderLock::peek()) {
+      return false;
+    }
+    holdRepeatDueMs = millis() + HOLD_REPEAT_INTERVAL_MS;
+    repeated = true;
+    return true;
+  }
+  return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
+}
+
 inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
-  const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
+  bool repeated = false;
+  const uint8_t sideHold = SETTINGS.longPressButtonBehavior;
+  const uint8_t frontHold = SETTINGS.frontLongPressBehavior;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
   const bool swapFront = input.isNavDirectionSwapped();
   const auto prevButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
   const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
-  const auto pageButtonTriggered = [&](const MappedInputManager::Button button) {
-    if (usePress) return input.wasPressed(button);
-    return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
-  };
-  const bool prev =
-      tiltPrev || (pageButtonTriggered(MappedInputManager::Button::PageBack) || pageButtonTriggered(prevButton));
+  const bool sidePrev = pageButtonTriggered(input, MappedInputManager::Button::PageBack, sideHold, repeated);
+  const bool sideNext = pageButtonTriggered(input, MappedInputManager::Button::PageForward, sideHold, repeated);
+  const bool frontPrev = pageButtonTriggered(input, prevButton, frontHold, repeated);
+  const bool frontNext = pageButtonTriggered(input, nextButton, frontHold, repeated);
+  const bool side = sidePrev || sideNext;
+  const bool front = frontPrev || frontNext;
+  const bool prev = tiltPrev || sidePrev || frontPrev;
   const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                          input.wasReleased(MappedInputManager::Button::Power);
-  const bool next = input.homeButtonAction() == HomeButtonAction::NextPage || tiltNext ||
-                    pageButtonTriggered(MappedInputManager::Button::PageForward) || powerTurn ||
-                    pageButtonTriggered(nextButton);
-  return {prev, next, tiltPrev || tiltNext};
-}
-
-// True when this frame's page turn came from a page button pair bound to Scroll (EPUB reader).
-inline bool pageTurnScrolls(const MappedInputManager& input) {
-  const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
-  const auto triggered = [&](const MappedInputManager::Button button) {
-    if (usePress) return input.wasPressed(button);
-    return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
-  };
-  const bool side =
-      triggered(MappedInputManager::Button::PageBack) || triggered(MappedInputManager::Button::PageForward);
-  const bool front = triggered(MappedInputManager::Button::Left) || triggered(MappedInputManager::Button::Right);
-  return (side && SETTINGS.sidePageButtons == CrossPointSettings::BUTTONS_SCROLL) ||
-         (front && SETTINGS.frontPageButtons == CrossPointSettings::BUTTONS_SCROLL);
+  const bool next =
+      input.homeButtonAction() == HomeButtonAction::NextPage || tiltNext || sideNext || powerTurn || frontNext;
+  const uint8_t hold = side ? sideHold : front ? frontHold : static_cast<uint8_t>(CrossPointSettings::OFF);
+  const bool scroll = (side && SETTINGS.sidePageButtons == CrossPointSettings::BUTTONS_SCROLL) ||
+                      (front && SETTINGS.frontPageButtons == CrossPointSettings::BUTTONS_SCROLL);
+  return {prev, next, tiltPrev || tiltNext, hold, scroll, repeated};
 }
 
 struct TouchPageTurn {

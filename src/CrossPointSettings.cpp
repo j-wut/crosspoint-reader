@@ -190,6 +190,12 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   };
   forEachBaseSetting(visit);
 
+  // One hold setting used to cover both page button pairs: the front pair starts with its value.
+  if (doc["frontLongPressBehavior"].isNull()) {
+    frontLongPressBehavior = longPressButtonBehavior;
+    needsResave = true;
+  }
+
   // Plugin System did not exist in older settings files. Preserve the behavior
   // of users who already have SD plugins installed, while keeping the new
   // default disabled on clean installs.
