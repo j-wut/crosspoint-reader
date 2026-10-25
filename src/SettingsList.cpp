@@ -186,6 +186,10 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          {StrId::STR_SCROLL_1_LINE, StrId::STR_SCROLL_2_LINES, StrId::STR_SCROLL_3_LINES,
                           StrId::STR_SCROLL_4_LINES, StrId::STR_SCROLL_5_LINES},
                          "scrollAmount", StrId::STR_CAT_CONTROLS));
+  emit(SettingInfo::Enum(
+      StrId::STR_SCROLL_GUIDES, &CrossPointSettings::scrollGuides,
+      {StrId::STR_STATE_OFF, StrId::STR_SCROLL_GUIDES_MARKERS, StrId::STR_SCROLL_GUIDES_MARKERS_LINES}, "scrollGuides",
+      StrId::STR_CAT_CONTROLS));
   emit(buildLongPressMenuSetting());
   // Double-click power frontlight shortcut only exists on the X4 Pro.
   if (BoardConfig::isX4Pro())
