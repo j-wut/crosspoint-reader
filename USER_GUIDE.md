@@ -313,7 +313,9 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
   The two pairs are set separately, so one pair can scroll while the other flips. When scrolling is on, a flip moves as many lines as the screen showed and never skips text that was not shown.
 
-- **Scroll Amount**: How many text lines one scroll moves: "1 Line" to "5 Lines" (default "3 Lines"). Images move one line height per step. Small triangles in the left margin and faint dotted lines across the screen mark each line a scroll will bring to the top.
+- **Scroll Amount**: How many text lines one scroll moves: "1 Line" to "5 Lines" (default "3 Lines"). Images move one line height per step.
+
+- **Scroll Guides**: How the lines a scroll will bring to the top are marked: "Markers + Lines" (default) shows small triangles in the left margin and faint dotted lines across the screen, "Markers Only" shows just the triangles, and "Off" shows nothing.
 
 - **Side Buttons Hold** and **Front Buttons Hold**: Set what holding a page button does, separately for each pair. Touch page turns use **Side Buttons Hold** for Chapter Skip and Orientation Change; Repeat applies only to buttons:
   - "Off" (default) - The page turns when the button is pressed. Holding does nothing more.

@@ -2215,7 +2215,7 @@ void EpubReaderActivity::renderBook() {
     visibleViewHeight = std::max(1, std::min(viewBottom, drawnBottom) - viewTop);
     // Mark the lines that following forward scrolls bring to the top, so the reader keeps their place.
     scrollMarkerCount = 0;
-    if (SETTINGS.epubScrollEnabled()) {
+    if (SETTINGS.epubScrollEnabled() && SETTINGS.scrollGuides != CrossPointSettings::SCROLL_GUIDES_OFF) {
       int page = section->currentPage;
       int offset = currentScrollOffset();
       int y = 0;
@@ -2367,6 +2367,7 @@ void EpubReaderActivity::drawScrollMarkers(const int orientedMarginLeft, const i
   const int guideEnd = renderer.getScreenWidth() - orientedMarginLeft;
   constexpr int GUIDE_DOT_SIZE = 2;
   constexpr int GUIDE_DOT_SPACING = 6;
+  const bool guideLines = SETTINGS.scrollGuides == CrossPointSettings::SCROLL_GUIDES_MARKERS_LINES;
   for (int i = 0; i < scrollMarkerCount; ++i) {
     // Only whole markers, so none spills into the status bar.
     if (scrollMarkerY[i] + down + 2 * width >= viewBottom) break;
@@ -2376,6 +2377,7 @@ void EpubReaderActivity::drawScrollMarkers(const int orientedMarginLeft, const i
       renderer.drawLine(left, y, left + reach, y);
     }
     // A faint dotted guide across the screen, in the gap above the line.
+    if (!guideLines) continue;
     for (int x = orientedMarginLeft; x < guideEnd; x += GUIDE_DOT_SPACING) {
       renderer.fillRect(x, scrollMarkerY[i] - GUIDE_DOT_SIZE + 1, GUIDE_DOT_SIZE, GUIDE_DOT_SIZE);
     }

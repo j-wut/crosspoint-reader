@@ -216,6 +216,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SCROLL_5_LINES = 4,
     SCROLL_AMOUNT_COUNT
   };
+  // What marks the lines later scrolls bring to the top.
+  enum SCROLL_GUIDES {
+    SCROLL_GUIDES_OFF = 0,
+    SCROLL_GUIDES_MARKERS = 1,
+    SCROLL_GUIDES_MARKERS_LINES = 2,
+    SCROLL_GUIDES_COUNT
+  };
   enum VIBRATION { VIBRATION_TOUCH = 0, VIBRATION_TOUCH_PAGE = 1, VIBRATION_OFF = 2 };
   uint8_t vibration = VIBRATION_OFF;
   enum HAPTIC_INTENSITY { HAPTIC_LOW = 0, HAPTIC_MEDIUM = 1, HAPTIC_HIGH = 2 };
@@ -388,6 +395,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sidePageButtons = BUTTONS_FLIP_PAGE;
   uint8_t frontPageButtons = BUTTONS_FLIP_PAGE;
   uint8_t scrollAmount = SCROLL_3_LINES;
+  uint8_t scrollGuides = SCROLL_GUIDES_MARKERS_LINES;
   bool epubScrollEnabled() const { return sidePageButtons == BUTTONS_SCROLL || frontPageButtons == BUTTONS_SCROLL; }
   // Master reader-touch toggle on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
