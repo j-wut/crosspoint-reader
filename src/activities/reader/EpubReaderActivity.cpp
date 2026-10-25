@@ -979,7 +979,16 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  if (holdingTurns && !mappedInput.isPressed(MappedInputManager::Button::PageBack) &&
+      !mappedInput.isPressed(MappedInputManager::Button::PageForward) &&
+      !mappedInput.isPressed(MappedInputManager::Button::Left) &&
+      !mappedInput.isPressed(MappedInputManager::Button::Right)) {
+    holdingTurns = false;
+    requestUpdate();
+  }
+
   auto [prevTriggered, nextTriggered, fromTilt, hold, scroll, repeated] = ReaderUtils::detectPageTurn(mappedInput);
+  if (repeated) holdingTurns = true;
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
@@ -2404,9 +2413,6 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
     for (const ViewPage& view : pages) draw(*view.page, view.number, view.top);
     if (joined) renderer.setClipRect(savedClip[0], savedClip[1], savedClip[2], savedClip[3]);
   };
-  const auto anyPage = [&](auto&& test) {
-    return std::any_of(pages.begin(), pages.end(), [&](const ViewPage& view) { return test(*view.page); });
-  };
   const auto renderPages = [&]() {
     forEachVisiblePage([&](const Page& p, int, const int top) { p.render(renderer, fontId, orientedMarginLeft, top); });
     drawScrollMarkers(orientedMarginLeft, viewBottom);
@@ -2427,15 +2433,43 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
-  const bool pageHasImages = anyPage([](const Page& p) { return p.hasImages(); });
+  // Only images inside the viewport count: a scrolled view can hold a page whose image is still below
+  // the screen.
+  const auto anyVisibleImage = [&](auto&& test) {
+    return std::any_of(pages.begin(), pages.end(), [&](const ViewPage& view) {
+      return std::any_of(view.page->elements.begin(), view.page->elements.end(), [&](const auto& element) {
+        if (element->getTag() != TAG_PageImage) return false;
+        const auto& image = static_cast<const PageImage&>(*element);
+        const int y = view.top + image.yPos;
+        return y + image.getImageBlock().getHeight() > orientedMarginTop && y < viewBottom && test(image);
+      });
+    });
+  };
+  const bool pageHasImages = anyVisibleImage([](const PageImage&) { return true; });
   const bool pageHasImagesNeedingDecode =
-      pageHasImages && anyPage([](const Page& p) { return p.hasImagesNeedingDecode(); });
+      pageHasImages && anyVisibleImage([](const PageImage& image) { return image.getImageBlock().needsDecode(); });
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
+  if (imageCleanupPending && !pageHasImages) {
+    pagesUntilFullRefresh = 1;
+    imageCleanupPending = false;
+  }
+  // While a page button repeats, draw B/W only and keep a due clean refresh for the release.
+  const bool holdDraft = holdingTurns;
+  if (holdDraft && !manualRefreshPending && pagesUntilFullRefresh <= 1) {
+    pagesUntilFullRefresh = 2;
+    heldBackRefresh = true;
+  } else if (manualRefreshPending) {
+    heldBackRefresh = false;
+  } else if (!holdDraft && heldBackRefresh) {
+    pagesUntilFullRefresh = 1;
+    heldBackRefresh = false;
+  }
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
-  const bool needsAnyGrayscale = needsTextGrayscale || (pageHasImages && !BoardConfig::isEegoA4());
-  const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
+  const bool grayImages = pageHasImages && !holdDraft;
+  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !holdDraft;
+  const bool needsAnyGrayscale = needsTextGrayscale || (grayImages && !BoardConfig::isEegoA4());
+  const bool absoluteImageGrayscale = grayImages && !gpio.deviceIsX3() &&
                                       display.getController() == HalDisplay::Controller::UC8279 &&
                                       renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   const auto grayscale = renderer.grayscaleCapabilities(absoluteImageGrayscale ? HalDisplay::GrayscaleMode::Absolute
@@ -2448,6 +2482,16 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
   const bool combinedGrayscaleBase =
       tiledGrayscale && !pageHasImages && grayscale.base == HalDisplay::GrayscaleBase::Combined;
   const bool overlapRefresh = tiledGrayscale && grayscale.asyncBase && !pageHasImages;
+  // After an image page the next page gets a clean refresh. A scrolled image stays on screen for
+  // several presses, so it counts like a text page instead and is cleaned once it leaves the screen.
+  const auto countImageRefresh = [&]() {
+    if (!joined) {
+      pagesUntilFullRefresh = 1;
+      return;
+    }
+    imageCleanupPending = true;
+    pagesUntilFullRefresh = cleanImageBasePending ? SETTINGS.getRefreshFrequency() : pagesUntilFullRefresh - 1;
+  };
   auto renderGrayscalePass = [&]() {
     // A4 gray planes replace the full page, including its clipping highlights.
     if (BoardConfig::isEegoA4()) drawHighlights();
@@ -2503,13 +2547,13 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
       return;
     }
     LOG_DBG("ERS", "UC8279 image page: absolute quality waveform");
-    pagesUntilFullRefresh = 1;
-  } else if (pageHasImages) {
+    countImageRefresh();
+  } else if (grayImages) {
     // Image pages use one base refresh before the grayscale pass. FAST leaves
     // the panel receptive to the gray waveform; pending cleanup still honors
     // the scheduled/manual HALF refresh.
     renderer.displayBuffer(cleanImageBasePending ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
-    pagesUntilFullRefresh = 1;
+    countImageRefresh();
   } else if (combinedGrayscaleBase) {
     // Stash the base without activating; displayGrayBuffer() below commits
     // base + grays as one waveform.
