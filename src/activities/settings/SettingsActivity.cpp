@@ -55,6 +55,12 @@ bool showOnDevice(const SettingInfo& setting) {
   if (setting.valuePtr == &CrossPointSettings::fadingFix && (BoardConfig::isX4Pro() || BoardConfig::isX4Classic())) {
     return false;
   }
+  // Touch boards have no front buttons (Remap Front Buttons is hidden there too).
+  if ((setting.valuePtr == &CrossPointSettings::frontPageButtons ||
+       setting.valuePtr == &CrossPointSettings::frontLongPressBehavior) &&
+      BoardConfig::hasTouch()) {
+    return false;
+  }
   // Merged into the Text Settings screen.
   if (setting.category == StrId::STR_CAT_READER && setting.inTextSettings) return false;
   if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
@@ -82,6 +88,93 @@ SettingsSection sectionFor(const SettingInfo& setting) {
 
 // Device-only action rows added per section, beyond the shared list.
 constexpr size_t EXTRA_ROWS_PER_SECTION = 6;
+
+// Sub-headings in display order. Rows are stably sorted by heading, so each
+// heading appears once, above its rows.
+constexpr StrId GROUP_ORDER[] = {
+    StrId::STR_SETTINGS_GROUP_GENERAL,  StrId::STR_SETTINGS_GROUP_FIRMWARE,  StrId::STR_SETTINGS_GROUP_SLEEP,
+    StrId::STR_SETTINGS_GROUP_SCREEN,   StrId::STR_SETTINGS_GROUP_TEXT,      StrId::STR_SETTINGS_GROUP_LAYOUT,
+    StrId::STR_SETTINGS_GROUP_STORAGE,  StrId::STR_SETTINGS_GROUP_BUTTONS,   StrId::STR_SETTINGS_GROUP_PAGE_TURNING,
+    StrId::STR_SETTINGS_GROUP_TOUCH,    StrId::STR_SETTINGS_GROUP_SHORTCUTS, StrId::STR_SETTINGS_GROUP_WIRELESS,
+    StrId::STR_SETTINGS_GROUP_SERVICES,
+};
+
+// Sub-heading for a row; STR_NONE_OPT = no heading (Library).
+StrId groupFor(const SettingInfo& setting, const SettingsSection section) {
+  using S = CrossPointSettings;
+  switch (setting.action) {
+    case SettingAction::Language:
+    case SettingAction::KeyboardLayouts:
+    case SettingAction::ClockSettings:
+      return StrId::STR_SETTINGS_GROUP_GENERAL;
+    case SettingAction::CheckForUpdates:
+    case SettingAction::SdFirmwareUpdate:
+    case SettingAction::About:
+      return StrId::STR_SETTINGS_GROUP_FIRMWARE;
+    case SettingAction::TextSettings:
+    case SettingAction::DownloadFonts:
+      return StrId::STR_SETTINGS_GROUP_TEXT;
+    case SettingAction::CustomiseStatusBar:
+      return StrId::STR_SETTINGS_GROUP_LAYOUT;
+    case SettingAction::ClearCache:
+      return StrId::STR_SETTINGS_GROUP_STORAGE;
+    case SettingAction::HomeButton:
+    case SettingAction::RemapFrontButtons:
+      return StrId::STR_SETTINGS_GROUP_BUTTONS;
+    case SettingAction::Network:
+    case SettingAction::Bluetooth:
+      return StrId::STR_SETTINGS_GROUP_WIRELESS;
+    case SettingAction::KOReaderSync:
+    case SettingAction::OPDSBrowser:
+    case SettingAction::Plugins:
+      return StrId::STR_SETTINGS_GROUP_SERVICES;
+    default:
+      break;
+  }
+
+  const auto ptr = setting.valuePtr;
+  if (ptr == &S::sleepScreen || ptr == &S::sleepScreenCoverMode || ptr == &S::sleepScreenCoverFilter ||
+      ptr == &S::quickResumeSleepScreen || ptr == &S::sleepTimeoutMinutes) {
+    return StrId::STR_SETTINGS_GROUP_SLEEP;
+  }
+  if (setting.nameId == StrId::STR_DICTIONARY) return StrId::STR_SETTINGS_GROUP_TEXT;
+  if (ptr == &S::sideButtonLayout || ptr == &S::frontButtonFollowOrientation) {
+    return StrId::STR_SETTINGS_GROUP_BUTTONS;
+  }
+  if (ptr == &S::sidePageButtons || ptr == &S::longPressButtonBehavior || ptr == &S::frontPageButtons ||
+      ptr == &S::frontLongPressBehavior || ptr == &S::scrollAmount || ptr == &S::scrollGuides ||
+      ptr == &S::tiltPageTurn) {
+    return StrId::STR_SETTINGS_GROUP_PAGE_TURNING;
+  }
+  if (ptr == &S::vibration || ptr == &S::hapticIntensity || ptr == &S::touchReaderControls ||
+      ptr == &S::pageTurnGesture || ptr == &S::previousPageGesture || ptr == &S::showReaderMenu) {
+    return StrId::STR_SETTINGS_GROUP_TOUCH;
+  }
+  if (setting.nameId == StrId::STR_LONG_PRESS_MENU || setting.nameId == StrId::STR_SHORT_PWR_BTN ||
+      ptr == &S::doubleClickPwrLight || ptr == &S::pwrBtnFootnoteBack || ptr == &S::backShortToFileBrowser) {
+    return StrId::STR_SETTINGS_GROUP_SHORTCUTS;
+  }
+
+  // Everything else (and any new row) joins its section's catch-all group.
+  switch (section) {
+    case SettingsSection::General:
+      return StrId::STR_SETTINGS_GROUP_GENERAL;
+    case SettingsSection::Display:
+      return StrId::STR_SETTINGS_GROUP_SCREEN;
+    case SettingsSection::Reader:
+      return StrId::STR_SETTINGS_GROUP_LAYOUT;
+    case SettingsSection::Controls:
+      return StrId::STR_SETTINGS_GROUP_BUTTONS;
+    case SettingsSection::Network:
+      return StrId::STR_SETTINGS_GROUP_SERVICES;
+    default:
+      return StrId::STR_NONE_OPT;
+  }
+}
+
+size_t groupRank(const StrId group) {
+  return std::find(std::begin(GROUP_ORDER), std::end(GROUP_ORDER), group) - std::begin(GROUP_ORDER);
+}
 }  // namespace
 
 void SettingsActivity::rebuildSettings() {
@@ -147,6 +240,15 @@ void SettingsActivity::rebuildSettings() {
     addAction(SettingsSection::General, StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate);
   }
   addAction(SettingsSection::General, StrId::STR_ABOUT, SettingAction::About);
+
+  // Stable insertion sort by group: in place, unlike std::stable_sort, which
+  // allocates a temporary buffer of SettingInfo. Sections have under 30 rows.
+  const auto byGroup = [this](const SettingInfo& a, const SettingInfo& b) {
+    return groupRank(groupFor(a, section)) < groupRank(groupFor(b, section));
+  };
+  for (auto it = settings.begin(); it != settings.end(); ++it) {
+    std::rotate(std::upper_bound(settings.begin(), it, *it, byGroup), it, std::next(it));
+  }
   rebuildRowItems();
 }
 
@@ -173,10 +275,20 @@ void SettingsActivity::rebuildRowItems() {
   rowValues_.assign(settings.size(), std::string());
   rowItems_.clear();
   rowItems_.reserve(settings.size());
+  // Headings sit on the first row of each group. They share that row's index,
+  // so button navigation and taps never land on them.
+  const bool showHeadings =
+      !settings.empty() && std::any_of(settings.begin(), settings.end(), [this](const SettingInfo& setting) {
+        return groupFor(setting, section) != groupFor(settings.front(), section);
+      });
+  StrId previousGroup = StrId::STR_NONE_OPT;
   for (size_t i = 0; i < settings.size(); i++) {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+    const StrId group = groupFor(settings[i], section);
+    if (showHeadings && (i == 0 || group != previousGroup)) item.sectionHeading = I18N.get(group);
+    previousGroup = group;
     rowItems_.push_back(item);
   }
 }
@@ -535,6 +647,9 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // maxLines also marks smallText as explicit so the list does not replace it with bodyText.
   props.labelText = mappedInput.hasTouch() ? screen.theme().bodyText : screen.theme().smallText;
   props.labelText.maxLines = 2;
+  // Group headings: bold so they read apart from the rows they label.
+  props.headerText = screen.theme().smallText;
+  props.headerText.bold = true;
   syncListViewport(screen, props);
   screen.list(props);
 }
