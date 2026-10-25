@@ -150,6 +150,13 @@ class EpubReaderActivity final : public ReaderActivity {
   // overlay, letting panel->toolbar steps restore the page without a full
   // re-render. Discarded on close / whenever the page under the overlay changes.
   bool overlayPageStored = false;
+  // A scrolled view showed an image: the first view without one gets a clean refresh.
+  bool imageCleanupPending = false;
+  // A held page button is repeating turns (loop task). Views drawn meanwhile skip gray passes and
+  // the clean refresh; the release draws the view again in full.
+  std::atomic<bool> holdingTurns{false};
+  // A clean refresh came due while holdingTurns was set (render task).
+  bool heldBackRefresh = false;
   // A background build step lent the framebuffer: it came back white while the panel still shows the
   // page. Until renderBook() redraws, nothing may be painted straight onto it. Set by the loop task,
   // cleared by the render task.
