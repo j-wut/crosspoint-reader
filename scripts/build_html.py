@@ -3,6 +3,14 @@ import re
 import gzip
 import hashlib
 
+# Zopfli writes standard gzip about 4 % smaller than gzip -9, which saves flash.
+# PlatformIO's Python environment normally has it; fall back to gzip -9 when not.
+try:
+    import zopfli.gzip as zopfli_gzip
+except ImportError:
+    zopfli_gzip = None
+    print("build_html.py: zopfli not installed, using gzip -9 (web assets are larger)")
+
 SRC_DIR = "src"
 HTML_EXT = ".html"
 JS_EXT = ".js"
@@ -81,10 +89,12 @@ for root, _, files in os.walk(SRC_DIR):
             else:
                 processed = content
 
-            # Compress with gzip (compresslevel 9 is maximum compression)
-            # mtime=0 keeps the output reproducible across builds
-            # IMPORTANT: we don't use brotli because Firefox doesn't support brotli with insecured context (only supported on HTTPS)
-            compressed = gzip.compress(processed.encode('utf-8'), compresslevel=9, mtime=0)
+            # Compress with gzip. Both encoders write mtime=0, so the output is reproducible.
+            # IMPORTANT: we don't use brotli because browsers only accept it on HTTPS or localhost
+            if zopfli_gzip:
+                compressed = zopfli_gzip.compress(processed.encode('utf-8'))
+            else:
+                compressed = gzip.compress(processed.encode('utf-8'), compresslevel=9, mtime=0)
 
             # Create valid C identifier from filename
             # Use appropriate suffix based on file type

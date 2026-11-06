@@ -223,7 +223,7 @@ void CrossPointWebServer::begin() {
                       "application/javascript");
   });
   // pdf.js 4.10.38 (Mozilla, Apache-2.0), used by the upload page to read PDFs. Trimmed build
-  // (no XFA, forms, JPEG 2000, JBIG2 or viewer layers), about 280 KB gzipped.
+  // (no XFA, forms, JPEG 2000, JBIG2, saving or viewer layers), about 216 KB gzipped.
   server->on("/js/pdfjs.min.js", HTTP_GET, [this] {
     sendStaticContent(server.get(), pdfjs_minJs, pdfjs_minJsCompressedSize, pdfjs_minJsETag, "text/javascript");
   });
