@@ -148,7 +148,8 @@ StrId groupFor(const SettingInfo& setting, const SettingsSection section) {
     return StrId::STR_SETTINGS_GROUP_TOUCH;
   }
   if (setting.nameId == StrId::STR_LONG_PRESS_MENU || setting.nameId == StrId::STR_SHORT_PWR_BTN ||
-      ptr == &S::doubleClickPwrLight || ptr == &S::pwrBtnFootnoteBack || ptr == &S::backShortToFileBrowser) {
+      setting.nameId == StrId::STR_LONG_PWR_BTN || ptr == &S::doubleClickPwrLight || ptr == &S::pwrBtnFootnoteBack ||
+      ptr == &S::backShortToFileBrowser) {
     return StrId::STR_SETTINGS_GROUP_SHORTCUTS;
   }
 

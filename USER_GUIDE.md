@@ -92,7 +92,9 @@ If the frontlight doesn't come back on after the device wakes from sleep, check 
 ### Power On / Off
 
 To turn the device on or off, **press and hold the Power button for approximately half a second**.
-In the **[Controls Settings](#363-controls)** you can configure the power button to turn the device off with a short press instead of a long one.
+In the **[Controls Settings](#363-controls)** you can configure the power button to turn the device off with a short press instead of a long one, or give the long press another action. A long press always wakes the device.
+
+To shut down completely, **tap Down, tap Up, then hold Power for about a second** in quick succession (each press within 0.6 seconds of the last). On the BOOX Picco this disconnects the battery after you let go of Power; plug in USB to turn it back on. While USB is connected, and on other devices, it sleeps instead (on the Xteink X3/X4, sleep already turns the battery off).
 
 To reboot the device (for example after a firmware update or if it's frozen), press and release the Reset button, and then quickly press and hold the Power button for a few seconds.
 
@@ -342,11 +344,14 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Short Power Button Click**: Controls the effect of a short click of the power button:
   
-  - "Ignore" (default) - Require a long press to turn off the device
+  - "Ignore" (default) - A short press does nothing
   - "Sleep" - A short press puts the device into sleep mode
-  - "Page Turn" - A short press in reading mode turns to the next page; a long press turns the device off
+  - "Page Turn" - A short press in reading mode turns to the next page
   - "Links and Footnotes" - A short press in reading mode opens link selection. If the page has only one link, it opens directly. After following a link, a short press returns to the previous location.
   - "Refresh" - A short press triggers a manual full-screen refresh, useful for clearing ghosting
+- **Power Button Hold**: Controls what holding the power button (~0.4 second) does while the device is awake. A hold always wakes the device, whatever this is set to. When the hold does something other than sleep, its release does not also run the short click action, and a short click set to "Sleep" acts when the button is released.
+  - "Sleep" (default) - Puts the device to sleep
+  - "Ignore", "Page Turn", "Refresh Screen", "Links and Footnotes", "Bookmark", "Reader Menu", "Create Clipping", "Toggle Frontlight" (devices with a frontlight) - Run that action
 - **Quick return from links**: Controls whether a short press of the power button acts as Back after following a link or footnote.
 
 #### 3.6.4 System

@@ -19,6 +19,7 @@ stub = r"""
 #pragma once
 #include <cstdint>
 struct HalGPIO {
+  static constexpr uint8_t BTN_POWER = 6;
   bool pressed = false, released = false, held = false;
   uint8_t button = 0;
   void update() {}
