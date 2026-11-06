@@ -905,6 +905,7 @@ void loop() {
   }
 
   renderer.setFadingFix(SETTINGS.fadingFix && CrossPointSettings::fadingFixSupported());
+  display.setQuickRefresh(BoardConfig::isPicco() && SETTINGS.refreshSpeed == CrossPointSettings::REFRESH_SPEED_FAST);
 
   // The ROM console does not depend on Arduino USB CDC's connection state.
   if ((Serial || FREEINK_LOG_TRANSPORT == FREEINK_LOG_TRANSPORT_ROM_PRINTF) && millis() - lastMemPrint >= 10000) {
