@@ -16,8 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pushes to release build only X3/X4. A manual run builds every board.
-        pio_env: ${{ fromJSON(github.event_name == 'push' && '["gh_release_rc"]' || '["gh_release_rc","sticky-gh_release_rc","x4pro-gh_release_rc","x4c-gh_release_rc","papermono-gh_release_rc","metalio_eink4-gh_release_rc","eego_a4-gh_release_rc","picco-gh_release_rc"]') }}
+        # Pushes to release build X3/X4 and Picco. A manual run builds every board.
+        pio_env: ${{ fromJSON(github.event_name == 'push' && '["gh_release_rc","picco-gh_release_rc"]' || '["gh_release_rc","sticky-gh_release_rc","x4pro-gh_release_rc","x4c-gh_release_rc","papermono-gh_release_rc","metalio_eink4-gh_release_rc","eego_a4-gh_release_rc","picco-gh_release_rc"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,8 +48,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-v2-${{ runner.os }}-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
-          restore-keys: pio-v2-${{ runner.os }}-
+          key: pio-v2-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+          restore-keys: |
+            pio-v2-${{ runner.os }}-${{ matrix.pio_env }}-
+            pio-v2-${{ runner.os }}-
 
       - name: Pin pioarduino core inside the platform penv
         run: |
@@ -88,6 +90,7 @@ jobs:
         run: python3 scripts/build_release_license.py --env ${{ matrix.pio_env }} --output .pio/build/${{ matrix.pio_env }}/LICENSE
 
       - name: Upload Artifacts
+        if: matrix.pio_env != 'picco-gh_release_rc'
         uses: actions/upload-artifact@v6
         with:
           name: CrossPoint-RC-${{ env.BRANCH_SUFFIX }}-${{ matrix.pio_env }}
@@ -97,4 +100,15 @@ jobs:
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
             .pio/build/${{ matrix.pio_env }}/partitions.bin
+            .pio/build/${{ matrix.pio_env }}/LICENSE
+
+      # Picco keeps its vendor bootloader and partition table, so ship only the
+      # app image that is flashed at 0xE0000.
+      - name: Upload Picco app firmware
+        if: matrix.pio_env == 'picco-gh_release_rc'
+        uses: actions/upload-artifact@v6
+        with:
+          name: CrossPoint-RC-${{ env.BRANCH_SUFFIX }}-${{ matrix.pio_env }}
+          path: |
+            .pio/build/${{ matrix.pio_env }}/${{ env.ASSET }}
             .pio/build/${{ matrix.pio_env }}/LICENSE
