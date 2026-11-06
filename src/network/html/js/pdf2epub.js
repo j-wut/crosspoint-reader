@@ -1,7 +1,7 @@
-// GENERATED from pdf2epub.mjs by build-browser.mjs. Edit the .mjs file instead.
+// GENERATED from src/pdf2epub.mjs by scripts/build.mjs (j-wut/pdf-epub-cleaner). Edit the source instead.
 (function () {
 "use strict";
-// pdf2epub.mjs: browser (and Node) port of pdf2epub.py.
+// pdf2epub.mjs: PDF to EPUB converter for CrossPoint e-readers (browser and Node).
 //
 // Turns a PDF into a very plain EPUB for CrossPoint e-readers: drops running headers,
 // footers, page numbers and watermarks, rejoins paragraphs and hyphenated words, finds
@@ -12,10 +12,10 @@
 //
 //   const { epub, title, summary } = await convertPdf(pdfjsLib, JSZip, pdfBytes, { title: "..." });
 //
-// Like the Python tool it also rebuilds ruled tables cell by cell and keeps images, turned
-// gray and shrunk to fit the 480x800 screen.
+// It also rebuilds ruled tables cell by cell and keeps images, turned gray and shrunk to
+// fit the 480x800 screen.
 
-const VERSION = "1.0.0-js";
+const VERSION = "2.0.0";
 
 const SCREEN_W = 480, SCREEN_H = 800;
 
@@ -118,7 +118,8 @@ function normKey(t) {
 }
 
 const boldName = n => /bold|black|heavy|semibold|demi|medi(?:um)?\b|-medi/i.test(n);
-const italicName = n => /ital|oblique/i.test(n);
+// "-It" / "-BoldIt" is Adobe's short form (MinionPro-It)
+const italicName = n => /ital|oblique/i.test(n) || /-(?:[A-Z][a-z]*)?It$/.test(n);
 const monoName = n => /mono|courier|consol|code|menlo|typewriter/i.test(n);
 
 function seg(text, bold = false, italic = false, mono = false) { return { text, bold, italic, mono }; }
@@ -140,6 +141,100 @@ function fontInfo(page, fontName) {
     italic: !!(f && f.italic) || italicName(name),
     mono: !!(f && f.isMonospace) || monoName(name),
   };
+}
+
+// "ABCDEF+LiberationSerif-Bold" -> "LiberationSerif"
+const fontFamily = name => name.replace(/^[A-Z]{6}\+/, "").split(/[-,]/)[0];
+
+// Some PDFs (e.g. calibre's) set code in a font that isn't monospace, so the font name gives no
+// hint, and pdf.js drops the leading spaces. Such a font still looks like code on the page: in
+// runs of its lines many are indented (nested code) and few reach the run's right edge (prose
+// wraps there). Mark its text as monospace so those lines become code blocks.
+function markCodeFonts(pages, st) {
+  const bodyFam = fontFamily(st.bodyFont);
+  const n = new Counter(), indented = new Counter(), full = new Counter(), sizes = new Map();
+  const famOf = l => {
+    const vis = l.segs.filter(x => strip(x.text));
+    const fam = vis.length && vis[0].fam;
+    return l.kind === "body" && fam && fam !== bodyFam && !vis.some(x => x.fam !== fam || x.mono) ? fam : null;
+  };
+  for (const pg of pages) {
+    let run = [];
+    const close = () => {
+      // side-by-side lines are table cells or columns, not code
+      const paired = run.filter(l => run.some(o => o !== l && Math.abs(o.y1 - l.y1) < 1.5)).length;
+      if (run.length >= 2 && paired <= 0.2 * run.length) {
+        const fam = famOf(run[0]);
+        const minX = Math.min(...run.map(l => l.x0)), maxX = Math.max(...run.map(l => l.x1));
+        n.add(fam, run.length);
+        if (!sizes.has(fam)) sizes.set(fam, new Counter());
+        for (const l of run) sizes.get(fam).add(l.size);
+        indented.add(fam, run.filter(l => l.x0 > minX + 2).length);
+        full.add(fam, run.slice(0, -1).filter(l => l.x1 > maxX - 3).length);
+      }
+      run = [];
+    };
+    for (const l of pg.lines) {
+      const fam = famOf(l);
+      if (!fam || (run.length && famOf(run[0]) !== fam)) close();
+      if (fam) run.push(l);
+    }
+    close();
+  }
+  const code = new Set([...n].filter(([f, c]) => c >= 20 && indented.count(f) >= 0.3 * c && full.count(f) <= 0.3 * c)
+    .map(([f]) => f));
+  if (!code.size) return;
+  const codeSize = new Map([...code].map(f => [f, sizes.get(f).mostCommon(1)[0][0]]));
+  // a single line all in the code font but in another size (a sidebar title) is not code
+  const notCode = (l, prev, next) => {
+    const f = famOf(l);
+    if (!f || !code.has(f) || Math.abs(l.size - codeSize.get(f)) <= 0.2 * codeSize.get(f)) return false;
+    return ![prev, next].some(o => o && famOf(o) === f && Math.abs(o.size - l.size) < 1);
+  };
+  for (const pg of pages) {
+    // a boxed code listing (often with a line-number column) is not a table: put its lines back
+    const listings = (pg.tables || []).filter(t => {
+      const segs = (t._flow || []).flatMap(l => l.segs);
+      const chars = segs.reduce((k, x) => k + strip(x.text).length, 0);
+      return chars && segs.filter(x => code.has(x.fam)).reduce((k, x) => k + strip(x.text).length, 0) >= 0.5 * chars;
+    });
+    if (listings.length) {
+      pg.tables = pg.tables.filter(t => !listings.includes(t));
+      pg.lines = mergeSameBaseline(pg.lines.concat(...listings.map(t => t._flow)).sort((a, b) => a.y0 - b.y0));
+      if (pg.twoCol) assignColumns(pg); // restore column reading order
+    }
+    // a wide gap in a code line can split it in two at extraction: join pieces on one baseline
+    const joined = [];
+    for (const l of pg.lines) {
+      const p = joined[joined.length - 1];
+      if (p && p.kind === "body" && l.kind === "body" && Math.abs(p.y1 - l.y1) < 1.5 && l.x0 > p.x1 - 1 &&
+          p.segs.some(x => code.has(x.fam))) {
+        p.segs.push(...l.segs); p.x1 = l.x1;
+        p.y0 = Math.min(p.y0, l.y0); p.y1 = Math.max(p.y1, l.y1);
+      } else joined.push(l);
+    }
+    pg.lines = joined;
+    const skip = pg.lines.map((l, i) => notCode(l, pg.lines[i - 1], pg.lines[i + 1]));
+    pg.lines.forEach((l, i) => {
+      if (skip[i]) return;
+      for (const x of l.segs) if (code.has(x.fam)) x.mono = true;
+      // indentation is measured in spaces; a proportional font's space is about 1/4 em
+      if (!l._cw && l.segs.some(x => code.has(x.fam))) {
+        l._cw = 0.25 * l.size;
+        // gaps between text pieces become as many spaces, so aligned columns stay aligned
+        const vis = l.segs.filter(x => strip(x.text));
+        if (vis.every(x => x.sx0 !== undefined)) {
+          const out = [];
+          vis.forEach((x, i) => {
+            const n = i ? Math.round((x.sx0 - vis[i - 1].sx1) / l._cw) : 0;
+            if (n > 0 && !/\s$/.test(vis[i - 1].text)) out.push(seg(" ".repeat(n), false, false, true));
+            out.push(x);
+          });
+          l.segs = out;
+        }
+      }
+    });
+  }
 }
 
 function mul(m, n) {
@@ -227,6 +322,9 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
 
   const raw = [];
   const words = []; // word boxes, for rebuilding table cells
+  // Some PDFs print the same glyph twice in one place (e.g. list bullets). pdf.js may have
+  // merged the first copy with the text after it, so look for an item that starts with it.
+  const seenSpans = new Map();
   let cur = null;
   const finish = () => {
     if (cur) cur.segs = dropPaddingSpaces(cur.segs);
@@ -237,6 +335,11 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
       cur.bold = vis.every(s => s.bold);
       cur.italic = vis.every(s => s.italic);
       delete cur._sizes; delete cur._base;
+      // small raised numbers are note marks: <sup>
+      const mainBl = Math.max(...cur.segs.filter(x => x.sz >= 0.9 * cur.size).map(x => x.bl));
+      for (const x of cur.segs) {
+        if (x.sz && x.sz < 0.8 * cur.size && x.bl < mainBl - 0.15 * cur.size && MARK_RE.test(strip(x.text))) x.sup = true;
+      }
       // a monospace line that starts with spaces: the spaces are not drawn, keep them anyway
       if (cur._cw && cur.segs.length && cur.segs[0].mono) cur.segs[0].text = lstrip(cur.segs[0].text);
       raw.push(cur);
@@ -259,6 +362,13 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
     if (x1 < 0 || x0 > width || y1 < 0 || y0 > height) { if (it.hasEOL) finish(); continue; }
     const fi = fontInfo(page, it.fontName);
     const t = cleanText(it.str);
+    if (strip(t)) {
+      const sk = `${pyRound(x0)}|${pyRound(y0)}`;
+      const prevTexts = seenSpans.get(sk) || [];
+      if (prevTexts.some(p => p.startsWith(strip(t)))) { if (it.hasEOL) finish(); continue; }
+      prevTexts.push(strip(t));
+      seenSpans.set(sk, prevTexts);
+    }
     if (t) {
       // word positions, spread over the item by character count
       const chars = [...t], cw = it.width / (chars.length || 1);
@@ -297,7 +407,7 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
           cur.segs.push(seg(" ", last.bold, last.italic));
         }
       }
-      cur.segs.push(seg(t, fi.bold, fi.italic, fi.mono));
+      cur.segs.push(Object.assign(seg(t, fi.bold, fi.italic, fi.mono), { fam: fontFamily(fi.name), sx0: x0, sx1: x1, sz: size, bl: base }));
       // pdf.js turns wide gaps into space items; they must not bridge columns or table cells,
       // so only visible text extends the line's box.
       if (strip(t)) {
@@ -312,17 +422,21 @@ async function extractPage(pdf, OPS, pno, pageNo, opts = {}) {
   finish();
   for (const l of raw) if (!l._sizes) { /* already finalised */ }
   const shapes = drawings(opList, OPS, view);
+  // a short rule low on the page, above the footnotes
+  pg.noteRules = shapes.filter(sh => !sh.fill && sh.height < 1.5 && sh.width >= 30 && sh.width < 0.45 * width &&
+    sh.y0 > 0.4 * height).map(sh => ({ y: sh.y0, x0: sh.x0 }));
   pg.tables = findTables(shapes, words, pageNo, width, height);
   let kept = raw.filter(l => l.size);
   if (pg.tables.length) {
     // text inside a table is rebuilt cell by cell; drop the flowing copy
-    const inside = l => {
+    const inT = (l, t) => {
       const cx = (l.x0 + l.x1) / 2, cy = (l.y0 + l.y1) / 2;
-      return pg.tables.some(t => t.x0 - 2 <= cx && cx <= t.x1 + 2 && t.y0 - 2 <= cy && cy <= t.y1 + 2);
+      return t.x0 - 2 <= cx && cx <= t.x1 + 2 && t.y0 - 2 <= cy && cy <= t.y1 + 2;
     };
-    kept = kept.filter(l => !inside(l));
+    for (const t of pg.tables) t._flow = kept.filter(l => inT(l, t)); // kept in case it turns out to be code
+    kept = kept.filter(l => !pg.tables.some(t => inT(l, t)));
   }
-  pg.lines = mergeSameBaseline(kept);
+  pg.lines = mergeSameBaseline(attachMarks(kept));
   markDrawnBullets(shapes, pg.lines);
   await markCallouts(page, shapes.images, pg.lines);
   if (opts.images) {
@@ -464,10 +578,14 @@ function cellText(words, r) {
   lines.sort((a, b) => a.y0 - b.y0);
   const out = [];
   for (const l of lines) {
+    let prev = null;
     for (const w of l.ws.sort((a, b) => a.x0 - b.x0)) {
       const t = w.text;
       const last = out[out.length - 1];
-      if (last && last.endsWith("-") && last.length > 1 && /\p{L}/u.test(last[last.length - 2]) && /^\p{Ll}/u.test(t)) {
+      const touching = prev && w.x0 - prev.x1 < 0.5; // one word in two fonts ("Q" + "uality")
+      prev = w;
+      if (touching) out[out.length - 1] = last + t;
+      else if (last && last.endsWith("-") && last.length > 1 && /\p{L}/u.test(last[last.length - 2]) && /^\p{Ll}/u.test(t)) {
         out[out.length - 1] = last.slice(0, -1) + t; // word split across lines inside the cell
       } else out.push(t);
     }
@@ -484,7 +602,8 @@ function findTables(shapes, words, pageNo, width, height) {
   const result = [];
   for (const cells of groupCells(tableCells(hs, vs))) {
     const x0 = Math.min(...cells.map(c => c.x0)), y0 = Math.min(...cells.map(c => c.y0));
-    const x1 = Math.max(...cells.map(c => c.x1)), y1 = Math.max(...cells.map(c => c.y1));
+    const x1 = Math.max(...cells.map(c => c.x1));
+    let y1 = Math.max(...cells.map(c => c.y1));
     // rows: cells with the same top edge
     const tops = [...new Set(cells.map(c => c.y0))].sort((a, b) => a - b);
     const colXs = [...new Set(cells.map(c => c.x0))].sort((a, b) => a - b);
@@ -493,6 +612,64 @@ function findTables(shapes, words, pageNo, width, height) {
       return { cells: colXs.map(x => rc.find(c => c.x0 === x) || null),
         y0: y, y1: Math.max(...rc.map(c => c.y1)) };
     });
+    const hcells = rows.length === 1 ? rows[0].cells.filter(Boolean) : [];
+    const headWords = words.filter(w => (w.y0 + w.y1) / 2 > y0 && (w.y0 + w.y1) / 2 < y1 && w.x0 >= x0 - 1 && w.x1 <= x1 + 1);
+    // not runs of highlighted inline code: real header cells are wide and hold normal text
+    if (hcells.length >= 2 && hcells.every(c => c.x1 - c.x0 >= 30) && x1 - x0 >= 0.4 * width &&
+        headWords.length && !headWords.some(w => w.mono)) {
+      // Only a shaded header row and a rule under the table (as in O'Reilly books):
+      // the body rows come from the text lines between them.
+      const rules = hs.filter(h => h.at > y1 + 5 && h.a <= x0 + 3 && h.b >= x1 - 3)
+        .sort((a, b) => a.at - b.at);
+      if (rules.length) {
+        const hc = rows[0].cells;
+        const col1 = hc.filter(Boolean)[1].x0;
+        const edges = hc.filter(Boolean).slice(1).map(c => c.x0);
+        const textLinesIn = (ya, yb) => {
+          const out = [];
+          const body = words.filter(w => {
+            const cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+            return cx >= x0 && cx <= x1 && cy > ya && cy < yb;
+          }).sort((a, b) => a.y0 - b.y0);
+          for (const w of body) {
+            const cy = (w.y0 + w.y1) / 2;
+            const ln = out.find(l => Math.abs(l.cy - cy) < 2);
+            if (ln) { ln.ws.push(w); ln.y0 = Math.min(ln.y0, w.y0); ln.y1 = Math.max(ln.y1, w.y1); }
+            else out.push({ cy, y0: w.y0, y1: w.y1, ws: [w] });
+          }
+          return out.sort((a, b) => a.cy - b.cy);
+        };
+        // rows of a table keep to the header's columns; flowing paragraphs cross them
+        const tabular = lns => lns.length &&
+          lns.filter(ln => ln.ws.some(w => edges.some(e => w.x0 < e - 1 && w.x1 > e + 1))).length <= 0.2 * lns.length;
+        // Rules between rows (as in some O'Reilly books): each band between two rules is one row.
+        const bands = [];
+        let top = y1;
+        // edges of another shaded header row start a new table
+        const fills = shapes.filter(sh => sh.fill && sh.height > 3 && sh.y0 > y1 + 1);
+        for (const r of rules) {
+          if (fills.some(f => Math.abs(f.y0 - r.at) < 2 || Math.abs(f.y1 - r.at) < 2)) break;
+          const lns = textLinesIn(top, r.at);
+          if (!tabular(lns) || r.at - top > (bands.length ? 0.35 : 0.6) * height) break;
+          bands.push({ at: r.at, lns });
+          top = r.at;
+        }
+        if (bands.length > 1) {
+          for (const b of bands) rows.push({ cells: hc, y0: b.lns[0].y0, y1: b.lns[b.lns.length - 1].y1 });
+          y1 = bands[bands.length - 1].at;
+        } else if (bands.length === 1) {
+          // only a rule under the table: a line with text in the first column starts a row;
+          // others continue the row's cells
+          for (const ln of bands[0].lns) {
+            const last = rows[rows.length - 1];
+            if (rows.length === 1 || ln.ws.some(w => (w.x0 + w.x1) / 2 < col1)) rows.push({ cells: hc, y0: ln.y0, y1: ln.y1 });
+            else last.y1 = ln.y1;
+          }
+          y1 = bands[0].at;
+        }
+        for (let i = 1; i + 1 < rows.length; i++) rows[i].y1 = Math.max(rows[i].y1, rows[i + 1].y0 - 1);
+      }
+    }
     if (rows.length < 2) continue;
     // column edges from the row that has the most separate cells
     let best = rows[0];
@@ -734,6 +911,24 @@ function markDrawnBullets(shapes, lines) {
   }
 }
 
+// Footnote marks that the PDF draws after the rest of the page ("RSpec[19] is ...") become
+// lines of their own. Put each one back into the line it sits in, at its x position.
+const MARK_RE = /^(?:\[\d{1,3}\]|\d{1,3}|[*†‡§])$/u;
+function attachMarks(lines) {
+  const out = [];
+  for (const m of lines) {
+    const t = strip(lineText(m));
+    const host = MARK_RE.test(t) && lines.find(l => l !== m && l.size > 1.25 * m.size && m.x0 > l.x0 &&
+      m.x0 < l.x1 + 1 && m.y0 < l.y1 && m.y1 > l.y0 && !MARK_RE.test(strip(lineText(l))));
+    if (!host) { out.push(m); continue; }
+    let i = 0;
+    host.segs.forEach((x, k) => { if (x.sx1 !== undefined && x.sx1 <= m.x0 + 1) i = k + 1; });
+    host.segs.splice(i, 0, Object.assign(seg(t, false, false), { fam: m.segs[0].fam, sx0: m.x0, sx1: m.x1, sup: true }));
+    host.x1 = Math.max(host.x1, m.x1);
+  }
+  return out;
+}
+
 function mergeSameBaseline(lines) {
   const text = lines.filter(l => l.kind !== "image");
   const imgs = lines.filter(l => l.kind === "image");
@@ -863,11 +1058,13 @@ function stripHeadersFooters(pages, st, margin, extraPatterns) {
   }
 
   const keyPos = new Map();
+  const keyPages = new Map();
   const bands = new Map();
-  for (const [, l, where, iso] of cands) {
+  for (const [pg, l, where, iso] of cands) {
     const k = where + "\u0000" + normKey(lineText(l));
-    if (!keyPos.has(k)) keyPos.set(k, []);
+    if (!keyPos.has(k)) { keyPos.set(k, []); keyPages.set(k, []); }
     keyPos.get(k).push(where === "top" ? l.y0 : l.y1);
+    keyPages.get(k).push([pg.number, where === "top" ? l.y0 : l.y1]);
     const yb = pyRound((where === "top" ? l.y0 : l.y1) / 3);
     const bk = where + "\u0000" + yb;
     const b = bands.get(bk) || [0, 0];
@@ -886,30 +1083,47 @@ function stripHeadersFooters(pages, st, margin, extraPatterns) {
   };
 
   const drop = new Set();
-  for (const [, l, where, iso] of cands) {
+  const dropped = [];
+  for (const [pg, l, where, iso] of cands) {
     const t = strip(lineText(l));
     const y = where === "top" ? l.y0 : l.y1;
     const key = normKey(t);
     const styled = Math.abs(l.size - st.bodySize) > 0.6 || l.font !== st.bodyFont;
     let reason = null;
-    if (PAGE_NUM_RE.test(t)) reason = "page number";
+    if (PAGE_NUM_RE.test(t) && !/^\[\d+\]$/.test(t)) reason = "page number"; // "[3]" starts a footnote
     else if (t.length < 120) {
       const ys = keyPos.get(where + "\u0000" + key) || [];
       const samePos = ys.filter(v => Math.abs(v - y) < 4).length;
-      if (key && samePos >= repMin && (iso || styled)) reason = "repeated";
+      // A line that never repeats on nearby pages ("CHAPTER 3", "References", "Footnotes") is
+      // a heading that happens to start a page, not a running head.
+      const near = (keyPages.get(where + "\u0000" + key) || []).filter(([, v]) => Math.abs(v - y) < 4)
+        .map(([n]) => n).sort((p, q) => p - q);
+      const headingLike = near.every((n, i) => i === 0 || n - near[i - 1] > 2);
+      if (key && samePos >= repMin && (iso || styled) && !headingLike) reason = "repeated";
       else if (iso && inHeaderBand(where, y) && l.size <= st.bodySize * 1.1) reason = "header band";
     }
     if (reason) {
       drop.add(l);
-      removed.add(`[${where} ${reason}] ` + t.replace(/\d+/g, "#").slice(0, 60));
+      dropped.push([pg, l, where, reason, t]);
     }
+  }
+  // A repeated label beside text that is not a running head ("Tip 3" next to the tip's title)
+  // belongs to that text.
+  const numbers = new Set(dropped.filter(d => d[3] === "page number").map(d => d[1]));
+  for (const [pg, l, where, reason, t] of dropped) {
+    if (reason === "repeated" && pg.lines.some(o => o !== l && !drop.has(o) && o.kind !== "image" &&
+        Math.abs(o.y1 - l.y1) < 0.6 * Math.max(o.size, l.size) && strip(lineText(o)).split(/\s+/).length >= 2)) {
+      drop.delete(l);
+      continue;
+    }
+    removed.add(`[${where} ${reason}] ` + t.replace(/\d+/g, "#").slice(0, 60));
   }
   for (const [pg, l, where] of cands) {
     if (drop.has(l)) continue;
     const styled = Math.abs(l.size - st.bodySize) > 0.6 || l.font !== st.bodyFont;
-    if (!styled) continue;
+    if (!styled || strip(lineText(l)).length > 80) continue; // running heads are short
     for (const o of pg.lines) {
-      if (drop.has(o) && o.kind !== "image" && Math.abs(o.size - l.size) < 0.6 && o.font === l.font &&
+      if (drop.has(o) && !numbers.has(o) && o.kind !== "image" && Math.abs(o.size - l.size) < 0.6 && o.font === l.font &&
           Math.abs(o.y1 - l.y1) < 1.6 * Math.max(l.size, 1)) {
         drop.add(l);
         removed.add(`[${where} wrapped header] ` + strip(lineText(l)).replace(/\d+/g, "#").slice(0, 60));
@@ -969,6 +1183,46 @@ function columnEdges(pg, st) {
   return edges;
 }
 
+// Footnotes: smaller lines under a short rule at the bottom of the page, starting with a
+// number or mark. They are taken out of the text flow, so a paragraph that runs onto the
+// next page stays whole, and come out at the end of the section.
+const NOTE_START_RE = /^(?:\d{1,3}|[*\u2020\u2021\u00a7])\s/u;
+function markFootnotes(pages, st) {
+  for (const pg of pages) {
+    for (const r of (pg.noteRules || []).sort((a, b) => a.y - b.y)) {
+      const below = pg.lines.filter(l => l.kind === "body" && l.y0 > r.y - 1 && l.x0 >= r.x0 - 3).sort((a, b) => a.y0 - b.y0);
+      if (!below.length || below.some(l => l.size > 0.92 * st.bodySize) ||
+          !NOTE_START_RE.test(lstrip(lineText(below[0])))) continue;
+      if (pg.lines.some(l => l.kind === "body" && l.y0 > r.y - 1 && !below.includes(l))) continue;
+      for (const l of below) l.kind = "note";
+      break;
+    }
+  }
+}
+
+// The book's printed table of contents (titles with dot leaders or page numbers on the
+// right) is left out: the EPUB has its own, and the page numbers mean nothing in it.
+const PAGE_REF_RE = /^(?:\d{1,4}|[ivxlcdm]{1,7})$/i, LEADER_RE = /(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlcdm]{1,7})$/i;
+function dropPrintedToc(pages) {
+  let n = 0, prevToc = -1;
+  for (const pg of pages) {
+    const body = pg.lines.filter(l => l.kind === "body");
+    if (body.length < 8) continue;
+    // only from a page titled "Contents", and the pages right after it
+    const titled = pg.lines.some(l => /^(?:table of )?contents$/i.test(strip(lineText(l))));
+    if (!titled && prevToc !== pg.number - 1) continue;
+    const right = Math.max(...body.map(l => l.x1));
+    const refs = body.filter(l => {
+      const t = strip(lineText(l));
+      return (PAGE_REF_RE.test(t) && l.x0 > right - 40) || LEADER_RE.test(t);
+    }).length;
+    if (refs < 5 || refs < 0.25 * body.length) continue;
+    for (const l of pg.lines) if (l.kind === "body" || l.kind === "heading") { l.kind = "toc"; n++; }
+    prevToc = pg.number;
+  }
+  return n;
+}
+
 function markHeadings(pages, st) {
   const hasBig = pages.some(pg => pg.lines.some(l => l.kind !== "image" && l.size >= st.bodySize * 1.15 &&
     strip(lineText(l)).length > 1 && strip(lineText(l)).length <= 160));
@@ -980,7 +1234,7 @@ function markHeadings(pages, st) {
     const lines = pg.lines;
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
-      if (l.kind === "image" || l.kind === "code") continue;
+      if (l.kind === "image" || l.kind === "code" || l.kind === "note" || l.kind === "toc") continue;
       const t = strip(lineText(l));
       const big = l.size >= st.bodySize * 1.15;
       if (big && [...t].length === 1 && isAlpha(t)) {
@@ -1038,6 +1292,122 @@ function markHeadings(pages, st) {
   }
 }
 
+// "Chapter 3. X", "Part II: X", "Topic 12. X"
+const OUTLINE_PREFIX_RE = /^((?:chapter|part|appendix)\s+[0-9a-z]+|\p{Lu}\p{L}*\s+\d+)[.:]\s+/iu;
+const outlineKey = t => t.toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, " ").trim();
+const titleCase = t => t.toLowerCase().replace(/(^|\s)(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+
+// The PDF's bookmarks as [level, title, page number], like PyMuPDF's get_toc().
+async function readOutline(pdf) {
+  const out = [];
+  let items = null;
+  try { items = await pdf.getOutline(); } catch (e) { return out; }
+  const walk = async (list, lv) => {
+    for (const it of list || []) {
+      let pno = -1;
+      try {
+        let dest = it.dest;
+        if (typeof dest === "string") dest = await pdf.getDestination(dest);
+        if (Array.isArray(dest) && dest.length) {
+          const ref = dest[0];
+          pno = (typeof ref === "number" ? ref : await pdf.getPageIndex(ref)) + 1;
+        }
+      } catch (e) { pno = -1; }
+      // some tools (calibre) leave HTML entities in bookmark titles
+      const title = (it.title || "").replace(/&#(\d+);/g, (m, n) => String.fromCodePoint(+n))
+        .replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCodePoint(parseInt(n, 16)))
+        .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (m, n) => ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " })[n]);
+      let t = title.replace(/\u00a0/g, " ").trim();
+      // calibre sometimes doubles the title text after its number: "Topic 1. It's Your LifeIt's Your Life"
+      const dm = t.match(/^(.*?[.:]\s+)?(.+)$/u);
+      if (dm && dm[2].length % 2 === 0 && dm[2].slice(0, dm[2].length / 2) === dm[2].slice(dm[2].length / 2)) {
+        t = (dm[1] || "") + dm[2].slice(0, dm[2].length / 2);
+      }
+      out.push([lv, t, pno]);
+      await walk(it.items, lv + 1);
+    }
+  };
+  await walk(items, 1);
+  return out;
+}
+
+// Use the PDF's own bookmarks for heading levels when the PDF has them.
+// Font sizes alone can't tell a book's levels apart when title pages use many sizes.
+// Heading lines whose text is a bookmark title on the same page take that bookmark's
+// level. Other headings take the level most used by matched headings of their size.
+// Returns how many bookmarks were matched.
+function applyOutline(pages, toc) {
+  const entries = toc.filter(([lv, title, pno]) => pno > 0 && strip(title));
+  if (entries.length < 5) return 0;
+  const byPage = new Map();
+  for (const e of entries) {
+    if (!byPage.has(e[2])) byPage.set(e[2], []);
+    byPage.get(e[2]).push(e);
+  }
+  const heads = pages.flatMap(pg => pg.lines.filter(l => l.kind === "heading"));
+  // A bookmarked title can be set at body size (e.g. in a boxed banner). Short body lines can
+  // match too, but only all of their text, and they don't vote on the levels of font sizes.
+  const short = l => l.kind === "heading" || (l.kind === "body" && strip(lineText(l)).length <= 100);
+  const linesOn = new Map(pages.map(pg => [pg.number, pg.lines.filter(short)]));
+  let matched = 0;
+  const sizeVotes = new Map();
+  const done = new Set();
+  const assign = [];
+  for (const pno of [...byPage.keys()].sort((a, b) => a - b)) {
+    const cands = [...(linesOn.get(pno) || []), ...(linesOn.get(pno + 1) || [])].filter(l => !done.has(l));
+    for (const [lv, title] of byPage.get(pno)) {
+      const m = title.match(OUTLINE_PREFIX_RE);
+      const keys = [outlineKey(title)];
+      if (m) keys.push(outlineKey(title.slice(m[0].length)));
+      if (/^\d+[.:]?\s/.test(title)) keys.push("chapter " + keys[0]); // bookmark "1. X" for heading "Chapter 1. X"
+      // the bookmark title, possibly wrapped over up to three heading lines
+      const free = cands.filter(l => !done.has(l));
+      let hit = [];
+      for (let i = 0; i < free.length && !hit.length; i++) {
+        let run = "";
+        for (let j = i; j < Math.min(i + 3, free.length); j++) {
+          if (free[j].page !== free[i].page) break;
+          run = strip(`${run} ${outlineKey(lineText(free[j]))}`);
+          if (keys.includes(run)) { hit = free.slice(i, j + 1); break; }
+          if (!keys.some(k => k.startsWith(run))) break;
+        }
+      }
+      if (!hit.length) continue;
+      matched++;
+      for (const l of hit) {
+        done.add(l);
+        if (l.kind !== "heading") continue;
+        const sz = pyRound(l.size);
+        if (!sizeVotes.has(sz)) sizeVotes.set(sz, new Counter());
+        sizeVotes.get(sz).add(lv);
+      }
+      const prefix = m && !outlineKey(lineText(hit[0])).startsWith(outlineKey(m[1])) ? m[1] : null;
+      assign.push([hit, lv, prefix]);
+    }
+  }
+  if (matched < Math.max(3, Math.floor(entries.length / 3))) return 0; // bookmarks don't fit: keep font-size levels
+  for (const [hit, lv, prefix] of assign) {
+    for (const l of hit) { l.level = lv; l.kind = "heading"; }
+    if (prefix) {
+      const s0 = hit[0].segs[0];
+      hit[0].segs.unshift(seg(titleCase(prefix) + ": ", s0.bold, s0.italic));
+    }
+  }
+  const deepest = Math.max(...entries.map(e => e[0]));
+  const sizeLevel = new Map([...sizeVotes].map(([sz, c]) => [sz, c.mostCommon(1)[0][0]]));
+  const maxSize = sizeLevel.size ? Math.max(...sizeLevel.keys()) : 0;
+  for (const l of heads) {
+    if (done.has(l)) continue;
+    const sz = pyRound(l.size);
+    if (l.level === 1) continue; // already top level by font size (e.g. front matter without bookmarks)
+    if (BACK_MATTER_RE.test(strip(lineText(l))) && deepest > 1) l.level = 2; // a chapter's "References"
+    else if (sizeLevel.has(sz)) l.level = sizeLevel.get(sz);
+    else if (sizeLevel.size && sz > maxSize) l.level = 1;
+    else l.level = Math.min(deepest + 1, 4);
+  }
+  return matched;
+}
+
 // --------------------------------------------------------------------------- paragraphs
 
 class Dehyphenator {
@@ -1087,7 +1457,7 @@ function firstWordWidth(l, size) {
 }
 
 function stripSegs(segs) {
-  segs = segs.map(s => seg(s.text, s.bold, s.italic));
+  segs = segs.map(s => Object.assign(seg(s.text, s.bold, s.italic), s.sup ? { sup: true } : {}));
   while (segs.length && !strip(segs[0].text)) segs.shift();
   while (segs.length && !strip(segs[segs.length - 1].text)) segs.pop();
   if (segs.length) {
@@ -1207,11 +1577,18 @@ function paragraphBreak(a, b, st, edgesByPage) {
   if (LIST_MARK_RE.test(lstrip(at))) prevInd = Math.max(prevInd, ind);
   if (0.6 * size < ind - prevInd && ind < 6 * size) return [true, false];
   if (ind < -0.5 * b.size && b.x0 < a.x0 - 0.5 * b.size) return [true, false];
-  const room = ea[1] - a.x1;
+  // In a note set in a narrower box (both lines indented, same start), measure against the
+  // box's right edge. Verse looks the same, so require justified lines or a lowercase start.
+  // A sidebar in smaller type may be indented less.
+  const boxInd = a.x0 - ea[0];
+  const inBox = Math.abs(a.x0 - b.x0) < 1.5 && (boxInd > 6 * size || (a.size < size - 1 && boxInd > 1.5 * size)) &&
+    a._blockRight < ea[1] - 3 * Math.min(size, a.size) &&
+    (a._blockFull >= 2 || isLower(lstrip(bl).slice(0, 1)));
+  const room = (inBox ? a._blockRight : ea[1]) - a.x1;
   if (room > firstWordWidth(b, b.size) + 1.5 * b.size) return [true, false];
   if (st.blockStyle && !sameFlow && TERMINAL.includes(rstrip(at).slice(-1) || "\u0001") &&
       /^["'“‘(]*[A-Z0-9]/.test(bl)) return [true, false];
-  if (a.x0 - ea[0] > 6 * size && b.x0 - eb[0] > 6 * size) return [true, false];
+  if (a.x0 - ea[0] > 6 * size && b.x0 - eb[0] > 6 * size && !inBox) return [true, false];
   return [false, false];
 }
 
@@ -1222,6 +1599,8 @@ function buildBlocks(pages, st, dehy) {
     if (cur && cur.segs.length && strip(cur.segs.map(s => s.text).join(""))) blocks.push(cur);
     cur = null;
   };
+  let notes = [], noteX = 0;
+  const emitNotes = () => { blocks.push(...notes.filter(n => n.segs.length)); notes = []; };
   const edgesByPage = new Map();
   for (const pg of pages) edgesByPage.set(pg.number, columnEdges(pg, st));
   unifyEdges(pages, edgesByPage);
@@ -1229,6 +1608,13 @@ function buildBlocks(pages, st, dehy) {
   for (const pg of pages) {
     const body = pg.lines.filter(l => l.kind === "body");
     body.forEach((l, i) => { l._next = body[i + 1] || null; });
+    // right edge of the lines on this page that start where this one does, and how many
+    // lines reach it (justified prose: several; verse: usually one)
+    for (const l of body) {
+      const blk = body.filter(o => Math.abs(o.x0 - l.x0) < 1.5 && Math.abs(o.size - l.size) < 0.6);
+      l._blockRight = Math.max(...blk.map(o => o.x1));
+      l._blockFull = blk.filter(o => o.x1 >= l._blockRight - 1).length;
+    }
   }
   let indented = 0, total = 0;
   for (const pg of pages) {
@@ -1278,7 +1664,16 @@ function buildBlocks(pages, st, dehy) {
 
   for (const pg of pages) {
     for (const l of pg.lines) {
-      if (l.kind === "dropcap") continue;
+      if (l.kind === "dropcap" || l.kind === "toc") continue;
+      if (l.kind === "note") {
+        const segs = stripSegs(l.segs);
+        const pageX = Math.min(...pg.lines.filter(o => o.kind === "note").map(o => o.x0));
+        if (!notes.length || (NOTE_START_RE.test(lstrip(lineText(l))) && l.x0 < pageX + 1.5) || noteX !== pg.number) {
+          notes.push({ kind: "p", segs, level: 1, page: pg.number, note: true });
+        } else joinInto(notes[notes.length - 1], segs, dehy);
+        noteX = pg.number;
+        continue;
+      }
       if (l.kind === "image") {
         flush();
         blocks.push({ kind: "img", segs: [], image: l.image, level: 1, page: pg.number });
@@ -1323,6 +1718,7 @@ function buildBlocks(pages, st, dehy) {
           lastB.segs.push(...stripSegs(l.segs));
         } else {
           flush();
+          emitNotes();
           blocks.push({ kind: "h", segs: stripSegs(l.segs), level: l.level, page: pg.number });
         }
         prev = l;
@@ -1347,6 +1743,7 @@ function buildBlocks(pages, st, dehy) {
     }
   }
   flush();
+  emitNotes();
   return blocks;
 }
 
@@ -1356,8 +1753,8 @@ function segsToHtml(segs, styles = true) {
   const merged = [];
   for (const s of segs) {
     const m = merged[merged.length - 1];
-    if (m && m.bold === s.bold && m.italic === s.italic) m.text += s.text;
-    else merged.push(seg(s.text, s.bold, s.italic));
+    if (m && m.bold === s.bold && m.italic === s.italic && !m.sup === !s.sup) m.text += s.text;
+    else merged.push(Object.assign(seg(s.text, s.bold, s.italic), { sup: s.sup }));
   }
   return merged.map(s => {
     let t = escapeHtml(s.text.replace(/ {2,}/g, " "), false);
@@ -1367,6 +1764,7 @@ function segsToHtml(segs, styles = true) {
       let core = strip(t);
       if (s.italic) core = `<i>${core}</i>`;
       if (s.bold) core = `<b>${core}</b>`;
+      if (s.sup) core = `<sup>${core}</sup>`;
       t = lead + core + trail;
     }
     return t;
@@ -1498,7 +1896,7 @@ async function writeEpub(JSZip, blocks, meta, opts, cover) {
         hstack.push(j);
         docTitle = docTitle || label;
       } else if (b.kind === "p") {
-        body.push(`<p>${segsToHtml(b.segs, styles)}</p>`);
+        body.push(b.note ? `<p><small>${segsToHtml(b.segs, styles)}</small></p>` : `<p>${segsToHtml(b.segs, styles)}</p>`);
       } else if (b.kind === "sep") {
         body.push('<p class="sep">* * *</p>');
       } else if (b.kind === "img") {
@@ -1647,7 +2045,13 @@ async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
     let removed = new Counter();
     if (!o.keepHeaders) removed = stripHeadersFooters(pages, st, o.margin, patterns);
     for (const pg of pages) assignColumns(pg);
-    if (!o.noHeadings) markHeadings(pages, st);
+    markCodeFonts(pages, st);
+    markFootnotes(pages, st);
+    dropPrintedToc(pages);
+    if (!o.noHeadings) {
+      markHeadings(pages, st);
+      applyOutline(pages, await readOutline(pdf));
+    }
     for (const pg of pages) {
       for (const t of pg.tables || []) {
         let pos = pg.lines.findIndex(l => l.y0 > t.y0 && l.col === 0);
@@ -1659,7 +2063,9 @@ async function convertPdf(pdfjsLib, JSZip, data, opts = {}) {
     const blocks = buildBlocks(pages, st, dehy);
     numberCallouts(blocks);
     let cover = null;
-    if (o.cover) { try { cover = await renderCoverBrowser(pdf); } catch (e) { cover = null; } }
+    if (o.cover) {
+      try { cover = await (o.renderCover ? o.renderCover(pdf) : renderCoverBrowser(pdf)); } catch (e) { cover = null; }
+    }
     const { epub, nFiles, nToc, nImages } = await writeEpub(JSZip, blocks, { title, author },
       { lang: o.lang, css: o.css, maxKb: o.maxKb, styles: o.styles }, cover);
     const nPar = blocks.filter(b => b.kind === "p").length;
