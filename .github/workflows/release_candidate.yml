@@ -66,7 +66,9 @@ jobs:
       - name: Extract env
         run: |
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          echo "BRANCH_SUFFIX=${GITHUB_REF_NAME#release/}" >> $GITHUB_ENV
+          # Artifact names cannot contain "/".
+          branch="${GITHUB_REF_NAME#release/}"
+          echo "BRANCH_SUFFIX=${branch//\//-}" >> $GITHUB_ENV
           env_name="${{ matrix.pio_env }}"
           if [ "$env_name" = "gh_release_rc" ]; then
             echo "ASSET=firmware.bin" >> $GITHUB_ENV
