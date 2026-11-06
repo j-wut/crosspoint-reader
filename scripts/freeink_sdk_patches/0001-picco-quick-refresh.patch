@@ -1,0 +1,196 @@
+diff --git a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h b/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
+index 4949765..c75d705 100644
+--- a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
++++ b/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
+@@ -288,6 +288,8 @@ class FreeInkDisplay {
+   void requestResync(uint8_t settlePasses = 0);
+   // True while book pages are presented (see PanelDriver::setReaderRefresh).
+   void setReaderRefresh(bool reading);
++  // Picco: short UI waveform for every FAST refresh (faster, more ghosting).
++  void setQuickRefresh(bool quick);
+   // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
+   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
+   void skipInitialResync();
+diff --git a/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp b/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp
+index 1ebe5b8..6610781 100644
+--- a/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp
++++ b/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp
+@@ -1162,6 +1162,10 @@ void FreeInkDisplay::setReaderRefresh(const bool reading) {
+   if (_driver) _driver->setReaderRefresh(reading);
+ }
+ 
++void FreeInkDisplay::setQuickRefresh(const bool quick) {
++  if (_driver) _driver->setQuickRefresh(quick);
++}
++
+ void FreeInkDisplay::skipInitialResync() {
+   if (_driver) _driver->skipInitialResync();
+ }
+diff --git a/libs/display/FreeInkDisplay/src/driver/PanelDriver.h b/libs/display/FreeInkDisplay/src/driver/PanelDriver.h
+index 76b85b6..8692d75 100644
+--- a/libs/display/FreeInkDisplay/src/driver/PanelDriver.h
++++ b/libs/display/FreeInkDisplay/src/driver/PanelDriver.h
+@@ -214,6 +214,9 @@ class PanelDriver {
+   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
+   // True while the host presents book pages; drivers with a reading waveform use it.
+   virtual void setReaderRefresh(bool reading) { (void)reading; }
++  // Quick refresh (Picco): FAST frames use the short UI waveform instead of the
++  // reading waveform.
++  virtual void setQuickRefresh(bool quick) { (void)quick; }
+   virtual void skipInitialResync() {}
+   // Content-polarity hint: true while the facade is rendering inverted (dark
+   // background) frames. Differential drivers idle unchanged pixels, so on a
+diff --git a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
+index a3efd58..5d24324 100644
+--- a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
++++ b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
+@@ -574,7 +574,8 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
+   // it without the OTP reload. Not while a grayscale LUT is already loaded.
+   // The first refresh after a book page still erases reading-depth blacks, so it
+   // keeps the reading waveform (reader menu, footnotes over a page).
+-  const bool reading = _readerRefresh || _afterReader;
++  // Quick refresh drops the reading waveform: book pages use the UI one.
++  const bool reading = (_readerRefresh || _afterReader) && !_quickRefresh;
+   _afterReader = _readerRefresh;
+   const unsigned char* fastLut = reading && (_cfg.readerFastLut || _cfg.piccoStockGrayscale)
+                                      ? _cfg.readerFastLut : _cfg.fastLut;
+diff --git a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.h b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.h
+index 7adec97..2723190 100644
+--- a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.h
++++ b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.h
+@@ -115,6 +115,7 @@ class Ssd1677Driver : public PanelDriver {
+   }
+   void setBackgroundHint(bool dark) override { _darkBackground = dark; }
+   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
++  void setQuickRefresh(bool quick) override { _quickRefresh = quick; }
+   bool grayscaleWhileInverted() const override;
+   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
+ 
+@@ -152,6 +153,7 @@ class Ssd1677Driver : public PanelDriver {
+   bool _darkBackground = false;
+   bool _readerRefresh = false;
+   bool _afterReader = false;  // last refresh presented a book page
++  bool _quickRefresh = false;  // Picco: FAST always uses the UI waveform
+   bool _needsGrayClear = false;
+   bool _absoluteInput = false;
+   void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);
+diff --git a/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.cpp b/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.cpp
+index efa6dd5..92aa428 100644
+--- a/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.cpp
++++ b/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.cpp
+@@ -193,14 +193,15 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
+   _grayPending = false;
+   // The first frame after a book page still erases reading-depth blacks, so it
+   // keeps the reading waveform (reader menu, footnotes over a page).
+-  const bool reading = _readerRefresh || _afterReader;
++  // Quick refresh treats every FAST frame as a small update (mode 3, rails on).
++  const bool reading = (_readerRefresh || _afterReader) && !_quickRefresh;
+   _afterReader = _readerRefresh;
+   // BOOX presents book pages and UI screen redraws with mode 2 and powers off;
+   // only small interaction updates (highlight moves) use mode 3 with the rails on.
+   // A redraw changes over 1/8 of the frame.
+   const uint32_t size = geometry().bufferSize;
+   bool redraw = reading;
+-  if (mode == RefreshMode::Fast && !redraw && _old) {
++  if (mode == RefreshMode::Fast && !redraw && !_quickRefresh && _old) {
+     uint32_t changed = 0;
+     for (uint32_t i = 0; i < size; ++i) changed += _old[i] != fb[i];
+     redraw = changed > size / 8;
+diff --git a/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.h b/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.h
+index 63660e3..8c3b4ea 100644
+--- a/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.h
++++ b/libs/display/FreeInkDisplay/src/driver/Ssd2677Driver.h
+@@ -39,6 +39,7 @@ class Ssd2677Driver : public PanelDriver {
+   PanelGeometry geometry() const override;
+ 
+   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
++  void setQuickRefresh(bool quick) override { _quickRefresh = quick; }
+   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
+   // BOOX 2959 runs the reader AA overlay after inverted pages too.
+   bool grayscaleWhileInverted() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
+@@ -78,6 +79,7 @@ class Ssd2677Driver : public PanelDriver {
+ 
+   bool _readerRefresh = false;
+   bool _afterReader = false;  // last frame presented a book page
++  bool _quickRefresh = false;  // FAST always uses mode 3 with the rails on
+   bool _darkBackground = false;  // facade renders inverted frames
+   bool _needsPowerOn = true;
+   bool _needsInitialFull = true;
+diff --git a/libs/display/FreeInkDisplay/test/host/test_picco.cpp b/libs/display/FreeInkDisplay/test/host/test_picco.cpp
+index 71b5357..73c4a7f 100644
+--- a/libs/display/FreeInkDisplay/test/host/test_picco.cpp
++++ b/libs/display/FreeInkDisplay/test/host/test_picco.cpp
+@@ -414,6 +414,50 @@ static void expectNightGray2677(Ssd2677Driver& s) {
+   s.setReaderRefresh(false);
+ }
+ 
++// Quick refresh: book pages and large redraws use mode 3 with the rails on;
++// FULL still uses the full waveform and powers off.
++static void expectQuick2677(Ssd2677Driver& s) {
++  EpdBus bus;
++  const auto lastLut2677 = [&]() -> const Bytes* {
++    const Bytes* lut = nullptr;
++    for (const auto& w : bus.writes)
++      if (w.command == 0x20) lut = &w.bytes;
++    return lut;
++  };
++  const auto sent = [&](uint8_t command) {
++    for (const auto& w : bus.writes)
++      if (w.command == command) return true;
++    return false;
++  };
++  const Bytes mode2(lut_picco_se0400_fast, lut_picco_se0400_fast + 535);
++  const Bytes mode3(lut_picco_se0400_mode3, lut_picco_se0400_mode3 + 535);
++  Bytes black(48000, 0x00), white(48000, 0xFF);
++  s.begin(bus);
++  s.display(bus, white.data(), nullptr, RefreshMode::Full, false);
++  s.setReaderRefresh(true);
++  bus.clear();
++  s.display(bus, black.data(), nullptr, RefreshMode::Fast, false);
++  assert(*lastLut2677() == mode2 && sent(0x02));  // normal: reading waveform, powered off
++  s.setQuickRefresh(true);
++  for (int i = 0; i < 2; ++i) {
++    bus.clear();
++    s.display(bus, (i ? black : white).data(), nullptr, RefreshMode::Fast, false);
++    assert(*lastLut2677() == mode3 && !sent(0x02) && !s._needsPowerOn);
++    assert(sent(0x04) == (i == 0));  // only the first frame powers on
++  }
++  s.setReaderRefresh(false);
++  bus.clear();
++  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);  // whole-screen UI redraw
++  assert(*lastLut2677() == mode3 && !sent(0x02));
++  bus.clear();
++  s.display(bus, black.data(), nullptr, RefreshMode::Full, false);
++  assert(*lastLut2677() == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535) && sent(0x02));
++  s.setQuickRefresh(false);
++  bus.clear();
++  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);  // large redraw: mode 2 again
++  assert(*lastLut2677() == mode2 && sent(0x02));
++}
++
+ int main(int argc, char** argv) {
+   const char* which = argc > 1 ? argv[1] : "yrd";
+   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
+@@ -650,6 +694,7 @@ int main(int argc, char** argv) {
+     for (const auto& w : bus.writes)
+       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
+     expectNightGray2677(s);
++    expectQuick2677(s);
+     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
+     return 0;
+   }
+@@ -703,6 +748,14 @@ int main(int argc, char** argv) {
+     expectRefresh(d, RefreshMode::Fast, 0x1C, nullptr);
+     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
+     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
++    // Quick refresh: book pages use the UI waveform and keep the rails on.
++    d.setQuickRefresh(true);
++    d.setReaderRefresh(true);
++    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
++    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
++    d.setReaderRefresh(false);
++    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
++    d.setQuickRefresh(false);
+     expectStockPiccoGray(d);
+     expectRetainedGrayStrip(d);
+   } else if (!strcmp(which, "depg")) {

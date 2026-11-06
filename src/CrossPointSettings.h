@@ -161,6 +161,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     REFRESH_FREQUENCY_COUNT
   };
 
+  // Picco page refresh waveform: NORMAL keeps the reading waveform for book pages.
+  enum REFRESH_SPEED { REFRESH_SPEED_NORMAL = 0, REFRESH_SPEED_FAST = 1, REFRESH_SPEED_COUNT };
+
   // Short power button press actions. Touch boards get PWR_CONFIRM in place of
   // CREATE_CLIPPING; touch boards without a home key also get the reader
   // shortcuts (see SettingsList.h). Persisted by index: append only.
@@ -351,6 +354,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepTimeoutMinutes = 10;
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
+  uint8_t refreshSpeed = REFRESH_SPEED_NORMAL;
   uint8_t hyphenationEnabled = 0;
 
   // Reader screen margin settings

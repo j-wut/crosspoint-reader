@@ -49,6 +49,9 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
                           StrId::STR_PAGES_30, StrId::STR_NEVER},
                          "refreshFrequency", StrId::STR_CAT_DISPLAY));
+  if (BoardConfig::isPicco())
+    emit(SettingInfo::Enum(StrId::STR_REFRESH_SPEED, &CrossPointSettings::refreshSpeed,
+                           {StrId::STR_NORMAL, StrId::STR_FAST}, "refreshSpeed", StrId::STR_CAT_DISPLAY));
   emit(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme, homeThemeValues(), "uiTheme",
                          StrId::STR_CAT_DISPLAY));
   if (!BoardConfig::hasTouch())

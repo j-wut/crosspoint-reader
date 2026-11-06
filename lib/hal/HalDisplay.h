@@ -18,6 +18,8 @@ class HalDisplay {
   const char* controllerName() const { return einkDisplay.getControllerName(); }
   // True while book pages are presented; panels with a reading waveform use it.
   void setReaderRefresh(bool reading) { einkDisplay.setReaderRefresh(reading); }
+  // Picco: FAST refreshes use the short UI waveform (faster, more ghosting).
+  void setQuickRefresh(bool quick) { einkDisplay.setQuickRefresh(quick); }
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore) {
     return einkDisplay.displayRetainedGrayscaleOverlay(x, y, w, h, restore);
   }
