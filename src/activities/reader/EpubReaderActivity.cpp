@@ -2423,6 +2423,7 @@ void EpubReaderActivity::drawScrollMarkers(const int orientedMarginLeft, const i
 void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int viewBottom, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
   ImageBlock::clearRenderFailures();
