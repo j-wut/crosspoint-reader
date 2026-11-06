@@ -249,6 +249,48 @@ inline SettingInfo buildShortPowerButtonSetting() {
                                   setShortPowerButtonFromDisplayValue, "shortPwrBtn", StrId::STR_CAT_CONTROLS);
 }
 
+// Hold actions; Toggle Frontlight only where there is a light.
+inline std::vector<ShortPowerButtonOption> longPowerButtonOptions() {
+  std::vector<ShortPowerButtonOption> options = {{StrId::STR_SLEEP, CrossPointSettings::LONG_PWR_SLEEP}};
+  options.reserve(CrossPointSettings::LONG_PWRBTN_COUNT);
+  options.push_back({StrId::STR_IGNORE, CrossPointSettings::LONG_PWR_IGNORE});
+  options.push_back({StrId::STR_PAGE_TURN, CrossPointSettings::LONG_PWR_PAGE_TURN});
+  options.push_back({StrId::STR_FORCE_REFRESH, CrossPointSettings::LONG_PWR_FORCE_REFRESH});
+  options.push_back({StrId::STR_FOOTNOTES, CrossPointSettings::LONG_PWR_FOOTNOTES});
+  options.push_back({StrId::STR_BOOKMARK_OPTION, CrossPointSettings::LONG_PWR_BOOKMARK});
+  options.push_back({StrId::STR_READER_MENU, CrossPointSettings::LONG_PWR_READER_MENU});
+  options.push_back({StrId::STR_SAVE_CLIPPING, CrossPointSettings::LONG_PWR_CREATE_CLIPPING});
+  if (Frontlight.present()) {
+    options.push_back({StrId::STR_TOGGLE_FRONTLIGHT, CrossPointSettings::LONG_PWR_FRONTLIGHT});
+  }
+  return options;
+}
+
+inline std::vector<StrId> buildLongPowerButtonValues() {
+  std::vector<StrId> values;
+  for (const auto& option : longPowerButtonOptions()) values.push_back(option.label);
+  return values;
+}
+
+inline uint8_t longPowerButtonDisplayValue() {
+  const auto options = longPowerButtonOptions();
+  for (size_t i = 0; i < options.size(); i++) {
+    if (options[i].value == SETTINGS.longPwrBtn) return static_cast<uint8_t>(i);
+  }
+  return 0;
+}
+
+inline void setLongPowerButtonFromDisplayValue(const uint8_t displayValue) {
+  const auto options = longPowerButtonOptions();
+  SETTINGS.longPwrBtn =
+      displayValue < options.size() ? options[displayValue].value : CrossPointSettings::LONG_PWR_SLEEP;
+}
+
+inline SettingInfo buildLongPowerButtonSetting() {
+  return SettingInfo::DynamicEnum(StrId::STR_LONG_PWR_BTN, buildLongPowerButtonValues(), longPowerButtonDisplayValue,
+                                  setLongPowerButtonFromDisplayValue, "longPwrBtn", StrId::STR_CAT_CONTROLS);
+}
+
 inline std::vector<StrId> homeThemeValues() {
   static constexpr StrId VALUES[] = {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
                                      StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_COVER_GRID};

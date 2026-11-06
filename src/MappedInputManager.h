@@ -103,6 +103,11 @@ class MappedInputManager {
     homeButtonInput.reset();
     deferredHomeAction = HomeButtonAction::Ignore;
   }
+  // A power hold that ran its action (anything but Sleep or Shut Down) sets
+  // the action for this frame and hides the hold's release from every short
+  // power-button binding.
+  void firePowerHold(HomeButtonAction action) const;
+  bool powerHoldFired() const { return powerHoldConsumed; }
   bool wasMenuGesture() const;
   // Bottom-edge up-swipe as the reader-menu gesture (SHOW_READER_MENU's Swipe
   // Up option). Only meaningful on home-key boards, where Home lives on the
@@ -161,6 +166,7 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideAt = 0;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
+  mutable bool powerHoldConsumed = false;
 #if FREEINK_CAP_TOUCH
   bool powerConfirmClickFrame = false;
 #endif

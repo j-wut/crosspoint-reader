@@ -472,8 +472,80 @@ static bool holdSleepWhileUsbPowered() {
 }
 #endif
 
-// Enter deep sleep mode
-void enterDeepSleep(bool fromTimeout = false) {
+// Tap Down, tap Up, then hold Power: a hard shutdown (battery cut where the
+// board can, otherwise sleep). Each step must follow the last within STEP_MS.
+class ShutdownCombo {
+ public:
+  static constexpr unsigned long STEP_MS = 600;
+  static constexpr unsigned long HOLD_MS = 1000;
+
+  void update(const HalGPIO& input, const unsigned long now) {
+    if (!input.wasAnyPressed()) {
+      if (step == Step::PowerHeld && !input.isPressed(HalGPIO::BTN_POWER)) step = Step::Idle;
+      return;
+    }
+    const bool inTime = now - lastStepAt <= STEP_MS;
+    if (input.wasPressed(HalGPIO::BTN_DOWN)) {
+      step = Step::Down;
+    } else if (step == Step::Down && inTime && input.wasPressed(HalGPIO::BTN_UP)) {
+      step = Step::Up;
+    } else if (step == Step::Up && inTime && input.wasPressed(HalGPIO::BTN_POWER)) {
+      step = Step::PowerHeld;
+    } else {
+      step = Step::Idle;
+    }
+    lastStepAt = now;
+  }
+  bool armed() const { return step == Step::PowerHeld; }
+
+ private:
+  enum class Step : uint8_t { Idle, Down, Up, PowerHeld };
+  Step step = Step::Idle;
+  unsigned long lastStepAt = 0;
+};
+ShutdownCombo shutdownCombo;
+
+enum class PowerHold : uint8_t { Sleep, Action };
+
+// Values the board's menu does not list fall back to Sleep.
+PowerHold powerHoldAction() {
+  switch (SETTINGS.longPwrBtn) {
+    case CrossPointSettings::LONG_PWR_SLEEP:
+      return PowerHold::Sleep;
+    case CrossPointSettings::LONG_PWR_FRONTLIGHT:
+      // Not listed without a frontlight, where the menu shows Sleep.
+      return Frontlight.present() ? PowerHold::Action : PowerHold::Sleep;
+    default:
+      return PowerHold::Action;
+  }
+}
+
+HomeButtonAction powerHoldHomeAction() {
+  switch (SETTINGS.longPwrBtn) {
+    case CrossPointSettings::LONG_PWR_PAGE_TURN:
+      return HomeButtonAction::NextPage;
+    case CrossPointSettings::LONG_PWR_FORCE_REFRESH:
+      return HomeButtonAction::Refresh;
+    case CrossPointSettings::LONG_PWR_FOOTNOTES:
+      return HomeButtonAction::Footnotes;
+    case CrossPointSettings::LONG_PWR_BOOKMARK:
+      return HomeButtonAction::Bookmark;
+    case CrossPointSettings::LONG_PWR_READER_MENU:
+      return HomeButtonAction::ReaderMenu;
+    case CrossPointSettings::LONG_PWR_CREATE_CLIPPING:
+      return HomeButtonAction::CreateClipping;
+    case CrossPointSettings::LONG_PWR_FRONTLIGHT:
+      return HomeButtonAction::ToggleFrontlight;
+    case CrossPointSettings::LONG_PWR_IGNORE:
+    default:
+      return HomeButtonAction::Ignore;
+  }
+}
+
+// Enter deep sleep mode. powerOff then cuts the battery where the board can
+// (Picco charger ship mode); on USB power, or where it can't, it stays asleep.
+// Xteink C3 boards need nothing extra: their sleep already drops GPIO13.
+void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
 
@@ -525,6 +597,21 @@ void enterDeepSleep(bool fromTimeout = false) {
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
+
+  if (powerOff && !wakeOnHeldButton && !gpio.isUsbConnected()) {
+    // The charger leaves ship mode when its nINT line is held low, which may
+    // be this same button: let the press end before arming it.
+    while (gpio.isPressed(HalGPIO::BTN_POWER)) {
+      delay(10);
+      gpio.update();
+    }
+    if (BatteryMonitor::enterShipMode()) {
+      LOG_INF("MAIN", "Battery cut off, powering down");
+      // The SGM41562 opens its BATFET after a 1 s deglitch.
+      delay(3000);
+      LOG_ERR("MAIN", "Still powered after ship mode, sleeping instead");
+    }
+  }
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio, wakeOnHeldButton);
@@ -945,6 +1032,8 @@ void loop() {
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
 
+  shutdownCombo.update(gpio, millis());
+
   // Let wake continue as soon as its hold has been verified. The release can
   // arrive after setup, so consume that one input frame rather than making it
   // a page turn, refresh, or other short power-button action.
@@ -1037,15 +1126,39 @@ void loop() {
                                         SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
                                         gpio.getPowerButtonHeldTime() <= X4PRO_POWER_CLICK_MAX_HOLD_MS;
 
-  if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
-      gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (shutdownCombo.armed() && gpio.isPressed(HalGPIO::BTN_POWER)) {
+    // The combo's Power press skips the normal hold until it shuts down.
+    if (millis() >= allowSleepAt && gpio.getPowerButtonHeldTime() >= ShutdownCombo::HOLD_MS) {
+      LOG_DBG("MAIN", "Shutdown combination held %lums, shutting down", gpio.getPowerButtonHeldTime());
+      enterDeepSleep(false, true);
       return;
     }
-    LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
+  } else if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
+             !mappedInputManager.powerHoldFired() && gpio.isPressed(HalGPIO::BTN_POWER) &&
+             gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+    // Power+Down is the screenshot combination and, on the Picco, Power+Up
+    // the recovery one; neither is a hold.
+    if (gpio.isPressed(HalGPIO::BTN_DOWN) || (BoardConfig::isPicco() && gpio.isPressed(HalGPIO::BTN_UP))) {
+      return;
+    }
+    if (powerHoldAction() == PowerHold::Sleep) {
+      LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
+      enterDeepSleep();
+      // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
+      return;
+    }
+    LOG_DBG("MAIN", "Power button held %lums, hold action %u", gpio.getPowerButtonHeldTime(), SETTINGS.longPwrBtn);
+    mappedInputManager.firePowerHold(powerHoldHomeAction());
+  }
+
+  // Short Sleep with a hold bound elsewhere sleeps on release instead of on
+  // button-down. The X4 Pro double-click path above handles clicks up to
+  // X4PRO_POWER_CLICK_MAX_HOLD_MS.
+  if (SETTINGS.shortPowerSleepsOnRelease() && millis() >= allowSleepAt &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
+      (!x4ProDoubleClickPwrLight || gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) &&
+      gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
     enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
 

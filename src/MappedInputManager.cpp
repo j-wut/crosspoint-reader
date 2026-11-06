@@ -17,6 +17,10 @@ namespace fui = freeink::ui;
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
   remoteInput.reset();
   gpio.update();
+  // Kept through the release frame so that frame's release stays hidden.
+  if (powerHoldConsumed && !gpio.isPressed(HalGPIO::BTN_POWER) && !gpio.wasReleased(HalGPIO::BTN_POWER)) {
+    powerHoldConsumed = false;
+  }
   const bool pagePressed =
       SETTINGS.vibration == CrossPointSettings::VIBRATION_TOUCH_PAGE && gpio.wasCapacitivePagePressed();
   HalHaptics::feedback(SETTINGS.vibration != CrossPointSettings::VIBRATION_OFF, pagePressed, SETTINGS.hapticIntensity);
@@ -140,6 +144,7 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
       return (gpio.*fn)(HalGPIO::BTN_DOWN);
     case Button::Power:
       // Power button bypasses remapping.
+      if (powerHoldConsumed && fn == &HalGPIO::wasReleased) return false;
       return (gpio.*fn)(HalGPIO::BTN_POWER);
     case Button::PageBack:
       // Reader page navigation uses side buttons and can be swapped via settings.
@@ -382,7 +387,8 @@ bool MappedInputManager::wasPowerConfirmClick() const {
   // first release as Confirm. With the shortcut disabled, and on other touch
   // boards, the release counts directly.
   if (BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight) return powerConfirmClickFrame;
-  return gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
+  return !powerHoldConsumed && gpio.wasReleased(HalGPIO::BTN_POWER) &&
+         gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
 #endif
 
@@ -430,6 +436,11 @@ bool MappedInputManager::wasLongPressed(const Button button, const unsigned long
     HalHaptics::longPress(SETTINGS.vibration == CrossPointSettings::VIBRATION_TOUCH_PAGE, SETTINGS.hapticIntensity);
   }
   return true;
+}
+
+void MappedInputManager::firePowerHold(const HomeButtonAction action) const {
+  powerHoldConsumed = true;
+  homeAction = action;
 }
 
 void MappedInputManager::suppressNextRelease(const Button button) const {

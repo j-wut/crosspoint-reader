@@ -202,6 +202,7 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
     emit(SettingInfo::Toggle(StrId::STR_DBL_CLICK_PWR_LIGHT, &CrossPointSettings::doubleClickPwrLight,
                              "doubleClickPwrLight", StrId::STR_CAT_CONTROLS));
   emit(buildShortPowerButtonSetting());
+  emit(buildLongPowerButtonSetting());
   // Always persisted; isHiddenOnDevice() hides it when the IMU probe fails.
   emit(SettingInfo::Enum(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
                          {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_INVERTED}, "tiltPageTurn",

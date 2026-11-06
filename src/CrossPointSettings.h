@@ -181,6 +181,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SHORT_PWRBTN_COUNT
   };
 
+  // Power button hold actions. A hold always wakes the device; this is what a
+  // hold does while awake. Persisted by index: append only.
+  enum LONG_PWRBTN {
+    LONG_PWR_SLEEP = 0,
+    LONG_PWR_IGNORE = 1,
+    LONG_PWR_PAGE_TURN = 2,
+    LONG_PWR_FORCE_REFRESH = 3,
+    LONG_PWR_FOOTNOTES = 4,
+    LONG_PWR_BOOKMARK = 5,
+    LONG_PWR_READER_MENU = 6,
+    LONG_PWR_CREATE_CLIPPING = 7,
+    LONG_PWR_FRONTLIGHT = 8,
+    LONG_PWRBTN_COUNT
+  };
+
   // Long-press Confirm action while reading an EPUB. Persisted values are stable;
   // SettingsList maps them to the device-specific option list shown to the user.
   enum LONG_PRESS_MENU_FUNCTION {
@@ -322,6 +337,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
+  uint8_t longPwrBtn = LONG_PWR_SLEEP;
   // X4 Pro: double-click power toggles the frontlight. Disabling frees the
   // power button for shortPwrBtn actions without the double-click wait.
   uint8_t doubleClickPwrLight = 1;
@@ -476,8 +492,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   void* sdFontResolverCtx = nullptr;
 
   uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
+    // A press that sleeps on any hold acts on button-down; a hold bound to
+    // something else needs the full click window to tell the two apart.
+    return (shortPwrBtn == SLEEP && longPwrBtn == LONG_PWR_SLEEP) ? 10 : 400;
   }
+  // Short Sleep acts on release when the hold is bound to something else.
+  bool shortPowerSleepsOnRelease() const { return shortPwrBtn == SLEEP && longPwrBtn != LONG_PWR_SLEEP; }
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
