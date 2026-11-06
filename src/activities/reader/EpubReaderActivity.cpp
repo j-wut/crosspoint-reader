@@ -231,6 +231,7 @@ EpubReaderActivity::~EpubReaderActivity() {
   discardOverlayPage();  // free the overlay's page snapshot if one is held
   // A radio still stopped for this book's build may start again in the next one.
   if (radioReleasedForBuild.load()) bleturner::afterPaint();
+  if (calibratingScroll) display.holdQuickRefresh(false);
 
   if (footnoteDepth > 0 && epub) saveLinkStack();
 
@@ -1456,6 +1457,94 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   }
 }
 
+namespace {
+// Scroll timings since boot (ms, averaged over recent scrolls).
+uint32_t normalScrollMs = 0;  // a Normal-speed scroll: the smoothing time budget (shortest seen)
+uint8_t normalSamples = 0;
+constexpr uint8_t NORMAL_SAMPLES_WANTED = 2;
+uint32_t fastScrollMs = 0;   // the final frame of a Fast scroll
+uint32_t scrollFrameMs = 0;  // one in-between frame
+constexpr uint32_t MAX_SCROLL_FRAMES = 6;
+
+uint32_t averaged(const uint32_t average, const uint32_t sample) {
+  return average == 0 ? sample : (average * 3 + sample) / 4;
+}
+
+bool smoothScrollWanted() {
+  return BoardConfig::isPicco() && SETTINGS.refreshSpeed == CrossPointSettings::REFRESH_SPEED_FAST;
+}
+}  // namespace
+
+// Requires the render lock.
+void EpubReaderActivity::startScrollAnimation(const bool isForwardTurn, const int fromPage, const int fromOffset,
+                                              const int travel) {
+  scrollRenderPending = true;
+  scrollAnimation.frames = 0;
+  if (!smoothScrollWanted() || holdingTurns) return;
+  // A clean refresh is due: frames would only add to it.
+  const bool cleanRefreshDue =
+      pagesUntilFullRefresh <= 1 || forcedRefreshPending || imageCleanupPending || heldBackRefresh;
+  if (normalSamples < NORMAL_SAMPLES_WANTED) {
+    // Time Normal-speed scrolls first. Skip a scroll that gets a clean refresh: it would time that refresh.
+    if (!cleanRefreshDue) {
+      calibratingScroll = true;
+      display.holdQuickRefresh(true);
+    }
+    return;
+  }
+  if (cleanRefreshDue) return;
+  // Until both are timed, draw one frame so a frame and a Fast final refresh get measured.
+  uint32_t frames = 1;
+  if (fastScrollMs > 0 && scrollFrameMs > 0) {
+    frames = normalScrollMs > fastScrollMs ? (normalScrollMs - fastScrollMs) / scrollFrameMs : 0;
+  }
+  frames = std::min({frames, MAX_SCROLL_FRAMES, static_cast<uint32_t>(std::max(travel - 1, 0))});
+  if (frames == 0) return;
+  scrollAnimation = {fromPage, fromOffset, travel, isForwardTurn, static_cast<uint8_t>(frames), 1, sectionGeneration};
+}
+
+void EpubReaderActivity::renderBook() {
+  if (!section || overlay != Overlay::None || scrollAnimation.generation != sectionGeneration) {
+    scrollAnimation.frames = 0;
+  }
+  const bool frame =
+      scrollAnimation.frames > 0 && scrollAnimation.step >= 1 && scrollAnimation.step <= scrollAnimation.frames;
+  const bool timed = frame || scrollRenderPending;
+  const auto start = millis();
+  drawingScrollFrame = frame;
+  plainScrollRender = false;
+  buildDuringScroll = false;
+  renderBookFrame();
+  drawingScrollFrame = false;
+  if (!timed) return;
+  const uint32_t ms = millis() - start;
+  // Only a plain B/W scroll is a fair sample (no clean refresh, image decode or chapter build).
+  const bool sample = plainScrollRender;
+  if (frame) {
+    if (sample) scrollFrameMs = averaged(scrollFrameMs, ms);
+    if (++scrollAnimation.step > scrollAnimation.frames) scrollAnimation.frames = 0;
+    requestUpdate(true);  // the next frame, then the target
+    return;
+  }
+  scrollRenderPending = false;
+  const bool quick = display.quickRefreshActive();
+  if (calibratingScroll) {
+    calibratingScroll = false;
+    display.holdQuickRefresh(false);
+  }
+  if (!sample || !smoothScrollWanted()) return;
+  if (quick) {
+    fastScrollMs = averaged(fastScrollMs, ms);
+  } else {
+    normalScrollMs = normalSamples == 0 ? ms : std::min(normalScrollMs, ms);
+    if (normalSamples < NORMAL_SAMPLES_WANTED) ++normalSamples;
+  }
+  LOG_INF("ERS", "Scroll %lu ms, last refresh %lu ms (%s); normal %lu, fast %lu, frame %lu",
+          static_cast<unsigned long>(millis() - lastPageTurnTime), static_cast<unsigned long>(ms),
+          quick ? "fast" : "normal", static_cast<unsigned long>(normalScrollMs),
+          static_cast<unsigned long>(fastScrollMs), static_cast<unsigned long>(scrollFrameMs));
+}
+
 bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (!section) return false;
   // A "Bluetooth failed" note has been read: the page this turn paints shows the title again.
@@ -1463,6 +1552,8 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   {
     RenderLock lock;
     clearDeferredReposition();
+    // A turn during smoothing drops the remaining frames; the position is already the target.
+    scrollAnimation.frames = 0;
   }
   const bool scroll = nextTurnScrolls;
   nextTurnScrolls = false;
@@ -1475,6 +1566,8 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       RenderLock lock;
       int page = section->currentPage;
       int offset = currentScrollOffset();
+      const int fromPage = page;
+      const int fromOffset = offset;
       const int travelled = scrollTarget(isForwardTurn, steps, page, offset);
       moved = travelled > 0 ? 1 : 0;
       if (moved > 0) {
@@ -1483,6 +1576,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
         scrollSpine = currentSpineIndex;
         scrollPage = page;
         lastPageTurnTime = millis();
+        if (scroll) startScrollAnimation(isForwardTurn, fromPage, fromOffset, travelled);
       }
     }
     if (moved > 0) return true;
@@ -1866,7 +1960,7 @@ bool EpubReaderActivity::skipLoopDelay() {
   return overlay == Overlay::None && !buildHeapPaused && backgroundBuildWanted();
 }
 
-void EpubReaderActivity::renderBook() {
+void EpubReaderActivity::renderBookFrame() {
   currentPageLinks.clear();
   if (!epub) return;
   // A radio start in flight takes ~50 KB while the stack comes up: the page waits for it rather than
@@ -2157,6 +2251,31 @@ void EpubReaderActivity::renderBook() {
   updateBookmarkFlag();
 
   {
+    // An in-between scroll frame draws a point between the old and new position, then puts the
+    // target back.
+    struct PositionRestore {
+      EpubReaderActivity& reader;
+      bool active;
+      int page, offset, spine, scrolledPage;
+      ~PositionRestore() {
+        if (!active || !reader.section) return;
+        reader.section->currentPage = page;
+        reader.scrollOffset = offset;
+        reader.scrollSpine = spine;
+        reader.scrollPage = scrolledPage;
+      }
+    } restore{*this, drawingScrollFrame, section->currentPage, scrollOffset, scrollSpine, scrollPage};
+    if (drawingScrollFrame) {
+      const auto& animation = scrollAnimation;
+      int page = animation.fromPage;
+      int offset = animation.fromOffset;
+      const int shift = animation.travel * animation.step / (animation.frames + 1);
+      shiftScrollPosition(animation.forward ? shift : -shift, page, offset);
+      section->currentPage = page;
+      scrollOffset = offset;
+      scrollSpine = currentSpineIndex;
+      scrollPage = page;
+    }
     auto p = section->loadPage(section->currentPage);
     if (!p) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
@@ -2217,6 +2336,7 @@ void EpubReaderActivity::renderBook() {
            ++number) {
         while (section->isBuilding() && !section->isBuildComplete() &&
                currentSpineIndex != backgroundBuildFailedSpine && number >= static_cast<int>(section->pageCount)) {
+          buildDuringScroll = true;
           if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
             // The current page is drawn alone; the background build stops retrying this chapter.
             LOG_ERR("ERS", "Section build failed below the scrolled view");
@@ -2251,7 +2371,8 @@ void EpubReaderActivity::renderBook() {
     visibleViewHeight = std::max(1, std::min(viewBottom, drawnBottom) - viewTop);
     // Mark the lines that following forward scrolls bring to the top, so the reader keeps their place.
     scrollMarkerCount = 0;
-    if (SETTINGS.epubScrollEnabled() && SETTINGS.scrollGuides != CrossPointSettings::SCROLL_GUIDES_OFF) {
+    if (SETTINGS.epubScrollEnabled() && SETTINGS.scrollGuides != CrossPointSettings::SCROLL_GUIDES_OFF &&
+        !drawingScrollFrame) {
       int page = section->currentPage;
       int offset = currentScrollOffset();
       int y = 0;
@@ -2275,6 +2396,9 @@ void EpubReaderActivity::renderBook() {
     lastRenderCompleteMs = millis();
     markPageRendered();
   }
+
+  // An in-between frame shows no popups and saves nothing.
+  if (drawingScrollFrame) return;
 
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
       section->pageCount != lastSavedPageCount) {
@@ -2313,6 +2437,11 @@ void EpubReaderActivity::renderBook() {
     GUI.drawPopup(renderer, I18N.get(clippingMessage));
   }
 
+  // A popup or overlay adds a refresh, so this render is no fair scroll timing.
+  if (showBookmarkMessage || showDictionaryMessage || showFontDamagedMessage || showClippingMessage ||
+      overlay != Overlay::None) {
+    plainScrollRender = false;
+  }
   pageBufferStale = false;  // the page is back in the framebuffer
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
@@ -2451,6 +2580,32 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
     });
   };
 
+  if (drawingScrollFrame) {
+    // In-between scroll frame: one B/W refresh, outside the clean-refresh count. Images not yet
+    // decoded show as placeholders, so a frame never waits for a decode.
+    const auto drawFrame = [&]() {
+      forEachVisiblePage([&](const Page& p, int, const int top) {
+        const bool decodePending = std::any_of(p.elements.begin(), p.elements.end(), [](const auto& element) {
+          return element->getTag() == TAG_PageImage &&
+                 static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
+        });
+        if (decodePending) {
+          p.renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, top);
+        } else {
+          p.render(renderer, fontId, orientedMarginLeft, top);
+        }
+      });
+      renderStatusBar();
+    };
+    auto frameScope = renderer.getFontCacheManager()->createPrewarmScope();
+    drawFrame();
+    frameScope.endScanAndPrewarm();
+    drawFrame();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    plainScrollRender = !buildDuringScroll;
+    return;
+  }
+
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
   renderPages();
@@ -2504,6 +2659,7 @@ void EpubReaderActivity::renderContents(std::vector<ViewPage> pages, const int v
     heldBackRefresh = false;
   }
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
+  plainScrollRender = !cleanImageBasePending && !imagesNeedDecode && !buildDuringScroll;
   const bool grayImages = pageHasImages && !holdDraft;
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !holdDraft;
   const bool needsAnyGrayscale = needsTextGrayscale || (grayImages && !BoardConfig::isEegoA4());

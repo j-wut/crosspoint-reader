@@ -84,6 +84,26 @@ class EpubReaderActivity final : public ReaderActivity {
   size_t heightCacheNext = 0;
   // Height of the content the last render showed; a flip never moves further, so nothing is skipped.
   int visibleViewHeight = 0;
+  // Picco Fast scroll smoothing: B/W frames between the old and new position, as many as fit in the
+  // time a Normal scroll takes. The scroll position already holds the target; frames only draw.
+  // While a frame draws, renderBookFrame() sees the frame's position, so it must not save it.
+  struct ScrollAnimation {
+    int fromPage = 0;
+    int fromOffset = 0;
+    int travel = 0;  // pixels, positive
+    bool forward = true;
+    uint8_t frames = 0;       // 0 = idle
+    uint8_t step = 0;         // frame being drawn, 1..frames
+    uint32_t generation = 0;  // sectionGeneration the frames belong to
+  };
+  ScrollAnimation scrollAnimation;
+  bool scrollRenderPending = false;  // the next renderBook() shows a scroll (timed)
+  bool calibratingScroll = false;    // that scroll runs at Normal speed to time it
+  bool drawingScrollFrame = false;   // renderContents() draws a B/W in-between frame
+  bool plainScrollRender = false;    // the last render was a fair timing sample
+  bool buildDuringScroll = false;    // the last render built chapter pages
+  void startScrollAnimation(bool isForwardTurn, int fromPage, int fromOffset, int travel);
+  void renderBookFrame();
   bool changeChapter(bool isForwardTurn);
   struct ViewPage {
     std::unique_ptr<Page> page;

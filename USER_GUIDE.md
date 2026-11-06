@@ -251,7 +251,7 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Refresh Frequency**: Set how often the screen does a full refresh while reading to reduce ghosting; options are every 1, 5, 10, 15, or 30 pages.
 
-- **Refresh Speed** (BOOX Picco only): "Normal" (default) or "Fast". Fast turns pages with the shorter screen update used for menus, so pages change faster but show more ghosting. On some Picco screens it makes no difference.
+- **Refresh Speed** (BOOX Picco only): "Normal" (default) or "Fast". Fast turns pages with the shorter screen update used for menus, so pages change faster but show more ghosting. When page buttons are set to "Scroll", Fast also draws in-between steps so the text slides instead of jumping, and each scroll takes about as long as at Normal. The first scrolls after the device starts run at Normal speed to measure this, and holding a button scrolls without steps. On some Picco screens it makes no difference.
 
 - **UI Theme**: Set which UI theme to use:
   

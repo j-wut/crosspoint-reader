@@ -3,6 +3,8 @@
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
 
+#include <atomic>
+
 class HalDisplay {
  public:
   using Controller = BoardConfig::DisplayController;
@@ -19,7 +21,16 @@ class HalDisplay {
   // True while book pages are presented; panels with a reading waveform use it.
   void setReaderRefresh(bool reading) { einkDisplay.setReaderRefresh(reading); }
   // Picco: FAST refreshes use the short UI waveform (faster, more ghosting).
-  void setQuickRefresh(bool quick) { einkDisplay.setQuickRefresh(quick); }
+  void setQuickRefresh(bool quick) {
+    quickWanted = quick;
+    einkDisplay.setQuickRefresh(quick && !quickHeld);
+  }
+  // Uses the normal waveform while held, whatever setQuickRefresh() asks.
+  void holdQuickRefresh(bool hold) {
+    quickHeld = hold;
+    einkDisplay.setQuickRefresh(quickWanted && !hold);
+  }
+  bool quickRefreshActive() const { return quickWanted && !quickHeld; }
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore) {
     return einkDisplay.displayRetainedGrayscaleOverlay(x, y, w, h, restore);
   }
@@ -137,6 +148,9 @@ class HalDisplay {
 
  private:
   EInkDisplay einkDisplay;
+  // Set by the loop task, read by the render task.
+  std::atomic<bool> quickWanted{false};
+  std::atomic<bool> quickHeld{false};
 };
 
 extern HalDisplay display;
