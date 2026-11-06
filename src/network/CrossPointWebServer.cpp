@@ -738,6 +738,10 @@ void CrossPointWebServer::handleJszip() const {
   LOG_DBG("WEB", "Served jszip.min.js");
 }
 
+// Same rule as the on-device SD Firmware Update item: the Picco's stock layout has
+// one app slot (partitions_picco.csv), so it cannot flash itself.
+static bool canUpdateFirmware() { return !BoardConfig::isPicco(); }
+
 void CrossPointWebServer::handleNotFound() const {
   // CORS preflight: routes are registered per-method, so OPTIONS requests land
   // here. The Access-Control-Allow-* headers are added by enableCORS().
@@ -760,6 +764,7 @@ void CrossPointWebServer::handleStatus() const {
   doc["firmwareFamily"] = firmwareidentity::FAMILY;
   doc["pluginApi"] = firmwareidentity::PLUGIN_API_VERSION;
   doc["pluginCapabilities"] = firmwareidentity::PLUGIN_CAPABILITIES;
+  doc["firmwareUpdate"] = canUpdateFirmware();
   doc["ip"] = ipAddr;
   doc["mode"] = apMode ? "AP" : "STA";
   doc["rssi"] = apMode ? 0 : WiFi.RSSI();
@@ -1236,6 +1241,10 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
 void CrossPointWebServer::handleFirmwareFlash() {
   // The page uploads the image first. The file transfer activity then reboots into
   // SdFirmwareUpdateActivity, which validates the file and asks for confirmation on the device.
+  if (!canUpdateFirmware()) {
+    handleNotFound();
+    return;
+  }
   if (!firmwareFlashHandler) {
     server->send(409, "text/plain", "Open File Transfer on the reader to update firmware");
     return;

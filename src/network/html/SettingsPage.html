@@ -41,7 +41,7 @@
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
 
-  <div class="card">
+  <div class="card" id="firmware-card" hidden>
     <h2>Firmware Update</h2>
     <p style="color:var(--label-color);">Upload a firmware .bin. The reader restarts, checks the file and asks you to confirm on the device.</p>
     <div class="setting-row">
@@ -674,6 +674,18 @@
     }
   }
 
+  // Shown only on readers that can flash themselves (not the Picco).
+  async function loadFirmwareCard() {
+    try {
+      const resp = await fetch('/api/status');
+      if (resp.ok && (await resp.json()).firmwareUpdate) {
+        document.getElementById('firmware-card').hidden = false;
+      }
+    } catch (e) {
+      // Leave the card hidden.
+    }
+  }
+
   // Sequential, not concurrent: the device's web server handles one client
   // connection at a time, and simultaneous fetches on page load can
   // stall long enough inside a single response to trip the firmware watchdog.
@@ -681,6 +693,7 @@
     await loadSettings();
     await loadWifiNetworks();
     await loadOpdsServers();
+    await loadFirmwareCard();
   })();
 </script>
 </body>

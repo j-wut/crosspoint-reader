@@ -113,7 +113,7 @@ cards for:
 - Saved Wi-Fi networks
 - OPDS servers
 - Firmware update: upload a `.bin`; the reader restarts and asks for
-  confirmation on the device before flashing
+  confirmation on the device before flashing (not shown on BOOX Picco)
 
 Passwords are accepted when adding or editing entries, but saved passwords are
 not returned by the API.
