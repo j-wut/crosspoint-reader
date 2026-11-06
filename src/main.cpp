@@ -47,6 +47,7 @@
 #include "fontIds.h"
 #include "network/FirmwareFlasher.h"
 #include "platform/UsbSerialJtagHandoff.h"
+#include "platform/VendorRecovery.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
@@ -75,6 +76,8 @@ static unsigned long lastX4ProPowerClickAt = 0;
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
+// How long Power + Up must be held on the Picco to enter vendor recovery.
+constexpr unsigned long RECOVERY_COMBO_HOLD_MS = 2000;
 }  // namespace
 
 // A wake hold must never become an in-app power-button action.  Boot may continue
@@ -690,6 +693,7 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  if (BoardConfig::isPicco()) markRunningAppValid();
 
   // Board TX-power ceiling. It can only be set once WiFi has started, so it is
   // applied on every STA/AP start rather than at each place that brings WiFi up.
@@ -1040,6 +1044,45 @@ void loop() {
   if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
     wakePowerReleasePending = false;
     return;
+  }
+
+  // Picco: hold Power + Up to restart into the vendor recovery app. Once both
+  // are down, and until both are up again, no further Power or Up action runs
+  // (no sleep, release action or hold action). An Up press that came first has
+  // already run.
+  static bool recoveryWaitForRelease = false;
+  static bool recoveryAttempted = false;
+  static bool recoveryBothHeld = false;
+  static unsigned long recoveryBothHeldSince = 0;
+  if (BoardConfig::isPicco()) {
+    const bool powerHeld = gpio.isPressed(HalGPIO::BTN_POWER);
+    const bool upHeld = gpio.isPressed(HalGPIO::BTN_UP);
+    if (powerHeld && upHeld) {
+      if (!recoveryBothHeld) {
+        recoveryBothHeld = true;
+        recoveryBothHeldSince = millis();
+      }
+      recoveryWaitForRelease = true;
+      if (!recoveryAttempted && millis() - recoveryBothHeldSince >= RECOVERY_COMBO_HOLD_MS) {
+        recoveryAttempted = true;
+        RenderLock lock;
+        GUI.drawPopup(renderer, tr(STR_VENDOR_RECOVERY));
+        restartToVendorRecovery();
+        // Only reached when the recovery app could not be selected.
+        GUI.drawPopup(renderer, tr(STR_VENDOR_RECOVERY_FAILED));
+      }
+      return;
+    }
+    recoveryBothHeld = false;
+    if (recoveryWaitForRelease) {
+      if (powerHeld || upHeld) return;
+      recoveryWaitForRelease = false;
+      if (recoveryAttempted) {
+        recoveryAttempted = false;
+        activityManager.requestUpdate();
+      }
+      return;
+    }
   }
 
   static bool screenshotButtonsReleased = true;
