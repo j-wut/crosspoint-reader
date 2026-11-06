@@ -138,7 +138,8 @@ StrId groupFor(const SettingInfo& setting, const SettingsSection section) {
     return StrId::STR_SETTINGS_GROUP_SLEEP;
   }
   if (setting.nameId == StrId::STR_DICTIONARY) return StrId::STR_SETTINGS_GROUP_TEXT;
-  if (ptr == &S::sideButtonLayout || ptr == &S::frontButtonFollowOrientation) {
+  if (ptr == &S::sideButtonLayout || ptr == &S::frontButtonFollowOrientation ||
+      ptr == &S::sideButtonFollowOrientation) {
     return StrId::STR_SETTINGS_GROUP_BUTTONS;
   }
   if (ptr == &S::sidePageButtons || ptr == &S::longPressButtonBehavior || ptr == &S::frontPageButtons ||
