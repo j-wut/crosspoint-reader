@@ -46,6 +46,7 @@ Response:
   "firmwareFamily": "crosspoint",
   "pluginApi": 1,
   "pluginCapabilities": "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog.item_details,catalog.encoded_item_fields,catalog.list_index_mapping",
+  "firmwareUpdate": true,
   "ip": "192.168.1.100",
   "mode": "STA",
   "rssi": -45,
@@ -61,6 +62,7 @@ Response:
 | `firmwareFamily` | string | Stable compatibility family; stock CrossPoint uses `crosspoint` |
 | `pluginApi` | number | Numeric plugin API level used for catalog compatibility |
 | `pluginCapabilities` | string | Comma-separated firmware capabilities used for catalog compatibility |
+| `firmwareUpdate` | boolean | `true` if the reader can update its firmware from the web Settings page; `false` on BOOX Picco |
 | `ip` | string | Device IP address |
 | `mode` | string | `"STA"` for joined Wi-Fi or `"AP"` for hotspot mode |
 | `rssi` | number | Wi-Fi RSSI in dBm; `0` in AP mode |
@@ -242,9 +244,9 @@ curl -X POST http://crosspoint.local/api/firmware/flash
 | Status | Meaning |
 |--------|---------|
 | `200` | Request accepted; the reader restarts |
-| `404` | `/firmware.bin` is missing |
+| `404` | `/firmware.bin` is missing, or the device cannot update itself (BOOX Picco) |
 | `409` | The current mode cannot start an update (for example Calibre Connect) |
-| `501` | The device has no second app slot (BOOX Picco) |
+| `501` | The running partition table has no second app slot |
 
 ## Settings API
 
