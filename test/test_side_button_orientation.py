@@ -91,6 +91,9 @@ struct {
   bool wasTiltedBack() const { return false; }
 } halTiltSensor;
 constexpr unsigned long SKIP_HOLD_MS = 700;
+struct {
+  void setReaderRefresh(bool) {}
+} display;
 """ + detect_turn + r"""
 
 // Record the bitmap rotation and underline actually sent to the draw target.
