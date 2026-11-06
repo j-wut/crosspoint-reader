@@ -327,7 +327,7 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
          },
          nullptr},
         // pdf.js 4.10.38 (Mozilla, Apache-2.0), used by the upload page to read PDFs. Trimmed build
-        // (no XFA, forms, JPEG 2000, JBIG2 or viewer layers), about 280 KB gzipped.
+        // (no XFA, forms, JPEG 2000, JBIG2, saving or viewer layers), about 216 KB gzipped.
         {"/js/pdfjs.min.js", HTTP_GET,
          [](S& s) {
            sendStaticContent(s.server.get(), pdfjs_minJs, sizeof(pdfjs_minJs), pdfjs_minJsETag, "text/javascript");
