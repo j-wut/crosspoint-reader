@@ -5782,7 +5782,7 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
 }
 
 // PDF to EPUB conversion. The reader serves the converter (/js/pdf2epub.js) and pdf.js 4.10.38
-// (legacy build), so it works offline and in hotspot mode. Loaded only when a PDF is converted.
+// (modern build: Chrome 103+, Safari 16.4+), so it works offline and in hotspot mode. Loaded only when a PDF is converted.
 let pdfToolsPromise = null;
 function loadPdfTools() {
   if (!pdfToolsPromise) {
@@ -5800,7 +5800,7 @@ function loadPdfTools() {
       try {
         pdfjsLib = await import('/js/pdfjs.min.js');
       } catch (e) {
-        throw new Error('could not load the PDF reader (pdf.js) from the reader.');
+        throw new Error('could not load the PDF reader (pdf.js). It needs Chrome 103+, Safari 16.4+ or a current Firefox.');
       }
       pdfjsLib.GlobalWorkerOptions.workerSrc = '/js/pdfjs.worker.min.js';
       return pdfjsLib;
