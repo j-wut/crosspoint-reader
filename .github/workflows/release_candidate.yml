@@ -4,6 +4,11 @@ on:
   push:
     branches: [release]
   workflow_dispatch:
+    inputs:
+      board:
+        description: "Build only this env (e.g. picco-gh_release_rc); empty builds every board"
+        required: false
+        default: ""
 
 # A newer push or manual run on the same branch cancels the older build.
 concurrency:
@@ -16,8 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pushes to release build X3/X4 and Picco. A manual run builds every board.
-        pio_env: ${{ fromJSON(github.event_name == 'push' && '["gh_release_rc","picco-gh_release_rc"]' || '["gh_release_rc","sticky-gh_release_rc","x4pro-gh_release_rc","x4c-gh_release_rc","papermono-gh_release_rc","metalio_eink4-gh_release_rc","eego_a4-gh_release_rc","picco-gh_release_rc"]') }}
+        # Pushes to release build X3/X4 and Picco. A manual run builds the chosen
+        # board, or every board when none is given.
+        pio_env: ${{ fromJSON(github.event_name == 'push' && '["gh_release_rc","picco-gh_release_rc"]' || inputs.board != '' && format('["{0}"]', inputs.board) || '["gh_release_rc","sticky-gh_release_rc","x4pro-gh_release_rc","x4c-gh_release_rc","papermono-gh_release_rc","metalio_eink4-gh_release_rc","eego_a4-gh_release_rc","picco-gh_release_rc"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
