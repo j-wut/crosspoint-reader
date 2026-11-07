@@ -222,7 +222,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   };
 
   // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, COVER_GRID = 4 };
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, COVER_GRID = 4, TILES = 5 };
 
   // Image rendering in EPUB reader. IMAGES_DISPLAY_BW lays images out like
   // IMAGES_DISPLAY but draws them as a B/W dither, so image pages skip the

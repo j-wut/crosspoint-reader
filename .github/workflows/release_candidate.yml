@@ -2,13 +2,14 @@ name: Compile Release Candidate
 
 on:
   push:
-    branches: [release]
+    # Only this Picco branch carries this file version, so any of its pushes build.
+    branches-ignore: [release]
   workflow_dispatch:
     inputs:
       board:
-        description: "Build only this env (e.g. picco-gh_release_rc); empty builds every board"
+        description: "Build only this env; this branch is for the Picco"
         required: false
-        default: ""
+        default: "picco-gh_release_rc"
 
 # A newer push or manual run on the same branch cancels the older build.
 concurrency:
@@ -21,9 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pushes to release build X3/X4 and Picco. A manual run builds the chosen
-        # board, or every board when none is given.
-        pio_env: ${{ fromJSON(github.event_name == 'push' && '["gh_release_rc","picco-gh_release_rc"]' || inputs.board != '' && format('["{0}"]', inputs.board) || '["gh_release_rc","sticky-gh_release_rc","x4pro-gh_release_rc","x4c-gh_release_rc","papermono-gh_release_rc","metalio_eink4-gh_release_rc","eego_a4-gh_release_rc","picco-gh_release_rc"]') }}
+        # This branch is the Picco-only UI line, so it builds just the Picco.
+        pio_env: ${{ fromJSON(github.event_name == 'push' && '["picco-gh_release_rc"]' || format('["{0}"]', inputs.board || 'picco-gh_release_rc')) }}
     steps:
       - uses: actions/checkout@v6
         with:

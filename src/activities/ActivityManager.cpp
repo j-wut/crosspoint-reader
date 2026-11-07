@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include "Activity.h"
+#include "apps/AppsActivity.h"
 #include "CrossPointSettings.h"
 #include "HapticFeedback.h"
 #include "OpdsServerStore.h"
@@ -305,6 +306,15 @@ void ActivityManager::goToLibrary() {
   auto activity = makeUniqueNoThrow<LibraryListActivity>(renderer, mappedInput);
   if (!activity) {
     LOG_ERR("ACT", "OOM: library activity");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
+void ActivityManager::goToApps() {
+  auto activity = makeUniqueNoThrow<AppsActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: apps activity");
     return;
   }
   replaceActivity(std::move(activity));

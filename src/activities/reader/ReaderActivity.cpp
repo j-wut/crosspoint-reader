@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdio>
 
+#include "apps/ReadingStats.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "EpubReaderActivity.h"
@@ -129,6 +130,9 @@ void ReaderActivity::onExit() {
 void ReaderActivity::prepareForSleep() { flushReaderSession(); }
 
 void ReaderActivity::flushReaderSession() {
+  if (readerSession.isEmitWorthy()) {
+    readingstats::addSession(readerSession.startTime(), readerSession.durationSeconds());
+  }
   if (!readerSession.isEmitWorthy() || !pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
     readerSession.reset();
     return;

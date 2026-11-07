@@ -134,6 +134,12 @@ class CrossPointWebServer {
 
   // Font management handlers
   void handleFontsPage() const;
+  // Tiles theme apps: to-do and countdown lists, and the browser's clock.
+  void handleAppsPage() const;
+  void handleGetAppLists() const;
+  void handlePostTodos() const;
+  void handlePostCountdowns() const;
+  void handlePostTime() const;
   void handleFontList() const;
   void handleFontUpload();
   void handleFontUploadData();
