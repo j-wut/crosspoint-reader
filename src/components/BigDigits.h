@@ -5,7 +5,7 @@
 #include <cstring>
 
 // Seven-segment digits for timer readouts, far larger than the built-in UI
-// fonts. Draws "0"-"9" and ":"; other characters leave a gap.
+// fonts. Draws "0"-"9", "-" and ":"; other characters leave a gap.
 namespace bigdigits {
 
 // Width of `text` at digit height `height`.
@@ -38,8 +38,8 @@ inline void draw(freeink::ui::DrawTarget& target, int16_t x, const int16_t y, co
       x = static_cast<int16_t>(x + height / 5 + gap);
       continue;
     }
-    if (*c >= '0' && *c <= '9') {
-      const uint8_t s = SEGMENTS[*c - '0'];
+    if ((*c >= '0' && *c <= '9') || *c == '-') {
+      const uint8_t s = *c == '-' ? 0x40 : SEGMENTS[*c - '0'];
       const auto seg = [&](const int bit, const fui::Rect r) {
         if (s & (1 << bit)) target.fill(r, ink, static_cast<uint8_t>(t / 2));
       };

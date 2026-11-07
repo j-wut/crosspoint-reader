@@ -7,7 +7,7 @@
 // Tiles theme Apps screen: a paged 3x3 grid of app tiles.
 class AppsActivity final : public Activity, private UiAppHost {
  public:
-  enum class App : uint8_t { ReadingStats, Todo, Pomodoro, Countdown, Fortune, Files };
+  enum class App : uint8_t { ReadingStats, Todo, Pomodoro, Countdown, Weather, Fortune, Files };
 
   AppsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Apps", renderer, mappedInput), UiAppHost(renderer) {}
