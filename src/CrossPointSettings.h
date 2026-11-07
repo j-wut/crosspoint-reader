@@ -397,7 +397,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
-  uint8_t uiTheme = LYRA;
+  uint8_t uiTheme = TILES;  // this branch targets the Picco
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // The fading fix compensates the X4/X3 grayscale waveforms; other boards never get it.
