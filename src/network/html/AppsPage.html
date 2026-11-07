@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Apps - CrossPoint Reader</title>
+    <style>
+      .app-row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color, #ddd); }
+      .app-row:last-child { border-bottom: none; }
+      .app-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      .app-row.done .grow { text-decoration: line-through; color: var(--label-color); }
+      .app-meta { color: var(--label-color); font-size: 0.9em; }
+      .app-form { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+      .app-form input[type="text"] { flex: 1; min-width: 180px; }
+      .app-row input[type="checkbox"] { width: 22px; height: 22px; }
+    </style>
+    <link rel="stylesheet" href="/assets/web.css" />
+    <link rel="icon" type="image/svg+xml" href="/assets/crosspoint-icon.svg" />
+  </head>
+  <body class="web-ui">
+    <!--#include file="shared/Header.html.inc" -->
+    <main class="page-content">
+      <div class="card">
+        <h2>To-dos</h2>
+        <div id="todos"><p class="empty-state">Loading...</p></div>
+        <form class="app-form" id="todoForm">
+          <input type="text" id="todoText" maxlength="120" placeholder="New to-do" required />
+          <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Countdowns</h2>
+        <p class="app-meta" id="clockNote" hidden>The reader's clock was not set. It now uses this browser's time.</p>
+        <div id="countdowns"><p class="empty-state">Loading...</p></div>
+        <form class="app-form" id="countdownForm">
+          <input type="text" id="countdownTitle" maxlength="120" placeholder="Event" required />
+          <input type="date" id="countdownDate" required />
+          <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+      </div>
+    </main>
+    <!--#include file="shared/Footer.html.inc" -->
+    <script>
+      const MAX_TODOS = 50;
+      const MAX_COUNTDOWNS = 20;
+      let todos = [];
+      let countdowns = [];
+
+      function daysUntil(date) {
+        const [y, m, d] = date.split('-').map(Number);
+        const today = new Date();
+        const start = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+        return Math.round((Date.UTC(y, m - 1, d) - start) / 86400000);
+      }
+
+      function daysText(days) {
+        if (days === 0) return 'Today';
+        if (days > 0) return days === 1 ? '1 day' : days + ' days';
+        return -days === 1 ? '1 day ago' : -days + ' days ago';
+      }
+
+      // Rows are built with textContent so list text cannot inject markup.
+      function row(text, meta, onDelete, done, onToggle) {
+        const el = document.createElement('div');
+        el.className = 'app-row' + (done ? ' done' : '');
+        if (onToggle) {
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.checked = done;
+          box.addEventListener('change', onToggle);
+          el.appendChild(box);
+        }
+        const label = document.createElement('div');
+        label.className = 'grow';
+        label.textContent = text;
+        if (meta) {
+          const m = document.createElement('div');
+          m.className = 'app-meta';
+          m.textContent = meta;
+          label.appendChild(m);
+        }
+        el.appendChild(label);
+        const del = document.createElement('button');
+        del.className = 'btn btn-danger';
+        del.textContent = 'Delete';
+        del.addEventListener('click', onDelete);
+        el.appendChild(del);
+        return el;
+      }
+
+      function empty(text) {
+        const p = document.createElement('p');
+        p.className = 'empty-state';
+        p.textContent = text;
+        return p;
+      }
+
+      function render(data) {
+        todos = data.todos || [];
+        countdowns = (data.countdowns || []).sort((a, b) => a.date.localeCompare(b.date));
+        const t = document.getElementById('todos');
+        t.replaceChildren();
+        if (!todos.length) t.appendChild(empty('No to-dos'));
+        todos.forEach((item, i) => {
+          t.appendChild(row(item.text, null, () => { todos.splice(i, 1); save('todos', todos); }, item.done, () => {
+            todos[i].done = !todos[i].done;
+            save('todos', todos);
+          }));
+        });
+        const c = document.getElementById('countdowns');
+        c.replaceChildren();
+        if (!countdowns.length) c.appendChild(empty('No countdowns'));
+        countdowns.forEach((item, i) => {
+          c.appendChild(row(item.title, item.date + ' · ' + daysText(daysUntil(item.date)), () => {
+            countdowns.splice(i, 1);
+            save('countdowns', countdowns);
+          }));
+        });
+      }
+
+      async function save(kind, items) {
+        try {
+          const res = await fetch('/api/apps/' + kind, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items })
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          render(await res.json());
+        } catch (err) {
+          showWebToast('Save failed: ' + err.message, true);
+          load();
+        }
+      }
+
+      async function load() {
+        try {
+          const res = await fetch('/api/apps');
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          render(data);
+          if (!data.clockSet) setClock();
+        } catch (err) {
+          showWebToast('Failed to load lists: ' + err.message, true);
+        }
+      }
+
+      async function setClock() {
+        try {
+          const res = await fetch('/api/time', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
+          });
+          const data = await res.json();
+          document.getElementById('clockNote').hidden = !data.clockSet;
+        } catch (err) {
+          // The lists still work; only the device's day count waits for a clock.
+        }
+      }
+
+      document.getElementById('todoForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('todoText');
+        const text = input.value.trim();
+        if (!text) return;
+        if (todos.length >= MAX_TODOS) {
+          showWebToast('The list holds ' + MAX_TODOS + ' to-dos.', true);
+          return;
+        }
+        todos.push({ text, done: false });
+        input.value = '';
+        save('todos', todos);
+      });
+
+      document.getElementById('countdownForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const title = document.getElementById('countdownTitle');
+        const date = document.getElementById('countdownDate');
+        if (!title.value.trim() || !date.value) return;
+        if (countdowns.length >= MAX_COUNTDOWNS) {
+          showWebToast('The list holds ' + MAX_COUNTDOWNS + ' countdowns.', true);
+          return;
+        }
+        countdowns.push({ title: title.value.trim(), date: date.value });
+        title.value = '';
+        date.value = '';
+        save('countdowns', countdowns);
+      });
+
+      load();
+    </script>
+  </body>
+</html>
