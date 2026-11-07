@@ -9,12 +9,13 @@
 #include <algorithm>
 #include <iterator>
 
+#include "CountdownActivity.h"
+#include "FortuneActivity.h"
 #include "MappedInputManager.h"
 #include "PomodoroActivity.h"
 #include "ReadingStatsActivity.h"
 #include "TodoActivity.h"
-#include "CountdownActivity.h"
-#include "FortuneActivity.h"
+#include "WeatherActivity.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
 #include "components/icons/appIcons.h"
@@ -37,6 +38,7 @@ const AppEntry APPS[] = {
     {AppsActivity::App::Todo, StrId::STR_APP_TODO, &icon_app_todo_48},
     {AppsActivity::App::Pomodoro, StrId::STR_APP_POMODORO, &icon_app_pomodoro_48},
     {AppsActivity::App::Countdown, StrId::STR_APP_COUNTDOWN, &icon_app_countdown_48},
+    {AppsActivity::App::Weather, StrId::STR_APP_WEATHER, &icon_app_weather_48},
     {AppsActivity::App::Fortune, StrId::STR_APP_FORTUNE, &icon_app_fortune_48},
     {AppsActivity::App::Files, StrId::STR_BROWSE_FILES, &icon_app_files_48},
 };
@@ -80,6 +82,9 @@ void AppsActivity::open(const int index) {
       break;
     case App::Countdown:
       next = makeUniqueNoThrow<CountdownActivity>(renderer, mappedInput);
+      break;
+    case App::Weather:
+      next = makeUniqueNoThrow<WeatherActivity>(renderer, mappedInput);
       break;
     case App::Fortune:
       next = makeUniqueNoThrow<FortuneActivity>(renderer, mappedInput);

@@ -1,0 +1,15 @@
+# Manifest for src/components/icons/weatherIcons.h (Weather app) — regenerate with:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/weatherIcons.manifest \
+#     --svgdir <lucide-static 0.460.0>/icons \
+#     --sizes 48,96 --out src/components/icons/weatherIcons.h
+# then run ./bin/clang-format-fix -g.
+# Licenses and copyright notices: freeink-sdk/libs/assets/Icons/lucide/LICENSE.
+wx-clear = sun
+wx-partly = cloud-sun
+wx-cloudy = cloud
+wx-fog = cloud-fog
+wx-drizzle = cloud-drizzle
+wx-rain = cloud-rain
+wx-snow = cloud-snow
+wx-storm = cloud-lightning
