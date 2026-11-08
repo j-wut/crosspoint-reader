@@ -219,10 +219,9 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
   bar.border = INK;
   bar.borderWidth = 1;
   bar.radius = PROGRESS_HEIGHT / 2;
-  fui::progressBar(screen.frame(),
-                   fui::Rect{cover.x, static_cast<int16_t>(y + subtitleHeight + theme.spaceMd), cover.width,
-                             PROGRESS_HEIGHT},
-                   bar);
+  fui::progressBar(
+      screen.frame(),
+      fui::Rect{cover.x, static_cast<int16_t>(y + subtitleHeight + theme.spaceMd), cover.width, PROGRESS_HEIGHT}, bar);
 }
 
 void TilesHomeUi::drawPlaceholder(UiScreen& screen, const fui::Rect cover) {
