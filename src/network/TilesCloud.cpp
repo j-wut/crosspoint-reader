@@ -201,6 +201,70 @@ int logGet(Print& out, const char* url, const std::string& authorization, const 
   return status;
 }
 
+// Long string values (tokens, secrets) shortened so the log never holds them.
+void redactLongStrings(JsonVariant v, int depth = 0) {
+  if (depth > 6) return;
+  if (v.is<JsonObject>()) {
+    for (JsonPair kv : v.as<JsonObject>()) {
+      JsonVariant child = kv.value();
+      if (child.is<const char*>()) {
+        const std::string text = child.as<const char*>();
+        if (text.size() > 24) child.set(text.substr(0, 6) + "...(" + std::to_string(text.size()) + " chars)");
+      } else {
+        redactLongStrings(child, depth + 1);
+      }
+    }
+  } else if (v.is<JsonArray>()) {
+    for (JsonVariant item : v.as<JsonArray>()) redactLongStrings(item, depth + 1);
+  }
+}
+
+// Ask for a device token the way the stock firmware does before it has one:
+// /users/deviceToken with only the User-Agent and "mac" headers, no
+// Authorization. Logs the method, status and the reply with secrets cut.
+// Returns the token when the server hands one out.
+std::string requestDeviceToken(Print& out) {
+  const std::string url = std::string(API_BASE) + "/users/deviceToken";
+  for (const char* method : {"GET", "POST"}) {
+    freeink::SecureHttpClient http;
+    if (!http.begin(url.c_str())) return {};
+    http.setTimeout(15000);
+    http.setInsecure();
+    http.setUserAgent(STOCK_USER_AGENT);
+    http.addHeader("mac", macText());
+    const unsigned long start = millis();
+    int status;
+    if (strcmp(method, "GET") == 0) {
+      status = http.GET();
+    } else {
+      http.addHeader("Content-Type", "application/json");
+      status = http.sendRequest("POST", std::string("{}"));
+    }
+    std::string body = http.getString();
+    http.end();
+    if (body.size() > BODY_CAP) body.resize(BODY_CAP);
+    out.printf("[deviceToken] %s %s (mac %s) -> %d, %u bytes, %lu ms\n", method, url.c_str(), macText().c_str(), status,
+               static_cast<unsigned>(body.size()), millis() - start);
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      out.println(body.substr(0, 1000).c_str());
+    } else {
+      std::string token = findString(doc.as<JsonVariantConst>(), "token");
+      redactLongStrings(doc.as<JsonVariant>());
+      serializeJson(doc, out);
+      out.println();
+      if (!token.empty()) {
+        out.printf("[deviceToken] got a token (%u chars) using only the mac header\n",
+                   static_cast<unsigned>(token.size()));
+        return token;
+      }
+    }
+    // Only try POST when the server says GET is the wrong method.
+    if (status != 404 && status != 405) break;
+  }
+  return {};
+}
+
 // File name for a push item: its name-like field, else its id.
 std::string pushFileName(JsonObjectConst item) {
   for (const char* key : {"name", "fileName", "filename", "title", "summary"}) {
@@ -379,27 +443,32 @@ void probe() {
              static_cast<unsigned>(ESP.getFreeHeap()));
   log.printf("mDNS name %s, MAC %s\n", mdnsHostname("").c_str(), macText().c_str());
   logNvsKeys(log);
+  // Tests whether the server links the device by its MAC alone, which is
+  // what binding from this firmware would rely on.
+  std::string macToken = requestDeviceToken(log);
+  log.flush();
 
+  std::string token;
   std::string userInfo;
-  if (!readUserInfo(userInfo, log)) {
+  if (readUserInfo(userInfo, log)) {
+    JsonDocument doc;
+    const DeserializationError jsonErr = deserializeJson(doc, userInfo);
+    if (jsonErr) {
+      log.printf("userInfo is not JSON: %s\n", jsonErr.c_str());
+    } else {
+      log.println("userInfo layout:");
+      logJsonShape(log, doc.as<JsonVariantConst>(), "", 0);
+      token = findString(doc.as<JsonVariantConst>(), "accessToken");
+      if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
+    }
+    userInfo.clear();
+  } else {
     log.println("No saved binding found.");
-    log.close();
-    return;
   }
-  JsonDocument doc;
-  const DeserializationError jsonErr = deserializeJson(doc, userInfo);
-  if (jsonErr) {
-    log.printf("userInfo is not JSON: %s\n", jsonErr.c_str());
-    log.close();
-    return;
+  if (token.empty() && !macToken.empty()) {
+    log.println("Using the token from /users/deviceToken.");
+    token = macToken;
   }
-  log.println("userInfo layout:");
-  logJsonShape(log, doc.as<JsonVariantConst>(), "", 0);
-
-  std::string token = findString(doc.as<JsonVariantConst>(), "accessToken");
-  if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
-  doc.clear();
-  userInfo.clear();
   if (token.empty()) {
     log.println("No token in userInfo.");
     log.close();
