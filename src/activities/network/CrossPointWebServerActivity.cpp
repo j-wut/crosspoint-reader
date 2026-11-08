@@ -1,6 +1,5 @@
 #include "CrossPointWebServerActivity.h"
 
-#include <BoardConfig.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <FontCacheManager.h>
@@ -15,6 +14,7 @@
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
+#include "network/TilesCloud.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -49,7 +49,7 @@ void restartMdns(const char* hostname, const char* tag) {
   if (MDNS.begin(hostname)) {
     LOG_DBG(tag, "mDNS started: http://%s.local/", hostname);
     // The BOOX Tiles app looks for the stock Picco firmware's service.
-    if (BoardConfig::isPicco()) MDNS.addService("nanoreader", "tcp", 80);
+    tilescloud::addMdnsService();
   } else {
     LOG_DBG(tag, "WARNING: mDNS failed to start");
   }
@@ -223,7 +223,7 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     isApMode = false;
 
     // Start mDNS for hostname resolution
-    restartMdns(AP_HOSTNAME, "WEBACT");
+    restartMdns(tilescloud::mdnsHostname(AP_HOSTNAME).c_str(), "WEBACT");
 
     // Start the web server
     startWebServer();
@@ -279,7 +279,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   LOG_DBG("WEBACT", "IP: %s", connectedIP.c_str());
 
   // Start mDNS for hostname resolution
-  restartMdns(AP_HOSTNAME, "WEBACT");
+  restartMdns(tilescloud::mdnsHostname(AP_HOSTNAME).c_str(), "WEBACT");
 
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
@@ -333,6 +333,8 @@ void CrossPointWebServerActivity::startWebServer() {
     // the drain's per-call event budget so serving is not noticeably delayed.
     if (!isApMode) {
       pluginevents::drain(&renderer);
+      // Diagnostic for the BOOX Tiles cloud (Picco only).
+      tilescloud::probe();
     }
 
     // Force an immediate render since we're transitioning from a subactivity
@@ -516,7 +518,7 @@ void CrossPointWebServerActivity::renderServerRunning() const {
                       EpdFontFamily::BOLD);
     startY += height10 + metrics.verticalSpacing * 2;
 
-    std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
+    std::string hostnameUrl = std::string("http://") + tilescloud::mdnsHostname(AP_HOSTNAME) + ".local/";
     std::string ipUrl = tr(STR_OR_HTTP_PREFIX) + connectedIP + "/";
 
     // Show QR code for URL
@@ -549,7 +551,7 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     startY += height10 + 5;
 
     // Also show hostname URL
-    std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
+    std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + tilescloud::mdnsHostname(AP_HOSTNAME) + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
 
