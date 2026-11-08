@@ -391,53 +391,101 @@ void handlePushList(HalFile& out, const std::string& body) {
       LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
               static_cast<unsigned>(ESP.getFreeHeap()));
     };
-    // As the stock firmware does: TLS memory stays in PSRAM (set in probe())
-    // and the book is fetched from its link as given. After the download a
-    // small SD write checks the card still works.
-    bool gotBook = false;
-    const auto attempt = [&](const char* label, const std::string& from) {
-      const std::string& target = dest;
-      out.printf("  [%s] download %s -> %s (size %u, heap %u, max block %u, PSRAM free %u)\n", label, from.c_str(),
-                 target.c_str(), static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
-                 static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
-      out.close();
-      nextMark = 0;
-      const unsigned long started = millis();
-      auto r = HttpDownloader::downloadToFile(from, target, progress);
-      if (r == HttpDownloader::UNAUTHORIZED) {
-        r = HttpDownloader::downloadToFile(from, target, progress, nullptr, "", "",
-                                           {{"Authorization", g_authorization}});
-      }
-      const unsigned long elapsed = millis() - started;
-      const unsigned heapAfter = ESP.getFreeHeap();
-      const unsigned blockAfter = ESP.getMaxAllocHeap();
-      const bool partLeft = Storage.exists((target + ".part").c_str());
-      const char* sd = sdWriteTest();
-      if (g_status.attemptCount < Status::MAX_ATTEMPTS) {
-        snprintf(g_status.attempts[g_status.attemptCount++], sizeof(g_status.attempts[0]),
-                 "%s: r%d HTTP %d %lus heap %u blk %u part %s SD %s", label, static_cast<int>(r),
-                 HttpDownloader::lastStatus(), elapsed / 1000, heapAfter, blockAfter, partLeft ? "left" : "gone", sd);
-      }
-      LOG_INF("TILES", "download %s result %d HTTP %d SD %s", label, static_cast<int>(r), HttpDownloader::lastStatus(),
-              sd);
-      out = openLog();
-      if (!out) {
-        LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
-        delay(500);
-        out = openLog();
-      }
-      out.printf("  [%s] -> result %d, HTTP %d, %lu ms, part file %s, heap %u, max block %u, SD write %s\n", label,
-                 static_cast<int>(r), HttpDownloader::lastStatus(), elapsed, partLeft ? "left" : "gone", heapAfter,
-                 blockAfter, sd);
-      if (r != HttpDownloader::OK) {
-        out.println("  recent device log:");
-        out.print(getLastLogs().c_str());
-        out.println();
-      }
-      if (r == HttpDownloader::OK) gotBook = true;
-    };
+    // TLS memory stays in PSRAM (set in probe()) and the book is fetched from
+    // its link as given, as the stock firmware does. The whole file is held
+    // in PSRAM and written to the card only after the connection closes, so
+    // the card is never written during the transfer. If the card refuses the
+    // write, it is remounted and the write tried once more. Each step is kept
+    // for the screen, since the card log may not be writable after a failure.
     g_status.attemptCount = 0;
-    attempt("download", url);
+    const auto step = [](const char* format, ...) {
+      if (g_status.attemptCount >= Status::MAX_ATTEMPTS) return;
+      va_list args;
+      va_start(args, format);
+      vsnprintf(g_status.attempts[g_status.attemptCount++], sizeof(g_status.attempts[0]), format, args);
+      va_end(args);
+      LOG_INF("TILES", "%s", g_status.attempts[g_status.attemptCount - 1]);
+    };
+    out.printf("  download %s -> %s (size %u, heap %u, max block %u, PSRAM free %u)\n", url.c_str(), dest.c_str(),
+               static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
+               static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
+    out.close();
+
+    size_t capacity = std::max<size_t>(item["size"] | 0u, 64 * 1024) + 16 * 1024;
+    auto* buf = static_cast<uint8_t*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    size_t got = 0;
+    bool overflow = false;
+    const unsigned long started = millis();
+    const bool netOk = buf && HttpDownloader::fetchUrl(url, [&](const uint8_t* data, size_t len) {
+                         resetTaskWatchdogIfSubscribed();
+                         if (got + len > capacity) {
+                           // Grow by half again; a pushed book is a few MB at most.
+                           const size_t want = std::max(capacity + capacity / 2, got + len);
+                           auto* bigger =
+                               static_cast<uint8_t*>(heap_caps_realloc(buf, want, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                           if (!bigger) {
+                             overflow = true;
+                             return false;
+                           }
+                           buf = bigger;
+                           capacity = want;
+                         }
+                         memcpy(buf + got, data, len);
+                         got += len;
+                         return true;
+                       });
+    step("net %s HTTP %d %u B %lus%s", netOk ? "ok" : "FAIL", HttpDownloader::lastStatus(), static_cast<unsigned>(got),
+         (millis() - started) / 1000, buf ? (overflow ? ", PSRAM full" : "") : ", no PSRAM");
+
+    const auto writeBook = [&]() -> const char* {
+      const std::string part = dest + ".part";
+      Storage.remove(part.c_str());
+      HalFile f;
+      if (!Storage.openFileForWrite("TILES", part.c_str(), f)) return "open-fail";
+      size_t done = 0;
+      while (done < got) {
+        const size_t n = std::min<size_t>(4096, got - done);
+        if (f.write(buf + done, n) != n) {
+          f.close();
+          Storage.remove(part.c_str());
+          static char msg[32];
+          snprintf(msg, sizeof(msg), "write-fail@%u", static_cast<unsigned>(done));
+          return msg;
+        }
+        done += n;
+        resetTaskWatchdogIfSubscribed();
+      }
+      if (!f.close()) return "close-fail";
+      if (!Storage.replaceFile(part.c_str(), dest.c_str())) return "rename-fail";
+      return "ok";
+    };
+    bool gotBook = false;
+    if (netOk && got > 0) {
+      const char* w = writeBook();
+      step("SD write: %s", w);
+      if (strcmp(w, "ok") != 0) {
+        const bool remounted = Storage.remount();
+        const char* w2 = remounted ? writeBook() : "skipped";
+        step("remount %s, SD write: %s", remounted ? "ok" : "FAIL", w2);
+        w = w2;
+      }
+      gotBook = strcmp(w, "ok") == 0;
+    }
+    heap_caps_free(buf);
+
+    out = openLog();
+    if (!out) {
+      LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
+      Storage.remount();
+      out = openLog();
+    }
+    for (int i = 0; i < g_status.attemptCount; ++i) out.printf("  %s\n", g_status.attempts[i]);
+    out.printf("  SD write test now: %s\n", sdWriteTest());
+    if (!gotBook) {
+      out.println("  recent device log:");
+      out.print(getLastLogs().c_str());
+      out.println();
+    }
     if (!gotBook) g_status.failed++;
     if (gotBook) {
       g_downloaded.push_back(name);

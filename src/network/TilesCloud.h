@@ -30,10 +30,10 @@ struct Status {
   int waiting = 0;     // items in the last push list
   int received = 0;    // items downloaded this session
   int failed = 0;      // downloads that failed this session
-  // Result of the last push item download, shown on screen in case the SD
+  // Steps of the last push item download, shown on screen in case the SD
   // card log cannot be written after it.
-  static constexpr int MAX_ATTEMPTS = 1;
-  char attempts[MAX_ATTEMPTS][80] = {};
+  static constexpr int MAX_ATTEMPTS = 3;
+  char attempts[MAX_ATTEMPTS][64] = {};
   int attemptCount = 0;
 };
 const Status& status();
