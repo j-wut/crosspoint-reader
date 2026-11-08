@@ -20,7 +20,7 @@ void addMdnsService();
 void probe();
 
 // Check the push list again with the token found by probe(), and download
-// new items to /tiles-push. Picco only.
+// new items to the SD card root. Picco only.
 void poll();
 
 // Append one printf-style line to the same log (Picco only).

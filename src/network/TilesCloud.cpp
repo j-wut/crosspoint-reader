@@ -5,6 +5,7 @@
 #include <BoardConfig.h>
 #include <ESPmDNS.h>
 #include <HalStorage.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
 #include <esp_mac.h>
@@ -32,7 +33,7 @@ constexpr const char* API_BASE = "https://push.boox.com/api/v2/nano";
 constexpr const char* PUSH_LIST_URL = "https://push.boox.com/api/v2/nano/push/list?limit=10&offset=0";
 // Read-only endpoints the stock firmware uses, logged for later work.
 constexpr const char* EXTRA_GETS[] = {"/todo", "/countdownDay", "/statistics/summary"};
-constexpr const char* PUSH_DIR = "/tiles-push";
+constexpr const char* PUSH_REPORT_URL = "https://push.boox.com/api/v2/nano/push/downloaded";
 // Authorization value that worked, kept for polls during this session.
 std::string g_authorization;
 // Push items already downloaded this session.
@@ -219,20 +220,53 @@ std::string pushFileName(JsonObjectConst item) {
   return "push-item";
 }
 
-// Log each push item in full and try to download it from any http(s) URL it holds.
+// The item's id as a string, as the stock firmware reports it.
+std::string pushItemId(JsonObjectConst item) {
+  if (item["id"].is<const char*>()) return item["id"].as<const char*>();
+  if (item["id"].is<long long>()) return std::to_string(item["id"].as<long long>());
+  return {};
+}
+
+// Tell the server which pushed items arrived, as the stock firmware does:
+// POST {"ids":[...]} to /push/downloaded.
+void reportDownloaded(Print& out, const std::vector<std::string>& ids) {
+  if (ids.empty()) return;
+  JsonDocument doc;
+  JsonArray arr = doc["ids"].to<JsonArray>();
+  for (const auto& id : ids) arr.add(id);
+  std::string payload;
+  serializeJson(doc, payload);
+  freeink::SecureHttpClient http;
+  if (!http.begin(PUSH_REPORT_URL)) return;
+  http.setTimeout(15000);
+  http.setInsecure();
+  http.setUserAgent(STOCK_USER_AGENT);
+  http.addHeader("Authorization", g_authorization);
+  http.addHeader("mac", macText());
+  http.addHeader("Content-Type", "application/json");
+  const int status = http.sendRequest("POST", payload);
+  const std::string& reply = http.getString();
+  out.printf("report POST %s -> %d: %s\n", payload.c_str(), status, reply.substr(0, 500).c_str());
+  http.end();
+}
+
+// Log each push item in full, download it to the SD card root from its URL
+// and report it as received.
 void handlePushList(Print& out, const std::string& body) {
   JsonDocument doc;
   if (deserializeJson(doc, body)) return;
   JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
   if (list.isNull()) return;
+  std::vector<std::string> reported;
   for (JsonObjectConst item : list) {
     out.print("push item: ");
     serializeJson(item, out);
     out.println();
     const std::string name = pushFileName(item);
     if (std::find(g_downloaded.begin(), g_downloaded.end(), name) != g_downloaded.end()) continue;
-    std::string url;
+    std::string url = item["url"] | "";
     for (JsonPairConst kv : item) {
+      if (!url.empty()) break;
       const char* v = kv.value() | "";
       if (strncmp(v, "http://", 7) == 0 || strncmp(v, "https://", 8) == 0) {
         url = v;
@@ -244,8 +278,7 @@ void handlePushList(Print& out, const std::string& body) {
       out.println("  no URL field; not downloaded");
       continue;
     }
-    if (!Storage.exists(PUSH_DIR)) Storage.mkdir(PUSH_DIR);
-    const std::string dest = std::string(PUSH_DIR) + "/" + name;
+    const std::string dest = "/" + name;
     out.flush();
     auto result = HttpDownloader::downloadToFile(url, dest);
     if (result == HttpDownloader::UNAUTHORIZED) {
@@ -254,8 +287,14 @@ void handlePushList(Print& out, const std::string& body) {
     }
     out.printf("  download to %s -> result %d, HTTP %d\n", dest.c_str(), static_cast<int>(result),
                HttpDownloader::lastStatus());
-    if (result == HttpDownloader::OK) g_downloaded.push_back(name);
+    if (result == HttpDownloader::OK) {
+      g_downloaded.push_back(name);
+      if (library::isLibraryBookFile(dest.c_str())) library::markLibraryIndexDirty();
+      const std::string id = pushItemId(item);
+      if (!id.empty()) reported.push_back(id);
+    }
   }
+  reportDownloaded(out, reported);
 }
 
 HalFile openLog() {
