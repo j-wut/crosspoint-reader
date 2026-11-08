@@ -16,6 +16,7 @@
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
       <a href="/fonts">Fonts</a>
+      <a href="/apps">Apps</a>
       <a href="/plugins">Plugins</a>
     </nav>
   </div>
@@ -32,6 +33,7 @@
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
       <a href="/fonts">Fonts</a>
+      <a href="/apps">Apps</a>
       <a href="/plugins">Plugins</a>
     </nav>
   </details>

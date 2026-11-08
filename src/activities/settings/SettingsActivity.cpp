@@ -82,6 +82,11 @@ SettingsSection sectionFor(const SettingInfo& setting) {
   return SettingsSection::End;
 }
 
+// Section tab icons, indexed by SettingsSection (same as the section list).
+constexpr const freeink::Icon* SECTION_ICONS[SETTINGS_SECTION_COUNT] = {
+    &icon_settings_32, &icon_smartphone_32, &icon_book_open_32, &icon_pointer_32, &icon_library_32, &icon_wifi_32,
+};
+
 // Device-only action rows added per section, beyond the shared list.
 constexpr size_t EXTRA_ROWS_PER_SECTION = 6;
 
@@ -256,6 +261,7 @@ SettingsActivity::SettingsActivity(GfxRenderer& renderer, MappedInputManager& ma
 
 void SettingsActivity::onEnter() {
   UiListActivity::onEnter();
+  app.on(ACTION_SECTION_TAB, &SettingsActivity::sectionTabTrampoline, this);
 
   preserveQuickResumeTimeoutOn =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
@@ -289,6 +295,45 @@ void SettingsActivity::rebuildRowItems() {
     previousGroup = group;
     rowItems_.push_back(item);
   }
+}
+
+void SettingsActivity::sectionTabTrampoline(const fui::ActionEvent& event, void* user) {
+  auto& self = *static_cast<SettingsActivity*>(user);
+  if (event.value < 0 || event.value >= static_cast<int16_t>(SETTINGS_SECTION_COUNT)) return;
+  self.app.clearTapFlash();
+  self.switchSection(static_cast<SettingsSection>(event.value));
+}
+
+void SettingsActivity::switchSection(const SettingsSection next) {
+  if (next == section || optionPopup.isActive()) return;
+  section = next;
+  nav = fui::ListNav{};
+  rebuildSettings();
+  requestUpdate();
+}
+
+void SettingsActivity::buildSectionTabs(UiScreen& screen) {
+  const auto& theme = screen.theme();
+  const fui::Paint ink = fui::Paint::solid(fui::Color::Black);
+  constexpr int16_t TAB_HEIGHT = 64;
+  constexpr int16_t ICON = 32;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const fui::Rect band = screen.takeTop(TAB_HEIGHT);
+  const auto side = static_cast<int16_t>(metrics.contentSidePadding);
+  const auto slotW = static_cast<int16_t>((band.width - 2 * side) / static_cast<int>(SETTINGS_SECTION_COUNT));
+  for (size_t i = 0; i < SETTINGS_SECTION_COUNT; ++i) {
+    const fui::Rect slot{static_cast<int16_t>(band.x + side + static_cast<int>(i) * slotW), band.y, slotW,
+                         static_cast<int16_t>(band.height - 2)};
+    const fui::Rect pill = slot.inset(fui::Insets{6, 4, 6, 4});
+    const bool active = static_cast<size_t>(section) == i;
+    if (active) screen.target().fill(pill, ink, theme.controlRadius);
+    const fui::Rect iconRect{static_cast<int16_t>(pill.x + (pill.width - ICON) / 2),
+                             static_cast<int16_t>(pill.y + (pill.height - ICON) / 2), ICON, ICON};
+    screen.target().bitmap(iconRect, fui::bitmapFromIcon(*SECTION_ICONS[i]), fui::BitmapMode::Center,
+                           active ? fui::Paint::solid(fui::Color::White) : ink);
+    screen.frame().hit(slot, ACTION_SECTION_TAB, static_cast<int16_t>(i), fui::InputTouch);
+  }
+  screen.target().fill(fui::Rect{band.x, static_cast<int16_t>(band.bottom() - 2), band.width, 2}, ink);
 }
 
 const char* SettingsActivity::headerTitle() const {
@@ -614,6 +659,8 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // Content below the GUI.drawHeader band, above the button hints.
   screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
                                                 static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  const bool tabbed = UITheme::hasTilesHome();
+  if (tabbed) buildSectionTabs(screen);
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   // rowItems_ (label/actionValue) was built by rebuildRowItems(); only the
@@ -649,6 +696,18 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.headerText = screen.theme().smallText;
   props.headerText.bold = true;
   syncListViewport(screen, props);
+  if (tabbed) {
+    // Switches and row rules as on the stock Picco settings (after the sync,
+    // which sets the checkbox look).
+    props.toggleCheckbox = false;
+    props.toggleWidth = 52;
+    props.toggleHeight = 28;
+    props.toggleRadius = 14;
+    props.toggleKnobRadius = 10;
+    props.toggleKnobInset = 4;
+    props.toggleBorderWidth = 2;
+    props.separatorPaint = fui::Paint::solid(fui::Color::Black);
+  }
   screen.list(props);
 }
 

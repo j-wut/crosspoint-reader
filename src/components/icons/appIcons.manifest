@@ -1,0 +1,19 @@
+# Manifest for src/components/icons/appIcons.h (Tiles home dock and Apps grid) — regenerate with:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/appIcons.manifest \
+#     --svgdir <lucide-static 0.460.0>/icons \
+#     --sizes 32,48 --out src/components/icons/appIcons.h
+# then run ./bin/clang-format-fix -g.
+# Licenses and copyright notices: freeink-sdk/libs/assets/Icons/lucide/LICENSE.
+app-books = library-big
+app-transfer = arrow-left-right
+app-apps = layout-grid
+app-settings = settings
+app-todo = list-todo
+app-pomodoro = timer
+app-countdown = calendar-days
+app-stats = chart-column
+app-weather = cloud-sun
+app-fortune = sparkles
+app-gallery = images
+app-files = folder
