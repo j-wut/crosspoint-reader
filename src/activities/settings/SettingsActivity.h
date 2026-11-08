@@ -184,7 +184,7 @@ struct SettingInfo {
 // The rows of one SettingsSection; activating a row toggles/cycles it, opens
 // its option popup, or launches its sub-screen.
 class SettingsActivity final : public UiListActivity {
-  const SettingsSection section;
+  SettingsSection section;
   std::vector<SettingInfo> settings;
 
   bool preserveQuickResumeTimeoutOn = false;
@@ -205,6 +205,13 @@ class SettingsActivity final : public UiListActivity {
   void applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr);
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
   static std::string settingValueText(const SettingInfo& setting);
+
+  // Tiles theme: an icon tab per section above the list, so touch users
+  // switch sections in one tap instead of going back to the section list.
+  static constexpr freeink::ui::ActionId ACTION_SECTION_TAB = ACTION_USER;
+  static void sectionTabTrampoline(const freeink::ui::ActionEvent& event, void* user);
+  void buildSectionTabs(UiScreen& screen);
+  void switchSection(SettingsSection next);
 
   int listCount() const override { return static_cast<int>(settings.size()); }
   void buildScreen(UiScreen& screen) override;

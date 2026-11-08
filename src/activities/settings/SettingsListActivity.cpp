@@ -28,6 +28,9 @@ SettingsListActivity::SettingsListActivity(GfxRenderer& renderer, MappedInputMan
 void SettingsListActivity::onEnter() {
   UiListActivity::onEnter();
   rebuildRows();
+  // Tiles switches sections with tabs inside SettingsActivity, so it skips
+  // this list.
+  if (UITheme::hasTilesHome() && pendingSection == SettingsSection::End) pendingSection = SettingsSection::General;
 }
 
 void SettingsListActivity::onExit() {
@@ -93,6 +96,10 @@ void SettingsListActivity::openSection(const SettingsSection section) {
     return;
   }
   startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+    if (UITheme::hasTilesHome()) {
+      onGoHome();
+      return;
+    }
     rebuildRows();
     // A theme change inside the section must restyle this screen too.
     resetUi();
