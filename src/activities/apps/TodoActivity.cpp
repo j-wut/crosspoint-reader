@@ -182,6 +182,20 @@ void TodoActivity::buildScreen(UiScreen& screen) {
       static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
+  // The empty-list hint gets its own band above the rows (as in Countdown),
+  // so it never overlaps them.
+  if (items.empty()) {
+    auto hint = screen.theme().smallText;
+    hint.align = fui::TextAlign::Center;
+    hint.maxLines = 3;
+    const fui::Rect body = screen.body();
+    const fui::Rect band = screen.takeTop(static_cast<int16_t>(screen.target().lineHeight(hint.font) * 3),
+                                          static_cast<int16_t>(metrics.verticalSpacing));
+    screen.target().text(
+        fui::Rect{static_cast<int16_t>(body.x + 20), band.y, static_cast<int16_t>(body.width - 40), band.height},
+        tr(STR_TODO_EMPTY_HINT), hint);
+  }
+
   rows.clear();
   rows.reserve(listCount());
   fui::ListItem add;
@@ -223,14 +237,4 @@ void TodoActivity::buildScreen(UiScreen& screen) {
 #endif
   syncListViewport(screen, props);
   screen.list(props);
-
-  if (items.empty()) {
-    auto hint = screen.theme().smallText;
-    hint.align = fui::TextAlign::Center;
-    hint.maxLines = 3;
-    const fui::Rect body = screen.body();
-    screen.target().text(fui::Rect{static_cast<int16_t>(body.x + 20), static_cast<int16_t>(body.y + 40),
-                                   static_cast<int16_t>(body.width - 40), 90},
-                         tr(STR_TODO_EMPTY_HINT), hint);
-  }
 }
