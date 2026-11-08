@@ -104,7 +104,7 @@ jobs:
           if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
             export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
           fi
-          CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
+          CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV"
 
       - name: Prepare firmware asset
         id: asset
