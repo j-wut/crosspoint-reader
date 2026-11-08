@@ -220,23 +220,21 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
   if (!author.empty()) screen.target().text(fui::Rect{rect.x, y, rect.width, subtitleHeight}, author.c_str(), subtitle);
   if (progress < 0) return;
 
-  // Progress bar as wide as the cover, with the percent at its right end.
+  // Centered progress bar as wide as the cover; the percent sits just right of it.
   y = static_cast<int16_t>(y + subtitleHeight + theme.spaceMd);
   const int16_t rowHeight = std::max<int16_t>(subtitleHeight, PROGRESS_HEIGHT);
-  auto percent = theme.smallText;
-  percent.align = fui::TextAlign::Right;
-  const int16_t percentWidth = screen.target().measureText(percent.font, "100%", percent).width;
-  screen.target().text(fui::Rect{static_cast<int16_t>(cover.right() - percentWidth), y, percentWidth, rowHeight},
-                       progressText, percent);
   fui::ProgressBarProps bar;
   bar.value = progress;
   bar.border = INK;
   bar.borderWidth = 1;
   bar.radius = PROGRESS_HEIGHT / 2;
-  fui::progressBar(screen.frame(),
-                   fui::Rect{cover.x, static_cast<int16_t>(y + (rowHeight - PROGRESS_HEIGHT) / 2),
-                             static_cast<int16_t>(cover.width - percentWidth - theme.spaceSm), PROGRESS_HEIGHT},
-                   bar);
+  fui::progressBar(
+      screen.frame(),
+      fui::Rect{cover.x, static_cast<int16_t>(y + (rowHeight - PROGRESS_HEIGHT) / 2), cover.width, PROGRESS_HEIGHT},
+      bar);
+  const auto percentX = static_cast<int16_t>(cover.right() + theme.spaceMd);
+  screen.target().text(fui::Rect{percentX, y, static_cast<int16_t>(rect.right() - percentX), rowHeight}, progressText,
+                       theme.smallText);
 
   if (chapterLine.empty()) return;
   y = static_cast<int16_t>(y + rowHeight + theme.spaceSm);
