@@ -54,7 +54,13 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.icon = listIconFor(UIIcon::Wifi, 32);
     item.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT);
     rowItems_[MENU_ITEM_COUNT] = item;
-    itemCount_ = MENU_ITEM_COUNT + 1;
+    fui::ListItem bind;
+    bind.label = tr(STR_BIND_TITLE);
+    bind.subtitle = tr(STR_BIND_DESC);
+    bind.icon = listIconFor(UIIcon::Wifi, 32);
+    bind.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 1);
+    rowItems_[MENU_ITEM_COUNT + 1] = bind;
+    itemCount_ = MENU_ITEM_COUNT + 2;
   }
 }
 
@@ -68,7 +74,11 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  onModeSelected(index < MENU_ITEM_COUNT ? static_cast<NetworkMode>(index) : NetworkMode::BOOX_CLOUD);
+  if (index < MENU_ITEM_COUNT) {
+    onModeSelected(static_cast<NetworkMode>(index));
+  } else {
+    onModeSelected(index == MENU_ITEM_COUNT ? NetworkMode::BOOX_CLOUD : NetworkMode::BOOX_BIND);
+  }
 }
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {

@@ -11,6 +11,7 @@
 
 #include "CountdownActivity.h"
 #include "FortuneActivity.h"
+#include "GalleryActivity.h"
 #include "MappedInputManager.h"
 #include "PomodoroActivity.h"
 #include "ReadingStatsActivity.h"
@@ -40,6 +41,7 @@ const AppEntry APPS[] = {
     {AppsActivity::App::Countdown, StrId::STR_APP_COUNTDOWN, &icon_app_countdown_48},
     {AppsActivity::App::Weather, StrId::STR_APP_WEATHER, &icon_app_weather_48},
     {AppsActivity::App::Fortune, StrId::STR_APP_FORTUNE, &icon_app_fortune_48},
+    {AppsActivity::App::Gallery, StrId::STR_APP_GALLERY, &icon_app_gallery_48},
     {AppsActivity::App::Files, StrId::STR_BROWSE_FILES, &icon_app_files_48},
 };
 constexpr int APP_COUNT = static_cast<int>(std::size(APPS));
@@ -89,6 +91,9 @@ void AppsActivity::open(const int index) {
     case App::Fortune:
       next = makeUniqueNoThrow<FortuneActivity>(renderer, mappedInput);
       break;
+    case App::Gallery:
+      next = makeUniqueNoThrow<GalleryActivity>(renderer, mappedInput);
+      break;
     case App::Files:
       activityManager.goToFileBrowser();
       return;
@@ -110,8 +115,7 @@ void AppsActivity::loop() {
   const auto swipe = mappedInput.wasSwipe();
   const int page = selected / PER_PAGE;
   const int pages = (APP_COUNT + PER_PAGE - 1) / PER_PAGE;
-  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Up) &&
-      page + 1 < pages) {
+  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Up) && page + 1 < pages) {
     select((page + 1) * PER_PAGE);
     return;
   }
@@ -135,11 +139,11 @@ void AppsActivity::draw(UiScreen& screen) {
   const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
-      static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
+                  static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   const int pages = (APP_COUNT + PER_PAGE - 1) / PER_PAGE;

@@ -13,6 +13,7 @@
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
+#include "TilesBindActivity.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
@@ -157,6 +158,8 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "BOOX Cloud";
   } else if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";
+  } else if (mode == NetworkMode::BOOX_BIND) {
+    modeName = "Bind BOOX Tiles";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
 #if FREEINK_CAP_USB_MSC
@@ -176,20 +179,25 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
-    startActivityForResult(
-        std::make_unique<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
-          state = WebServerActivityState::MODE_SELECTION;
+  if (mode == NetworkMode::CONNECT_CALIBRE || mode == NetworkMode::BOOX_BIND) {
+    std::unique_ptr<Activity> next;
+    if (mode == NetworkMode::BOOX_BIND) {
+      next = std::make_unique<TilesBindActivity>(renderer, mappedInput);
+    } else {
+      next = std::make_unique<CalibreConnectActivity>(renderer, mappedInput);
+    }
+    startActivityForResult(std::move(next), [this](const ActivityResult& result) {
+      state = WebServerActivityState::MODE_SELECTION;
 
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
+      startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 onGoHome();
+                               } else {
+                                 onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                               }
+                             });
+    });
     return;
   }
 

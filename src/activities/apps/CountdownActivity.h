@@ -16,6 +16,10 @@ class CountdownActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
+  // BOOX Tiles cloud sync once the list is on screen (Picco only), like the
+  // stock app's sync on open.
+  bool handleCustomInput() override;
+  bool syncPending = false;
   struct Row {
     std::string value;
     std::string date;
@@ -33,6 +37,7 @@ class CountdownActivity final : public UiListActivity {
   void deleteRow(int index);
   void promptDelete(int index);
   void refreshRows();
+  void sortAndRefresh();
 
   std::vector<applists::CountdownItem> items;
   std::vector<Row> texts;

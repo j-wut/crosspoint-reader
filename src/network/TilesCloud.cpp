@@ -8,6 +8,8 @@
 #include <LibraryBuilder.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
+#include <TrustedTime.h>
+#include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_mac.h>
@@ -22,9 +24,12 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 #include "HttpDownloader.h"
+#include "WifiCredentialStore.h"
+#include "apps/Wallpaper.h"
 #include "util/TaskWatchdog.h"
 
 namespace tilescloud {
@@ -185,7 +190,7 @@ std::string findString(JsonVariantConst v, const char* key, int depth = 0) {
 
 // GET `url` with an Authorization header and log the status and body.
 int logGet(Print& out, const char* url, const std::string& authorization, const char* label,
-           std::string* bodyOut = nullptr) {
+           std::string* bodyOut = nullptr, const size_t cap = BODY_CAP) {
   freeink::SecureHttpClient http;
   if (!http.begin(url)) {
     out.printf("[%s] bad URL\n", label);
@@ -198,12 +203,12 @@ int logGet(Print& out, const char* url, const std::string& authorization, const 
   http.addHeader("mac", macText());
   std::string body;
   const int status = http.GET([&](const uint8_t* data, size_t len) {
-    if (body.size() < BODY_CAP) body.append(reinterpret_cast<const char*>(data), std::min(len, BODY_CAP - body.size()));
+    if (body.size() < cap) body.append(reinterpret_cast<const char*>(data), std::min(len, cap - body.size()));
     return true;
   });
   http.end();
   out.printf("[%s] GET %s -> %d, %u bytes%s\n", label, url, status, static_cast<unsigned>(body.size()),
-             body.size() >= BODY_CAP ? " (cut)" : "");
+             body.size() >= cap ? " (cut)" : "");
   out.println(body.c_str());
   if (bodyOut) *bodyOut = std::move(body);
   return status;
@@ -514,7 +519,10 @@ void handlePushList(HalFile& out, const std::string& body) {
       out.println("  no URL field; not downloaded");
       continue;
     }
-    const std::string dest = "/" + name;
+    // Pushed images go to the Gallery (the sleep image folder); books to the card root.
+    const bool image = wallpaper::isImage(name);
+    if (image) Storage.mkdir(wallpaper::DIR);
+    const std::string dest = (image ? std::string(wallpaper::DIR) + "/" : std::string("/")) + name;
     // The log stays closed while the book is written, so the two files never
     // share the card at once. Progress goes to the device log ring instead.
     size_t nextMark = 0;
@@ -584,6 +592,185 @@ HalFile openLog() {
     fresh = !existing || existing.size() > LOG_MAX_BYTES;
   }
   return Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
+}
+
+// Token for cloud requests: the saved binding's accessToken, else one from
+// /users/deviceToken (the stock firmware's way to get a fresh one).
+bool ensureAuthorization(Print& log) {
+  if (!g_authorization.empty()) return true;
+  std::string token;
+  std::string userInfo;
+  if (readUserInfo(userInfo, log)) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, userInfo)) {
+      token = findString(doc.as<JsonVariantConst>(), "accessToken");
+      if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
+    }
+  }
+  if (token.empty()) token = requestDeviceToken(log);
+  if (token.empty()) return false;
+  g_authorization = token;
+  g_status.bound = true;
+  return true;
+}
+
+// Join the last used Wi-Fi network, as the stock apps do before a cloud
+// sync. `joined` is set when this call turned Wi-Fi on.
+bool ensureWifi(Print& log, bool& joined) {
+  joined = false;
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WIFI_STORE.loadFromFile();
+  const auto cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
+  if (!cred) {
+    log.println("no saved Wi-Fi network; keep cached list");
+    return false;
+  }
+  joined = true;
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+  const unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(100);
+  const bool ok = WiFi.status() == WL_CONNECTED;
+  log.printf("Wi-Fi %s: %s after %lu ms\n", cred->ssid.c_str(), ok ? "connected" : "failed", millis() - start);
+  if (ok) trustedtime::startSync();
+  return ok;
+}
+
+void stopWifi(const bool joined) {
+  if (!joined) return;
+  // The Picco has PSRAM, so Wi-Fi turns off in place, as in the Weather app.
+  WiFi.disconnect(false);
+  WiFi.mode(WIFI_OFF);
+}
+
+// GET API_BASE + path and return the reply's data.list, as the stock
+// firmware's list request does ({result_code, message, data:{total, limit,
+// offset, list}}). A rejected token is replaced once from /users/deviceToken.
+bool fetchList(Print& log, const char* path, JsonDocument& doc, JsonArrayConst& list) {
+  const std::string url = std::string(API_BASE) + path;
+  std::string body;
+  int status = logGet(log, url.c_str(), g_authorization, "sync", &body, 32 * 1024);
+  if (status == 401 || status == 403) {
+    const std::string token = requestDeviceToken(log);
+    if (!token.empty()) {
+      g_authorization = token;
+      status = logGet(log, url.c_str(), g_authorization, "sync retry", &body, 32 * 1024);
+    }
+  }
+  if (status != 200) return false;
+  const DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    log.printf("JSON parse failed: %s\n", err.c_str());
+    return false;
+  }
+  const int code = doc["result_code"] | -1;
+  list = doc["data"]["list"].as<JsonArrayConst>();
+  log.printf("result_code %d, total %d, list %s with %u items\n", code, doc["data"]["total"] | -1,
+             list.isNull() ? "missing" : "present", static_cast<unsigned>(list.size()));
+  return code == 0 && !list.isNull();
+}
+
+std::string idOf(JsonObjectConst item) {
+  for (const char* key : {"_id", "id"}) {
+    if (item[key].is<const char*>()) return item[key].as<const char*>();
+    if (item[key].is<long long>()) return std::to_string(item[key].as<long long>());
+  }
+  return {};
+}
+
+bool truthy(JsonVariantConst v) {
+  if (v.is<bool>()) return v.as<bool>();
+  if (v.is<long long>()) return v.as<long long>() != 0;
+  if (v.is<const char*>()) return strcmp(v.as<const char*>(), "true") == 0 || strcmp(v.as<const char*>(), "1") == 0;
+  return false;
+}
+
+// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+long daysFromCivil(int y, const unsigned m, const unsigned d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
+  return static_cast<long>(era) * 146097L + static_cast<long>(yoe * 365u + yoe / 4u - yoe / 100u + doy) - 719468L;
+}
+
+// The countdown's "date": epoch seconds or milliseconds, "YYYY-MM-DD", or an
+// ISO time in UTC ("...Z"), which is moved to the local date.
+bool cloudDate(JsonVariantConst v, applists::CountdownItem& item) {
+  long long epoch = 0;
+  bool haveEpoch = false;
+  if (v.is<long long>() || v.is<double>()) {
+    epoch = v.as<long long>();
+    haveEpoch = true;
+  } else if (v.is<const char*>()) {
+    const char* text = v.as<const char*>();
+    int y = 0, m = 0, d = 0, hh = 0, mm = 0, ss = 0;
+    const int n = sscanf(text, "%d-%d-%dT%d:%d:%d", &y, &m, &d, &hh, &mm, &ss);
+    if (n >= 3) {
+      if (y < 1970 || y > 2200 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+      if (n < 6 || !strchr(text, 'Z')) {
+        item.year = static_cast<int16_t>(y);
+        item.month = static_cast<uint8_t>(m);
+        item.day = static_cast<uint8_t>(d);
+        return true;
+      }
+      epoch = daysFromCivil(y, m, d) * 86400LL + hh * 3600LL + mm * 60LL + ss;
+      haveEpoch = true;
+    } else {
+      char* end = nullptr;
+      epoch = strtoll(text, &end, 10);
+      haveEpoch = end != text;
+    }
+  }
+  if (!haveEpoch || epoch <= 0) return false;
+  if (epoch > 100000000000LL) epoch /= 1000;
+  const auto t = static_cast<time_t>(epoch);
+  struct tm local;
+  localtime_r(&t, &local);
+  item.year = static_cast<int16_t>(local.tm_year + 1900);
+  item.month = static_cast<uint8_t>(local.tm_mon + 1);
+  item.day = static_cast<uint8_t>(local.tm_mday);
+  return true;
+}
+
+std::string clip(const char* text) {
+  std::string out = text ? text : "";
+  if (out.size() <= applists::MAX_TEXT) return out;
+  size_t cut = applists::MAX_TEXT;
+  while (cut > 0 && (static_cast<uint8_t>(out[cut]) & 0xC0) == 0x80) --cut;
+  out.resize(cut);
+  return out;
+}
+
+// Shared steps of syncTodos and syncCountdowns; `parse` turns the list into items.
+template <typename Parse>
+SyncResult syncList(const char* label, const char* path, Parse parse) {
+  if (!BoardConfig::isPicco()) return SyncResult::Skipped;
+  HalFile log = openLog();
+  if (!log) return SyncResult::Failed;
+  log.printf("\n--- %s sync, uptime %lu s, heap %u\n", label, millis() / 1000,
+             static_cast<unsigned>(ESP.getFreeHeap()));
+  bool joined = false;
+  if (!ensureWifi(log, joined)) {
+    stopWifi(joined);
+    return SyncResult::NoWifi;
+  }
+  setTlsInPsram(true);
+  SyncResult result = SyncResult::Failed;
+  if (!ensureAuthorization(log)) {
+    log.println("no binding token; skip cloud sync");
+    result = SyncResult::NoBinding;
+  } else {
+    JsonDocument doc;
+    JsonArrayConst list;
+    if (fetchList(log, path, doc, list)) {
+      parse(list, log);
+      result = SyncResult::Ok;
+    }
+  }
+  stopWifi(joined);
+  log.close();
+  return result;
 }
 
 }  // namespace
@@ -683,6 +870,94 @@ void probe() {
 }
 
 const Status& status() { return g_status; }
+
+bool finishBinding() {
+  if (!BoardConfig::isPicco()) return false;
+  HalFile log = openLog();
+  if (!log) return false;
+  setTlsInPsram(true);
+  const std::string token = requestDeviceToken(log);
+  if (token.empty()) {
+    log.close();
+    return false;
+  }
+  std::string body;
+  const std::string url = std::string(API_BASE) + "/users/me";
+  const int status = logGet(log, url.c_str(), token, "me", &body, 16 * 1024);
+  JsonDocument reply;
+  if (status != 200 || deserializeJson(reply, body) || (reply["result_code"] | -1) != 0 ||
+      !reply["data"].is<JsonObject>()) {
+    log.println("bind: /users/me did not return the account");
+    log.close();
+    return false;
+  }
+  // The stock userInfo is the /users/me data plus accessToken and tokenExpiredAt.
+  JsonDocument info;
+  info.set(reply["data"]);
+  info["accessToken"] = token;
+  if (!reply["tokenExpiredAt"].isNull()) info["tokenExpiredAt"] = reply["tokenExpiredAt"];
+  std::string userInfo;
+  serializeJson(info, userInfo);
+  const std::string deviceId = findString(info.as<JsonVariantConst>(), "id");
+  const char* devId = info["device"]["id"] | deviceId.c_str();
+  const char* secret = info["device"]["secretHex"] | "";
+
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, NVS_USER_INFO, userInfo.c_str());
+    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
+    if (err == ESP_OK) err = nvs_set_str(handle, "deviceId", devId);
+    if (err == ESP_OK && *secret) err = nvs_set_str(handle, "secretHex", secret);
+    if (err == ESP_OK) err = nvs_set_u32(handle, "tokenLastAt", static_cast<uint32_t>(time(nullptr)));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  log.printf("bind: saved binding (userInfo %u bytes, device %s, secret %u chars): %s\n",
+             static_cast<unsigned>(userInfo.size()), devId, static_cast<unsigned>(strlen(secret)),
+             esp_err_to_name(err));
+  log.close();
+  if (err != ESP_OK) return false;
+  g_authorization = token;
+  g_status.bound = true;
+  return true;
+}
+
+SyncResult syncTodos(std::vector<applists::TodoItem>& items) {
+  return syncList("todo", "/todo", [&items](JsonArrayConst list, Print& log) {
+    std::vector<applists::TodoItem> cloud;
+    for (JsonObjectConst entry : list) {
+      applists::TodoItem item;
+      item.text = clip(entry["content"] | "");
+      item.done = truthy(entry["finished"]);
+      item.cloudId = idOf(entry);
+      log.printf("  todo id=%s finished=%d status=%d len=%u\n", item.cloudId.c_str(), item.done, entry["status"] | -1,
+                 static_cast<unsigned>(item.text.size()));
+      if (!item.text.empty() && cloud.size() < applists::MAX_TODOS) cloud.push_back(std::move(item));
+    }
+    applists::mergeCloudTodos(items, std::move(cloud));
+    log.printf("todo list now %u items\n", static_cast<unsigned>(items.size()));
+  });
+}
+
+SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items) {
+  return syncList("countdown", "/countdownDay", [&items](JsonArrayConst list, Print& log) {
+    std::vector<applists::CountdownItem> cloud;
+    for (JsonObjectConst entry : list) {
+      applists::CountdownItem item;
+      item.title = clip(entry["title"] | "");
+      item.cloudId = idOf(entry);
+      const bool dated = cloudDate(entry["date"], item);
+      std::string rawDate;
+      serializeJson(entry["date"], rawDate);
+      log.printf("  countdown id=%s date=%s -> %04d-%02d-%02d status=%d\n", item.cloudId.c_str(), rawDate.c_str(),
+                 item.year, item.month, item.day, entry["status"] | -1);
+      if (!item.title.empty() && dated && cloud.size() < applists::MAX_COUNTDOWNS) cloud.push_back(std::move(item));
+    }
+    applists::mergeCloudCountdowns(items, std::move(cloud));
+    log.printf("countdown list now %u items\n", static_cast<unsigned>(items.size()));
+  });
+}
 
 void poll() {
   if (!BoardConfig::isPicco() || g_authorization.empty()) return;

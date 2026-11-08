@@ -26,6 +26,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
+#include "apps/Wallpaper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -486,6 +487,8 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
 
     const bool isBmp = FsHelpers::hasBmpExtension(name);
     const bool isPng = recentKind == SleepRecentKind::Overlay && FsHelpers::hasPngExtension(std::string_view{name});
+    // Standard sleep images may also be PNG, JPEG or BOOX .opg, converted once when shown.
+    if (!isBmp && recentKind == SleepRecentKind::Standard && wallpaper::isImage(name)) return true;
     if (!isBmp && !isPng) {
       LOG_DBG("SLP", "Skipping unsupported sleep image: %s", name);
       continue;
@@ -736,6 +739,12 @@ void SleepActivity::onEnter() {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
   }
 
+  // A reading wallpaper set in the Gallery wins while a book is open, as on the stock firmware.
+  if (APP_STATE.lastSleepFromReader && Storage.exists(wallpaper::READING_PATH) &&
+      renderCustomSleepBmp(wallpaper::READING_PATH)) {
+    return;
+  }
+
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       return renderBlankSleepScreen();
@@ -754,7 +763,9 @@ void SleepActivity::onEnter() {
   }
 }
 
-bool SleepActivity::renderCustomSleepBmp(const std::string& path) const {
+bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
+  std::string path;
+  if (!wallpaper::screenBmp(imagePath, path)) return false;
   HalFile file;
   if (!Storage.openFileForRead("SLP", path, file)) return false;
   Bitmap source(file);

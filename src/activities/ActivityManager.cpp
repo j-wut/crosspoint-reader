@@ -12,10 +12,11 @@
 #include <algorithm>
 
 #include "Activity.h"
-#include "apps/AppsActivity.h"
 #include "CrossPointSettings.h"
 #include "HapticFeedback.h"
 #include "OpdsServerStore.h"
+#include "apps/AppsActivity.h"
+#include "apps/Wallpaper.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -348,6 +349,12 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
   if (path.empty()) {
     goToFileBrowser("/");
     return;
+  }
+
+  // BOOX .opg images open in the image viewer through a converted BMP.
+  if (wallpaper::isOpg(path)) {
+    std::string bmp;
+    if (wallpaper::screenBmp(path, bmp)) path = std::move(bmp);
   }
 
   if (FsHelpers::hasImageExtension(path)) {

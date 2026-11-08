@@ -14,4 +14,10 @@
 #undef CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL
 #define CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL 1
 #define FREEINK_BLE_STACK_IN_PSRAM 1
+#ifdef FREEINK_DEVICE_PICCO
+// BOOX Tiles binding (src/network/TilesBind.cpp) runs Curve25519 and a Wi-Fi
+// scan inside GATT write callbacks on the host task.
+#undef CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE
+#define CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE 8192
+#endif
 #endif

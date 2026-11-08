@@ -16,6 +16,10 @@ class TodoActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
+  // BOOX Tiles cloud sync once the list is on screen (Picco only), like the
+  // stock app's sync on open.
+  bool handleCustomInput() override;
+  bool syncPending = false;
   // Row 0 adds an item; rows 1..n are the items; a last row clears done items.
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;

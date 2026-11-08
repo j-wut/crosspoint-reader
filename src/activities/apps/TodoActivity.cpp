@@ -11,6 +11,7 @@
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
+#include "network/TilesCloud.h"
 
 namespace fui = freeink::ui;
 
@@ -20,7 +21,18 @@ constexpr unsigned long DELETE_HOLD_MS = 1000;
 
 void TodoActivity::onEnter() {
   applists::loadTodos(items);
+  syncPending = BoardConfig::isPicco();
   UiListActivity::onEnter();
+}
+
+bool TodoActivity::handleCustomInput() {
+  if (!syncPending) return false;
+  syncPending = false;
+  requestUpdateAndWait();
+  GUI.drawPopup(renderer, tr(STR_CLOUD_SYNCING));
+  if (tilescloud::syncTodos(items) == tilescloud::SyncResult::Ok) save();
+  requestUpdate();
+  return true;
 }
 
 const char* TodoActivity::headerTitle() const { return tr(STR_APP_TODO); }

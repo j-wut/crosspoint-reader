@@ -13,6 +13,8 @@ namespace applists {
 struct TodoItem {
   std::string text;
   bool done = false;
+  // BOOX Tiles cloud id for items synced from the app; empty for local items.
+  std::string cloudId;
 };
 
 struct CountdownItem {
@@ -21,6 +23,8 @@ struct CountdownItem {
   int16_t year = 0;
   uint8_t month = 0;
   uint8_t day = 0;
+  // BOOX Tiles cloud id for items synced from the app; empty for local items.
+  std::string cloudId;
 };
 
 constexpr size_t MAX_TODOS = 50;
@@ -42,6 +46,11 @@ bool loadTodos(std::vector<TodoItem>& out);
 bool saveTodos(const std::vector<TodoItem>& items);
 bool loadCountdowns(std::vector<CountdownItem>& out);
 bool saveCountdowns(const std::vector<CountdownItem>& items);
+
+// Replace the items synced from the BOOX Tiles cloud with `cloud`, keeping
+// local items (and dropping local copies of the same text). Cloud items come first.
+void mergeCloudTodos(std::vector<TodoItem>& items, std::vector<TodoItem> cloud);
+void mergeCloudCountdowns(std::vector<CountdownItem>& items, std::vector<CountdownItem> cloud);
 
 // Whole days from today (local time) to the item's date; negative once past.
 // Returns false while the clock is not set.

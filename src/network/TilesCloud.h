@@ -1,6 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
+
+#include "apps/AppLists.h"
 
 // BOOX Tiles cloud support for the Picco. The stock firmware keeps its binding
 // to a BOOX account in NVS, which survives flashing this firmware.
@@ -37,6 +41,22 @@ struct Status {
   int attemptCount = 0;
 };
 const Status& status();
+
+// Fetch the BOOX Tiles todo or countdown list and merge it into `items`, as
+// the stock firmware does when its Todo or Countdown app opens: join the last
+// Wi-Fi network if needed, GET /todo or /countdownDay with the saved token,
+// then turn Wi-Fi off again if this call turned it on. Blocks for the
+// requests. Each step goes to /tiles-cloud-log.txt. Picco only.
+enum class SyncResult : uint8_t { Skipped, NoBinding, NoWifi, Failed, Ok };
+SyncResult syncTodos(std::vector<applists::TodoItem>& items);
+SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items);
+
+// After the app has bound this device over BLE: ask /users/deviceToken for
+// a token (the app links the device's MAC to the account), read /users/me
+// with it and save both to NVS user_cred like the stock firmware (userInfo,
+// token, deviceId, secretHex, tokenLastAt). False while the server has no
+// token for this device yet. Needs Wi-Fi. Picco only.
+bool finishBinding();
 
 // Append one printf-style line to the same log (Picco only).
 void logLine(const char* format, ...) __attribute__((format(printf, 1, 2)));

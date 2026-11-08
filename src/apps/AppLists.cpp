@@ -51,6 +51,7 @@ void todosFromJson(const JsonVariantConst doc, std::vector<TodoItem>& out) {
     item.text = clipText(obj["text"] | "");
     if (item.text.empty()) continue;
     item.done = obj["done"] | false;
+    item.cloudId = obj["cloudId"] | "";
     out.push_back(std::move(item));
   }
 }
@@ -61,6 +62,7 @@ void todosToJson(const std::vector<TodoItem>& items, JsonDocument& doc) {
     JsonObject obj = arr.add<JsonObject>();
     obj["text"] = item.text;
     obj["done"] = item.done;
+    if (!item.cloudId.empty()) obj["cloudId"] = item.cloudId;
   }
 }
 
@@ -71,6 +73,7 @@ void countdownsFromJson(const JsonVariantConst doc, std::vector<CountdownItem>& 
     CountdownItem item;
     item.title = clipText(obj["title"] | "");
     if (item.title.empty() || !parseDate(obj["date"] | "", item)) continue;
+    item.cloudId = obj["cloudId"] | "";
     out.push_back(std::move(item));
   }
 }
@@ -83,6 +86,7 @@ void countdownsToJson(const std::vector<CountdownItem>& items, JsonDocument& doc
     char date[12];
     snprintf(date, sizeof(date), "%04d-%02d-%02d", item.year, item.month, item.day);
     obj["date"] = date;
+    if (!item.cloudId.empty()) obj["cloudId"] = item.cloudId;
   }
 }
 
@@ -112,6 +116,30 @@ bool saveCountdowns(const std::vector<CountdownItem>& items) {
   JsonDocument doc;
   countdownsToJson(items, doc);
   return PersistableStoreBase::writeDocToFile(COUNTDOWN_PATH, doc);
+}
+
+namespace {
+template <typename Item, typename SameText>
+void mergeCloud(std::vector<Item>& items, std::vector<Item> cloud, const size_t limit, SameText sameText) {
+  for (const auto& item : items) {
+    if (cloud.size() >= limit) break;
+    if (!item.cloudId.empty()) continue;
+    bool duplicate = false;
+    for (const auto& c : cloud) duplicate = duplicate || sameText(item, c);
+    if (!duplicate) cloud.push_back(item);
+  }
+  if (cloud.size() > limit) cloud.resize(limit);
+  items = std::move(cloud);
+}
+}  // namespace
+
+void mergeCloudTodos(std::vector<TodoItem>& items, std::vector<TodoItem> cloud) {
+  mergeCloud(items, std::move(cloud), MAX_TODOS, [](const TodoItem& a, const TodoItem& b) { return a.text == b.text; });
+}
+
+void mergeCloudCountdowns(std::vector<CountdownItem>& items, std::vector<CountdownItem> cloud) {
+  mergeCloud(items, std::move(cloud), MAX_COUNTDOWNS,
+             [](const CountdownItem& a, const CountdownItem& b) { return a.title == b.title; });
 }
 
 bool daysUntil(const CountdownItem& item, int& days) {

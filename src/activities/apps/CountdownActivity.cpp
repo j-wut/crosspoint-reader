@@ -11,11 +11,31 @@
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
+#include "network/TilesCloud.h"
 
 namespace fui = freeink::ui;
 
 void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
+  sortAndRefresh();
+  syncPending = BoardConfig::isPicco();
+  UiListActivity::onEnter();
+}
+
+bool CountdownActivity::handleCustomInput() {
+  if (!syncPending) return false;
+  syncPending = false;
+  requestUpdateAndWait();
+  GUI.drawPopup(renderer, tr(STR_CLOUD_SYNCING));
+  if (tilescloud::syncCountdowns(items) == tilescloud::SyncResult::Ok) {
+    if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
+    sortAndRefresh();
+  }
+  requestUpdate();
+  return true;
+}
+
+void CountdownActivity::sortAndRefresh() {
   // Soonest date first; past dates sort before today, so move them last.
   std::sort(items.begin(), items.end(), [](const applists::CountdownItem& a, const applists::CountdownItem& b) {
     int da = 0;
@@ -27,7 +47,6 @@ void CountdownActivity::onEnter() {
     return a.day < b.day;
   });
   refreshRows();
-  UiListActivity::onEnter();
 }
 
 const char* CountdownActivity::headerTitle() const { return tr(STR_APP_COUNTDOWN); }
