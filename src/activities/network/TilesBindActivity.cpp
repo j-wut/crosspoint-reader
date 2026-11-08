@@ -5,6 +5,8 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
 #include "components/UITheme.h"

@@ -112,7 +112,7 @@ void FileBrowserActivity::loadFiles() {
           files.emplace_back(filename);
         }
       } else if (FsHelpers::hasReflowableBookExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-                 FsHelpers::hasImageExtension(filename) || wallpaper::isOpg(filename.c_str())) {
+                 FsHelpers::hasImageExtension(filename) || wallpaper::isOpg(filename)) {
         files.emplace_back(filename);
       }
     }
