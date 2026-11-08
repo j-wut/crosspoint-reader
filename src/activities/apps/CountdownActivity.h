@@ -15,12 +15,18 @@ class CountdownActivity final : public UiListActivity {
       : UiListActivity("Countdown", renderer, mappedInput) {}
 
   void onEnter() override;
+  void onExit() override;
 
  private:
   // BOOX Tiles cloud sync, only when the sync row is pressed (Picco only). It
   // runs in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
+  // Without Wi-Fi, the Wi-Fi screen comes first (it joins a saved network
+  // or lets the user pick one); the sync starts once connected.
   void startSync();
+  void runSync();
+  void stopOwnWifi();
+  bool ownsWifi = false;
   CloudSyncJob<applists::CountdownItem> sync;
   bool editedDuringSync = false;
   // Row 0 is the sync row on the Picco; the items follow.

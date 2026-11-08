@@ -4,10 +4,12 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 
 #include <algorithm>
 
 #include "MappedInputManager.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -28,15 +30,50 @@ int TodoActivity::syncRows() const { return BoardConfig::isPicco() ? 1 : 0; }
 
 void TodoActivity::startSync() {
   if (sync.running()) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    runSync();
+    return;
+  }
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    LOG_ERR("TODO", "OOM: Wi-Fi screen");
+    return;
+  }
+  ownsWifi = true;
+  startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
+    if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+      stopOwnWifi();
+      requestUpdate();
+      return;
+    }
+    runSync();
+  });
+}
+
+void TodoActivity::runSync() {
   editedDuringSync = false;
   if (!sync.start(items, tilescloud::syncTodos)) LOG_ERR("TODO", "Sync task not started");
   requestUpdate();
+}
+
+void TodoActivity::stopOwnWifi() {
+  if (!ownsWifi) return;
+  ownsWifi = false;
+  // The Picco has PSRAM, so Wi-Fi turns off in place, as in the Weather app.
+  WiFi.disconnect(false);
+  WiFi.mode(WIFI_OFF);
+}
+
+void TodoActivity::onExit() {
+  stopOwnWifi();
+  UiListActivity::onExit();
 }
 
 bool TodoActivity::handleCustomInput() {
   std::vector<applists::TodoItem> synced;
   tilescloud::SyncResult result;
   if (!sync.take(synced, result)) return false;
+  stopOwnWifi();
   // An edit made meanwhile wins; sync again to pick up the cloud list.
   if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
     items = std::move(synced);

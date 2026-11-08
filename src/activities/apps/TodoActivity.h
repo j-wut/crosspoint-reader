@@ -16,12 +16,18 @@ class TodoActivity final : public UiListActivity {
       : UiListActivity("Todo", renderer, mappedInput) {}
 
   void onEnter() override;
+  void onExit() override;
 
  private:
   // BOOX Tiles cloud sync, only when the sync row is pressed (Picco only). It
   // runs in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
+  // Without Wi-Fi, the Wi-Fi screen comes first (it joins a saved network
+  // or lets the user pick one); the sync starts once connected.
   void startSync();
+  void runSync();
+  void stopOwnWifi();
+  bool ownsWifi = false;
   CloudSyncJob<applists::TodoItem> sync;
   bool editedDuringSync = false;
   // Rows: 0 adds an item, then the sync row (Picco), the items, and a last

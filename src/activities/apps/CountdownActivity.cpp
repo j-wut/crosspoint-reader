@@ -4,11 +4,13 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "network/TilesCloud.h"
@@ -30,9 +32,43 @@ int CountdownActivity::itemAt(const int row) const {
 
 void CountdownActivity::startSync() {
   if (sync.running()) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    runSync();
+    return;
+  }
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    LOG_ERR("CDN", "OOM: Wi-Fi screen");
+    return;
+  }
+  ownsWifi = true;
+  startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
+    if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+      stopOwnWifi();
+      requestUpdate();
+      return;
+    }
+    runSync();
+  });
+}
+
+void CountdownActivity::runSync() {
   editedDuringSync = false;
   if (!sync.start(items, tilescloud::syncCountdowns)) LOG_ERR("CDN", "Sync task not started");
   requestUpdate();
+}
+
+void CountdownActivity::stopOwnWifi() {
+  if (!ownsWifi) return;
+  ownsWifi = false;
+  // The Picco has PSRAM, so Wi-Fi turns off in place, as in the Weather app.
+  WiFi.disconnect(false);
+  WiFi.mode(WIFI_OFF);
+}
+
+void CountdownActivity::onExit() {
+  stopOwnWifi();
+  UiListActivity::onExit();
 }
 
 void CountdownActivity::activateIndex(const int index) {
@@ -43,6 +79,7 @@ bool CountdownActivity::handleCustomInput() {
   std::vector<applists::CountdownItem> synced;
   tilescloud::SyncResult result;
   if (!sync.take(synced, result)) return false;
+  stopOwnWifi();
   // An edit made meanwhile wins; sync again to pick up the cloud list.
   if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
     items = std::move(synced);
