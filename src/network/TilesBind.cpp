@@ -211,10 +211,6 @@ std::string g_pass;
 bool g_applied = false;
 unsigned long g_appliedAt = 0;
 NimBLEServer* g_server = nullptr;
-// When the app connected (0 when not), and how many Service Changed
-// indications went out on this link.
-volatile unsigned long g_connectedAt = 0;
-volatile int g_changedSent = 0;
 
 void setStage(const Stage s) {
   std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -591,11 +587,12 @@ class DescriptorCallbacks final : public NimBLEDescriptorCallbacks {
 DescriptorCallbacks g_descriptorCallbacks;
 
 class ServerCallbacks final : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
+  void onConnect(NimBLEServer* server, NimBLEConnInfo& info) override {
     g_session.reset();
-    g_connectedAt = millis();
-    g_changedSent = 0;
     setStage(Stage::Connected);
+    // Stock does this in its GAP CONNECT listener (ble_svc_gatt_changed over
+    // the whole range) so a phone that cached the stock table rediscovers.
+    server->sendServiceChangedIndication();
     logf("app connected, MTU %u, peer %s (%s), handle %u, bonded %d, encrypted %d", info.getMTU(),
          info.getAddress().toString().c_str(), info.getAddress().isPublic() ? "public" : "random", info.getConnHandle(),
          info.isBonded(), info.isEncrypted());
@@ -609,7 +606,6 @@ class ServerCallbacks final : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, const int reason) override {
     g_session.reset();
-    g_connectedAt = 0;
     logf("app disconnected, reason %d", reason);
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_stage == Stage::Connected || g_stage == Stage::SessionReady) g_stage = Stage::Advertising;
@@ -660,15 +656,6 @@ bool start(std::string& qrUrl) {
     return false;
   }
   NimBLEDevice::setMTU(256);
-  // A fresh random static address each time: the phone then sees a new
-  // device and discovers our GATT table instead of reusing the stock
-  // table it cached for the public address (the app read a cached handle
-  // and never discovered ours, even after Service Changed).
-  uint8_t addr[6];
-  esp_fill_random(addr, sizeof(addr));
-  addr[5] |= 0xC0;  // static random: top two bits set
-  const bool randomAddr = NimBLEDevice::setOwnAddr(addr) && NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
-  logf("own address %s (%s)", NimBLEDevice::getAddress().toString().c_str(), randomAddr ? "random" : "public");
   g_server = NimBLEDevice::createServer();
   g_server->setCallbacks(&g_serverCallbacks, false);
   g_server->advertiseOnDisconnect(true);
@@ -734,27 +721,12 @@ void stop() {
     step("host stop");
     // Keep the GATT objects until the next start(): a host event still in
     // flight may point at them.
-    // The page turner expects the public address.
-    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
     const bool stopped = NimBLEDevice::deinit(false);
     tilescloud::logLine("[bind] stop: host stopped %d", stopped);
   }
   g_server = nullptr;
-  g_connectedAt = 0;
   g_session.reset();
   setStage(Stage::Off);
-}
-
-void serviceChanged() {
-  // As the stock firmware does when its GATT table changes: phones that cached
-  // the stock table must discover ours again.
-  const unsigned long at = g_connectedAt;
-  if (at == 0 || !g_server || g_changedSent >= 2) return;
-  const unsigned long wait = g_changedSent == 0 ? 1500 : 4000;
-  if (millis() - at < wait) return;
-  g_changedSent = g_changedSent + 1;
-  g_server->sendServiceChangedIndication();
-  logf("sent Service Changed (%d)", g_changedSent);
 }
 
 Stage stage() {
