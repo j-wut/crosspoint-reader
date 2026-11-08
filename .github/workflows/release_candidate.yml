@@ -98,6 +98,11 @@ jobs:
           CROSSPOINT_RC_HASH: ${{ env.SHORT_SHA }}
         run: pio run -e ${{ matrix.pio_env }}
 
+      # The object copies in .cache are not needed once .pio/build is cached,
+      # and they would grow the saved cache on every run.
+      - name: Trim build cache
+        run: find .cache -mindepth 1 -maxdepth 1 -type d -name '??' -exec rm -rf {} +
+
       - name: Name release asset
         run: |
           if [ "${{ env.ASSET }}" != "firmware.bin" ]; then
