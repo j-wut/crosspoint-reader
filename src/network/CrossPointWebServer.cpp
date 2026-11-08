@@ -17,6 +17,7 @@
 #include <Memory.h>
 #include <ResumableFetch.h>
 #include <SecureHttpClient.h>
+#include <TrustedTime.h>
 #include <Utf8.h>
 #include <Util.h>
 #include <WiFi.h>
@@ -50,6 +51,8 @@
 #include "WifiCredentialStore.h"
 #include "WifiPowerSaveGuard.h"
 #include "html/FilesPageHtml.generated.h"
+#include "apps/AppLists.h"
+#include "html/AppsPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
 #include "html/PluginsPageHtml.generated.h"
@@ -370,6 +373,12 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/settings", HTTP_GET, [](S& s) { s.handleSettingsPage(); }, nullptr},
         {"/api/settings", HTTP_GET, [](S& s) { s.handleGetSettings(); }, nullptr},
         {"/api/settings", HTTP_POST, [](S& s) { s.handlePostSettings(); }, nullptr},
+
+        {"/apps", HTTP_GET, [](S& s) { s.handleAppsPage(); }, nullptr},
+        {"/api/apps", HTTP_GET, [](S& s) { s.handleGetAppLists(); }, nullptr},
+        {"/api/apps/todos", HTTP_POST, [](S& s) { s.handlePostTodos(); }, nullptr},
+        {"/api/apps/countdowns", HTTP_POST, [](S& s) { s.handlePostCountdowns(); }, nullptr},
+        {"/api/time", HTTP_POST, [](S& s) { s.handlePostTime(); }, nullptr},
 
         {"/fonts", HTTP_GET, [](S& s) { s.handleFontsPage(); }, nullptr},
         {"/api/fonts", HTTP_GET, [](S& s) { s.handleFontList(); }, nullptr},
@@ -3278,6 +3287,62 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
 }
 
 // --- Font management handlers ---
+
+void CrossPointWebServer::handleAppsPage() const {
+  sendStaticContent(server.get(), AppsPageHtml, sizeof(AppsPageHtml), AppsPageHtmlETag, "text/html");
+}
+
+void CrossPointWebServer::handleGetAppLists() const {
+  std::vector<applists::TodoItem> todos;
+  std::vector<applists::CountdownItem> countdowns;
+  applists::loadTodos(todos);
+  applists::loadCountdowns(countdowns);
+  JsonDocument doc;
+  JsonDocument part;
+  applists::todosToJson(todos, part);
+  doc["todos"] = part["items"];
+  part.clear();
+  applists::countdownsToJson(countdowns, part);
+  doc["countdowns"] = part["items"];
+  doc["clockSet"] = trustedtime::trustedNow() != 0;
+  sendJson(doc);
+}
+
+void CrossPointWebServer::handlePostTodos() const {
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+  std::vector<applists::TodoItem> todos;
+  applists::todosFromJson(req, todos);
+  if (!applists::saveTodos(todos)) {
+    server->send(500, "application/json", "{\"error\":\"save failed\"}");
+    return;
+  }
+  handleGetAppLists();
+}
+
+void CrossPointWebServer::handlePostCountdowns() const {
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+  std::vector<applists::CountdownItem> countdowns;
+  applists::countdownsFromJson(req, countdowns);
+  if (!applists::saveCountdowns(countdowns)) {
+    server->send(500, "application/json", "{\"error\":\"save failed\"}");
+    return;
+  }
+  handleGetAppLists();
+}
+
+// The Apps page sends the browser's clock so countdowns work on boards
+// without a clock chip, even on a hotspot with no internet time.
+void CrossPointWebServer::handlePostTime() const {
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+  const int64_t epoch = req["epoch"] | static_cast<int64_t>(0);
+  trustedtime::adopt(epoch);
+  JsonDocument doc;
+  doc["clockSet"] = trustedtime::trustedNow() != 0;
+  sendJson(doc);
+}
 
 void CrossPointWebServer::handleFontsPage() const {
   sendStaticContent(server.get(), FontsPageHtml, sizeof(FontsPageHtml), FontsPageHtmlETag, "text/html");

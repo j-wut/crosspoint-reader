@@ -169,8 +169,10 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   for (RecentBook& book : recentBooks) {
     // The cover grid shares one slot size; generating at any other height
     // would rescale the dithered thumb at draw time and alias badly.
-    const int thumbHeight = coverGridUi ? coverGridUi->thumbHeightFor() : coverHeight;
-    if (coverGridUi) {
+    const int thumbHeight = coverGridUi ? coverGridUi->thumbHeightFor()
+                            : tilesUi   ? tilesUi->thumbHeightFor()
+                                        : coverHeight;
+    if (coverGridUi || tilesUi) {
       loadGridCover(book, thumbHeight, showingLoading, popupRect);
       ++progress;
       if (showingLoading) GUI.fillPopupProgress(renderer, popupRect, progress * 100 / recentBooks.size());
@@ -241,12 +243,26 @@ void HomeActivity::onEnter() {
     coverGridUi = makeUniqueNoThrow<CoverGridHomeUi>(renderer);
     if (!coverGridUi) LOG_ERR("HOME", "OOM: cover grid UI; using standard home");
   }
-  loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS : metrics.homeRecentBooksCount);
+  if (!coverGridUi && UITheme::getInstance().hasTilesHome()) {
+    tilesUi = makeUniqueNoThrow<TilesHomeUi>(renderer);
+    if (!tilesUi) LOG_ERR("HOME", "OOM: tiles UI; using standard home");
+  }
+  loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS
+                  : tilesUi   ? TilesHomeUi::MAX_BOOKS
+                              : metrics.homeRecentBooksCount);
   hasContinueReading = !recentBooks.empty();
   if (coverGridUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
     coverGridUi->begin(recentBooks, hasLibrarySlot(), hasContinueReading);
+  }
+  if (tilesUi) {
+    resolveGridCoverPaths();
+    tilesUi->begin(recentBooks);
+    const int dock = tilesDockIndex(initialMenuItem);
+    selectorIndex = dock >= 0 ? static_cast<int>(recentBooks.size()) + dock : 0;
+    requestUpdate();
+    return;
   }
 
   const auto base = static_cast<int>(recentBooks.size());
@@ -260,6 +276,7 @@ void HomeActivity::onExit() {
   Activity::onExit();
 
   coverGridUi.reset();
+  tilesUi.reset();
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
@@ -302,6 +319,10 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
+  if (tilesUi) {
+    loopTiles();
+    return;
+  }
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
@@ -472,6 +493,10 @@ void HomeActivity::render(RenderLock&&) {
   const Rect content = UITheme::getInstance().getContentArea(renderer);
 
   renderer.clearScreen();
+  if (tilesUi) {
+    renderTiles();
+    return;
+  }
   if (coverGridUi) {
     coverGridUi->setSelection(selectorIndex);
     UITheme::getInstance().drawCoverGridHome(*coverGridUi);
@@ -578,3 +603,107 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
 void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(hasOpdsServers); }
+
+void HomeActivity::onAppsOpen() { activityManager.goToApps(); }
+
+int HomeActivity::tilesDockIndex(const HomeMenuItem item) {
+  switch (item) {
+    case HomeMenuItem::LIBRARY:
+    case HomeMenuItem::FILE_BROWSER:
+      return static_cast<int>(TilesHomeUi::Dock::Books);
+    case HomeMenuItem::FILE_TRANSFER:
+      return static_cast<int>(TilesHomeUi::Dock::Transfer);
+    case HomeMenuItem::APPS:
+      return static_cast<int>(TilesHomeUi::Dock::Apps);
+    case HomeMenuItem::SETTINGS_MENU:
+      return static_cast<int>(TilesHomeUi::Dock::Settings);
+    default:
+      return -1;
+  }
+}
+
+void HomeActivity::activateTilesSelection() {
+  const int bookCount = static_cast<int>(recentBooks.size());
+  if (selectorIndex < bookCount) {
+    onRecentBookSelected(recentBooks[selectorIndex].path);
+    return;
+  }
+  switch (static_cast<TilesHomeUi::Dock>(selectorIndex - bookCount)) {
+    case TilesHomeUi::Dock::Books:
+      activityManager.goToBookshelf();
+      break;
+    case TilesHomeUi::Dock::Transfer:
+      onFileTransferOpen();
+      break;
+    case TilesHomeUi::Dock::Apps:
+      onAppsOpen();
+      break;
+    case TilesHomeUi::Dock::Settings:
+      onSettingsOpen();
+      break;
+  }
+}
+
+void HomeActivity::loopTiles() {
+  const int count = static_cast<int>(recentBooks.size()) + TilesHomeUi::DOCK_COUNT;
+  const int touched = tilesUi->selectedAction(mappedInput);
+  if (touched >= 0 && touched < static_cast<int>(recentBooks.size()) && touched != tilesUi->shownBookIndex()) {
+    // A side cover turns the carousel; the middle cover opens the book.
+    selectorIndex = touched;
+    requestUpdate();
+    return;
+  }
+  if (touched >= 0 && touched < count) {
+    selectorIndex = touched;
+    haptic_feedback::touchAction();
+    activateTilesSelection();
+    return;
+  }
+  const int bookCount = static_cast<int>(recentBooks.size());
+  const auto swipe = mappedInput.wasSwipe();
+  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) &&
+      bookCount > 1) {
+    const int shown = tilesUi->shownBookIndex();
+    selectorIndex = (shown + (swipe == MappedInputManager::SwipeDir::Left ? 1 : bookCount - 1)) % bookCount;
+    requestUpdate();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !recentBooks.empty()) {
+    onRecentBookSelected(recentBooks[0].path);
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    activateTilesSelection();
+    return;
+  }
+  buttonNavigator.onNext([this, count] {
+    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, count);
+    requestUpdate();
+  });
+  buttonNavigator.onPrevious([this, count] {
+    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, count);
+    requestUpdate();
+  });
+}
+
+void HomeActivity::renderTiles() {
+  tilesUi->setSelection(selectorIndex);
+  tilesUi->renderUi();
+  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
+                                            tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // Thumbs are generated at the drawn slot size once the first layout is known.
+  if (tilesUi->takeThumbHeightChanged()) {
+    tilesUi->refreshCoverPaths();
+    recentsLoaded = false;
+  }
+  if (!firstRenderDone) {
+    firstRenderDone = true;
+    requestUpdate();
+  } else if (!recentsLoaded && !recentsLoading) {
+    loadRecentCovers(tilesUi->thumbHeightFor());
+    tilesUi->refreshCoverPaths();
+    requestUpdate();
+  }
+}
