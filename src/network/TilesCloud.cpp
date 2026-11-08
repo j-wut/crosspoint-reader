@@ -281,14 +281,41 @@ void handlePushList(Print& out, const std::string& body) {
       continue;
     }
     const std::string dest = "/" + name;
-    out.flush();
-    auto result = HttpDownloader::downloadToFile(url, dest);
-    if (result == HttpDownloader::UNAUTHORIZED) {
-      result =
-          HttpDownloader::downloadToFile(url, dest, nullptr, nullptr, "", "", {{"Authorization", g_authorization}});
+    // Log progress as it happens, so a hang or reset still shows how far it got.
+    size_t nextMark = 0;
+    const auto progress = [&out, &nextMark](size_t done, size_t total) {
+      if (done < nextMark) return;
+      nextMark = done + 32 * 1024;
+      out.printf("    %u/%u bytes, heap %u\n", static_cast<unsigned>(done), static_cast<unsigned>(total),
+                 static_cast<unsigned>(ESP.getFreeHeap()));
+      out.flush();
+    };
+    const auto attempt = [&](const std::string& from) {
+      out.printf("  download %s -> %s (size %u, heap %u, max block %u)\n", from.c_str(), dest.c_str(),
+                 static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
+                 static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      out.flush();
+      nextMark = 0;
+      const unsigned long started = millis();
+      auto r = HttpDownloader::downloadToFile(from, dest, progress);
+      if (r == HttpDownloader::UNAUTHORIZED) {
+        r = HttpDownloader::downloadToFile(from, dest, progress, nullptr, "", "", {{"Authorization", g_authorization}});
+      }
+      out.printf("  -> result %d, HTTP %d, %lu ms\n", static_cast<int>(r), HttpDownloader::lastStatus(),
+                 millis() - started);
+      out.flush();
+      return r;
+    };
+    // The push list gives plain-http storage links; try the same link over
+    // https first, then the link as given.
+    auto result = HttpDownloader::HTTP_ERROR;
+    if (url.rfind("http://", 0) == 0) result = attempt("https://" + url.substr(7));
+    if (result != HttpDownloader::OK) result = attempt(url);
+    if (result != HttpDownloader::OK) {
+      out.println("  recent device log:");
+      out.print(getLastLogs().c_str());
+      out.println();
     }
-    out.printf("  download to %s -> result %d, HTTP %d\n", dest.c_str(), static_cast<int>(result),
-               HttpDownloader::lastStatus());
     if (result != HttpDownloader::OK) g_status.failed++;
     if (result == HttpDownloader::OK) {
       g_downloaded.push_back(name);
