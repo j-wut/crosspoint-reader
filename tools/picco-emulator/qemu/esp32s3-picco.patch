@@ -1,0 +1,131 @@
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 4c2b5b3..0ffb879 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -168,7 +168,8 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
+   'esp32s3_rng.c',
+   'esp32s3_pms.c',
+   'esp_hmac.c',
+-  'esp32s3_hmac.c'
++  'esp32s3_hmac.c',
++  'picco_board.c'
+ ))
+ 
+ if gcrypt.found()
+diff --git a/hw/sd/dwc_sdmmc.c b/hw/sd/dwc_sdmmc.c
+index 8fcc652..17685f9 100644
+--- a/hw/sd/dwc_sdmmc.c
++++ b/hw/sd/dwc_sdmmc.c
+@@ -227,6 +227,7 @@ static void dwc_sdmmc_update_irq(DWCSDMMCState *s)
+         irq |= (s->idsts & s->idinten) << 16;
+     }
+     DEBUG("%s: mask=0x%04x, sts=0x%04x irq=%d\n", __func__, s->intmask, s->rintsts, irq);
++    if (getenv("SDMMC_TRACE")) fprintf(stderr, "[sdmmc] irq=%d rint=%08x mask=%08x idsts=%08x iden=%08x\n", irq, s->rintsts, s->intmask, s->idsts, s->idinten);
+     qemu_set_irq(s->irq, irq);
+ }
+ 
+@@ -245,6 +246,9 @@ static void dwc_sdmmc_handle_cmd(DWCSDMMCState *s)
+     request.arg = s->cmdarg;
+ 
+     rlen = sdbus_do_command(&s->sdbus, &request, resp);
++    if (getenv("SDMMC_TRACE")) {
++        fprintf(stderr, "[sdmmc] CMD%d arg=%08x -> rlen=%d\n", request.cmd, request.arg, rlen);
++    }
+     s->rintsts |= SDMMC_INTMASK_CMD_DONE;
+     if (rlen < 0) {
+         DEBUG("%s: error: rlen=%d\n", __func__, rlen);
+@@ -320,6 +324,11 @@ static size_t dwc_sdmmc_handle_one_desc(DWCSDMMCState *s, hwaddr desc_addr, sdmm
+             /* Read from SD bus */
+         } else {
+             sdbus_read_data(&s->sdbus, buf, buf_bytes);
++            if (getenv("SDMMC_TRACE") && num_done == 0) {
++                fprintf(stderr, "[sdmmc] rd->%08x: %02x %02x %02x %02x ... %02x %02x (0x1fe %02x %02x)\n",
++                        (unsigned)desc->buffer1_ptr, buf[0],buf[1],buf[2],buf[3], buf[buf_bytes>13?13:0], buf[buf_bytes>14?14:0],
++                        buf_bytes>=512?buf[510]:0, buf_bytes>=512?buf[511]:0);
++            }
+             dma_memory_write(&address_space_memory,
+                              desc->buffer1_ptr + num_done,
+                              buf, buf_bytes, MEMTXATTRS_UNSPECIFIED);
+@@ -354,8 +363,10 @@ static void dwc_sdmmc_handle_dma(DWCSDMMCState *s)
+     }
+ 
+     if (!is_write && !sdbus_data_ready(&s->sdbus)) {
++        if (getenv("SDMMC_TRACE")) fprintf(stderr, "[sdmmc] dma: data NOT ready (read)\n");
+         return;
+     }
++    if (getenv("SDMMC_TRACE")) fprintf(stderr, "[sdmmc] dma %s bytcnt=%d blksiz=%d dscaddr=%08x\n", is_write?"W":"R", s->bytcnt, s->blksiz, (unsigned)s->dscaddr);
+ 
+     while (s->bytcnt > 0) {
+         DEBUG("%s: handling descriptor @0x%0x, bytcnt=%d\n", __func__, (uint32_t) desc_addr, s->bytcnt);
+@@ -410,6 +421,9 @@ static void dwc_sdmmc_write(void *opaque, hwaddr offset,
+ {
+     DWCSDMMCState *s = DWC_SDMMC(opaque);
+ 
++    if (getenv("SDMMC_TRACE")) {
++        fprintf(stderr, "[sdmmc] W %02x=%08x\n", (unsigned)offset, (unsigned)value);
++    }
+     switch (offset) {
+         case A_SDMMC_CTRL:
+             s->ctrl = value;
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+index 4a24a04..dca1b67 100644
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -33,6 +33,7 @@
+ 
+ #include "hw/sd/dwc_sdmmc.h"
+ #include "hw/misc/ssi_psram.h"
++#include "hw/misc/picco_board.h"
+ #include "core-esp32s3/core-isa.h"
+ #include "qemu/datadir.h"
+ #include "sysemu/sysemu.h"
+@@ -458,8 +459,22 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
+ }
+ 
+ 
++static GHashTable *esp32s3_io_seen;
++static void esp32s3_io_note(const char *what, hwaddr addr, uint64_t v)
++{
++    if (!esp32s3_io_seen) {
++        esp32s3_io_seen = g_hash_table_new(g_direct_hash, g_direct_equal);
++    }
++    gpointer key = GUINT_TO_POINTER((guint)(addr * 2 + (what[0] == 'w')));
++    if (!g_hash_table_contains(esp32s3_io_seen, key)) {
++        g_hash_table_add(esp32s3_io_seen, key);
++        qemu_log_mask(LOG_UNIMP, "[io] %s 0x%08" PRIx64 " = 0x%" PRIx64 "\n", what, (uint64_t)(ESP32S3_IO_START_ADDR + addr), v);
++    }
++}
++
+ static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
+ {
++    esp32s3_io_note("read", addr, 0);
+ #if ESP32S3_IO_WARNING
+     warn_report("[ESP32-S3] Unsupported read to $%08lx, size = %i\n", ESP32S3_IO_START_ADDR + addr, size);
+ #endif
+@@ -469,6 +484,7 @@ static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
+ 
+ static void esp32s3_io_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+ {
++    esp32s3_io_note("write", addr, value);
+ #if ESP32S3_IO_WARNING
+         warn_report("[ESP32-S3] Unsupported write $%08lx = %08lx\n", ESP32S3_IO_START_ADDR + addr, value);
+ #endif
+@@ -797,6 +813,18 @@ static void esp32s3_machine_init(MachineState *machine)
+         }
+    }
+ 
++    /* Onyx Picco board parts (GPIO, panel, I2C chips, console) */
++    {
++        qemu_irq irqs[PICCO_IRQ_COUNT] = {
++            qdev_get_gpio_in(intmatrix_dev, ETS_GPIO_INTR_SOURCE),
++            qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE),
++            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE),
++            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT1_INTR_SOURCE),
++            qdev_get_gpio_in(intmatrix_dev, ETS_USB_SERIAL_JTAG_INTR_SOURCE),
++        };
++        picco_board_create(sys_mem, irqs, ESP_GDMA(&ss->gdma));
++    }
++
+     /* SHA realization */
+     {
+         ss->sha.parent.gdma = ESP_GDMA(&ss->gdma);
