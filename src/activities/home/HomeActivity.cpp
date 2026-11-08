@@ -647,12 +647,6 @@ void HomeActivity::activateTilesSelection() {
 void HomeActivity::loopTiles() {
   const int count = static_cast<int>(recentBooks.size()) + TilesHomeUi::DOCK_COUNT;
   const int touched = tilesUi->selectedAction(mappedInput);
-  if (touched >= 0 && touched < static_cast<int>(recentBooks.size()) && touched != tilesUi->shownBookIndex()) {
-    // A side cover turns the carousel; the middle cover opens the book.
-    selectorIndex = touched;
-    requestUpdate();
-    return;
-  }
   if (touched >= 0 && touched < count) {
     selectorIndex = touched;
     haptic_feedback::touchAction();
@@ -661,8 +655,7 @@ void HomeActivity::loopTiles() {
   }
   const int bookCount = static_cast<int>(recentBooks.size());
   const auto swipe = mappedInput.wasSwipe();
-  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) &&
-      bookCount > 1) {
+  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) && bookCount > 1) {
     const int shown = tilesUi->shownBookIndex();
     selectorIndex = (shown + (swipe == MappedInputManager::SwipeDir::Left ? 1 : bookCount - 1)) % bookCount;
     requestUpdate();
