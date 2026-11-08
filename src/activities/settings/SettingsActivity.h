@@ -202,21 +202,30 @@ class SettingsActivity final : public UiListActivity {
   void rebuildRowItems();
   void toggleSelectedSetting();
   void openSleepTimeoutPicker();
-  void applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr);
+  void applyUiSettingChange(StrId nameId);
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
   static std::string settingValueText(const SettingInfo& setting);
 
   // Tiles theme: an icon tab per section above the list, so touch users
   // switch sections in one tap instead of going back to the section list.
+  // Buttons reach the tabs by moving past either end of the list; Confirm or
+  // a hold there steps the section.
   static constexpr freeink::ui::ActionId ACTION_SECTION_TAB = ACTION_USER;
   static void sectionTabTrampoline(const freeink::ui::ActionEvent& event, void* user);
   void buildSectionTabs(UiScreen& screen);
   void switchSection(SettingsSection next);
+  void stepSection(int direction);
+  void focusTabs();
+  SettingsSection nextSection(int direction) const;
+  bool tabsFocused = false;
+  bool holdStartedOnTabs = false;
 
   int listCount() const override { return static_cast<int>(settings.size()); }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   bool handleCustomInput() override;
+  bool handleButtons() override;
+  void navigateButtons() override;
   const char* headerTitle() const override;
   void drawFooter() override;
 

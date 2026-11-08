@@ -3,10 +3,13 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstdio>
 
+#include "MappedInputManager.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
@@ -54,8 +57,7 @@ void CountdownActivity::refreshRows() {
   }
 }
 
-#if FREEINK_CAP_TOUCH
-void CountdownActivity::swipeDelete(const int index) {
+void CountdownActivity::deleteRow(const int index) {
   if (index < 0 || index >= listCount()) return;
   items.erase(items.begin() + index);
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
@@ -63,7 +65,34 @@ void CountdownActivity::swipeDelete(const int index) {
   if (nav.selected >= listCount()) moveSelectionTo(std::max(0, listCount() - 1));
   requestUpdate();
 }
-#endif
+
+void CountdownActivity::promptDelete(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  auto confirmation =
+      makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_ITEM_CONFIRM), items[index].title);
+  if (!confirmation) {
+    LOG_ERR("CDN", "OOM: delete confirmation");
+    return;
+  }
+  startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
+    if (!result.isCancelled) deleteRow(index);
+  });
+}
+
+bool CountdownActivity::handleButtons() {
+  // Rows have nothing to open, so Confirm offers delete; a tap still does nothing.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    promptDelete(nav.selected);
+    return true;
+  }
+  return UiListActivity::handleButtons();
+}
+
+void CountdownActivity::drawFooter() {
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), items.empty() ? "" : tr(STR_DELETE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
 
 void CountdownActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -82,9 +111,9 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
     const fui::Rect body = screen.body();
     const fui::Rect band = screen.takeTop(static_cast<int16_t>(screen.target().lineHeight(hint.font) * 3),
                                           static_cast<int16_t>(metrics.verticalSpacing));
-    screen.target().text(fui::Rect{static_cast<int16_t>(body.x + 20), band.y, static_cast<int16_t>(body.width - 40),
-                                   band.height},
-                         message, hint);
+    screen.target().text(
+        fui::Rect{static_cast<int16_t>(body.x + 20), band.y, static_cast<int16_t>(body.width - 40), band.height},
+        message, hint);
   }
 
   rows.clear();

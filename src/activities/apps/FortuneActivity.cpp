@@ -1,5 +1,6 @@
 #include "FortuneActivity.h"
 
+#include <BoardConfig.h>
 #include <FreeInkUIIcon.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -60,11 +61,11 @@ void FortuneActivity::draw(UiScreen& screen) {
   const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
-      static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
+                  static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
   const fui::Paint ink = fui::Paint::solid(fui::Color::Black);
   const fui::Rect body = screen.body();
   const fui::Rect card{static_cast<int16_t>(body.x + 20), static_cast<int16_t>(body.y + body.height / 8),
@@ -72,9 +73,9 @@ void FortuneActivity::draw(UiScreen& screen) {
   screen.target().stroke(card, ink, 3, theme.controlRadius);
   screen.target().stroke(card.inset(fui::Insets{8, 8, 8, 8}), ink, 1, theme.controlRadius);
   constexpr int16_t ICON = 48;
-  screen.target().bitmap(fui::Rect{static_cast<int16_t>(card.x + (card.width - ICON) / 2),
-                                   static_cast<int16_t>(card.y + 32), ICON, ICON},
-                         fui::bitmapFromIcon(icon_app_fortune_48), fui::BitmapMode::Center, ink);
+  screen.target().bitmap(
+      fui::Rect{static_cast<int16_t>(card.x + (card.width - ICON) / 2), static_cast<int16_t>(card.y + 32), ICON, ICON},
+      fui::bitmapFromIcon(icon_app_fortune_48), fui::BitmapMode::Center, ink);
   auto text = theme.titleText;
   text.bold = true;
   text.align = fui::TextAlign::Center;
@@ -88,6 +89,8 @@ void FortuneActivity::draw(UiScreen& screen) {
                        saying, text);
   screen.frame().hit(card, DRAW, 0, fui::InputTouch);
 
+  // Buttons have the "Again" hint instead.
+  if (!BoardConfig::hasTouch()) return;
   auto hint = theme.smallText;
   hint.align = fui::TextAlign::Center;
   const int16_t hintH = screen.target().lineHeight(hint.font);

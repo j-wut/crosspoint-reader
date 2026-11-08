@@ -34,12 +34,12 @@ bool UITheme::supportsCoverGrid() { return HalMemory::getPsramHeap().totalBytes 
 
 bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings::COVER_GRID && supportsCoverGrid(); }
 
-bool UITheme::hasTilesHome() { return SETTINGS.uiTheme == CrossPointSettings::TILES && supportsCoverGrid(); }
+bool UITheme::hasTilesHome() { return SETTINGS.uiTheme == CrossPointSettings::TILES; }
 
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
-  if ((type == CrossPointSettings::COVER_GRID || type == CrossPointSettings::TILES) && !supportsCoverGrid()) {
+  if (type == CrossPointSettings::COVER_GRID && !supportsCoverGrid()) {
     type = CrossPointSettings::LYRA;
   }
 

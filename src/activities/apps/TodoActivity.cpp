@@ -8,10 +8,15 @@
 #include <algorithm>
 
 #include "MappedInputManager.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
+
+namespace {
+constexpr unsigned long DELETE_HOLD_MS = 1000;
+}  // namespace
 
 void TodoActivity::onEnter() {
   applists::loadTodos(items);
@@ -52,16 +57,37 @@ void TodoActivity::activateIndex(const int index) {
   requestUpdate();
 }
 
-#if FREEINK_CAP_TOUCH
-void TodoActivity::swipeDelete(const int index) {
-  const int item = itemAt(index);
+void TodoActivity::deleteRow(const int row) {
+  const int item = itemAt(row);
   if (item < 0) return;
   items.erase(items.begin() + item);
   save();
   if (nav.selected >= listCount()) moveSelectionTo(listCount() - 1);
   requestUpdate();
 }
-#endif
+
+void TodoActivity::promptDelete(const int row) {
+  const int item = itemAt(row);
+  if (item < 0) return;
+  auto confirmation =
+      makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_ITEM_CONFIRM), items[item].text);
+  if (!confirmation) {
+    LOG_ERR("TODO", "OOM: delete confirmation");
+    return;
+  }
+  startActivityForResult(std::move(confirmation), [this, row](const ActivityResult& result) {
+    if (!result.isCancelled) deleteRow(row);
+  });
+}
+
+bool TodoActivity::handleButtons() {
+  // The hold fires mid-press and swallows its release, so it never also ticks the row.
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, DELETE_HOLD_MS)) {
+    promptDelete(nav.selected);
+    return true;
+  }
+  return UiListActivity::handleButtons();
+}
 
 void TodoActivity::addItem() {
   if (items.size() >= applists::MAX_TODOS) return;

@@ -52,8 +52,7 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   if (BoardConfig::isPicco())
     emit(SettingInfo::Enum(StrId::STR_REFRESH_SPEED, &CrossPointSettings::refreshSpeed,
                            {StrId::STR_NORMAL, StrId::STR_FAST}, "refreshSpeed", StrId::STR_CAT_DISPLAY));
-  emit(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme, homeThemeValues(), "uiTheme",
-                         StrId::STR_CAT_DISPLAY));
+  emit(buildHomeThemeSetting());
   if (!BoardConfig::hasTouch())
     emit(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                              StrId::STR_CAT_DISPLAY));

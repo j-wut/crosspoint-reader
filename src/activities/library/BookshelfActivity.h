@@ -11,6 +11,8 @@
 // Tiles theme Library: every indexed book as a cover with its title and
 // reading progress, newest arrival first, six to a page. Tap opens, hold
 // offers delete, and "List" opens the full Library list (search and sort).
+// Buttons walk the books with "List" between the last and the first; holding
+// Confirm on a book offers delete.
 class BookshelfActivity final : public Activity, private UiAppHost {
  public:
   BookshelfActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -47,6 +49,7 @@ class BookshelfActivity final : public Activity, private UiAppHost {
   void openCell(int slot);
   void promptDelete(int slot);
   void select(int index);
+  void step(int direction);
 
   HomeCoverCache coverCache;
   ButtonNavigator buttonNavigator;
@@ -54,7 +57,8 @@ class BookshelfActivity final : public Activity, private UiAppHost {
   int cellCount = 0;
   int bookCount = 0;
   int page = 0;
-  int selected = 0;  // flat index on the page, buttons only
+  int selected = 0;          // flat index on the page, buttons only
+  bool listFocused = false;  // buttons are on the "List" button
   int thumbHeight = 0;
   bool thumbHeightChanged = false;
   int pending = -1;
