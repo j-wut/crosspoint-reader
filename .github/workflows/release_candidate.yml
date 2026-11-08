@@ -69,6 +69,17 @@ jobs:
           uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
           ~/.platformio/penv/bin/pio --version
 
+      # Keep compiled objects between runs so a push only rebuilds changed
+      # files. SCons keeps its signature database in .cache (build_cache_dir).
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache
+            .pio/build/${{ matrix.pio_env }}
+          key: build-v1-${{ runner.os }}-${{ matrix.pio_env }}-${{ github.sha }}
+          restore-keys: build-v1-${{ runner.os }}-${{ matrix.pio_env }}-
+
       - name: Extract env
         run: |
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
@@ -85,7 +96,7 @@ jobs:
       - name: Build CrossPoint Release Candidate
         env:
           CROSSPOINT_RC_HASH: ${{ env.SHORT_SHA }}
-        run: pio run -e ${{ matrix.pio_env }} -j1
+        run: pio run -e ${{ matrix.pio_env }}
 
       - name: Name release asset
         run: |
