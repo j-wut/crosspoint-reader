@@ -26,6 +26,7 @@ constexpr int16_t PLUS_CIRCLE = 40;
 constexpr int16_t DIVIDER_WIDTH = 1;
 constexpr int16_t GRID_ROW_HEIGHT = 84;
 constexpr int16_t GRID_ICON = 32;
+constexpr int16_t PROGRESS_HEIGHT = 6;
 
 const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
 const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
@@ -137,7 +138,10 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
   const int16_t subtitleHeight = screen.target().lineHeight(subtitle.font);
   const int count = std::min<int>(MAX_BOOKS, books->size());
   const int16_t dotsHeight = count > 1 ? static_cast<int16_t>(DOT_SIZE + theme.spaceMd) : 0;
-  const int16_t textHeight = static_cast<int16_t>(theme.spaceLg + titleHeight + theme.spaceSm + subtitleHeight);
+  // Room for the progress bar is kept even when the book has none, so the
+  // cover does not change size between books.
+  const int16_t textHeight = static_cast<int16_t>(theme.spaceLg + titleHeight + theme.spaceSm + subtitleHeight +
+                                                  theme.spaceMd + PROGRESS_HEIGHT);
 
   // One centered cover; the ring around it marks the button cursor.
   const int16_t frame = RING_GAP + RING_WIDTH;
@@ -208,6 +212,17 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
     snprintf(line, sizeof(line), "%s", progress >= 0 ? progressText : author.c_str());
   }
   screen.target().text(fui::Rect{rect.x, y, rect.width, subtitleHeight}, line, subtitle);
+  if (progress < 0) return;
+  // Reading progress bar, as wide as the cover.
+  fui::ProgressBarProps bar;
+  bar.value = progress;
+  bar.border = INK;
+  bar.borderWidth = 1;
+  bar.radius = PROGRESS_HEIGHT / 2;
+  fui::progressBar(screen.frame(),
+                   fui::Rect{cover.x, static_cast<int16_t>(y + subtitleHeight + theme.spaceMd), cover.width,
+                             PROGRESS_HEIGHT},
+                   bar);
 }
 
 void TilesHomeUi::drawPlaceholder(UiScreen& screen, const fui::Rect cover) {
