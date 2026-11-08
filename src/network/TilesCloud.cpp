@@ -253,7 +253,9 @@ void reportDownloaded(Print& out, const std::vector<std::string>& ids) {
 
 // Log each push item in full, download it to the SD card root from its URL
 // and report it as received.
-void handlePushList(Print& out, const std::string& body) {
+HalFile openLog();
+
+void handlePushList(HalFile& out, const std::string& body) {
   JsonDocument doc;
   if (deserializeJson(doc, body)) return;
   JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
@@ -281,29 +283,30 @@ void handlePushList(Print& out, const std::string& body) {
       continue;
     }
     const std::string dest = "/" + name;
-    // Log progress as it happens, so a hang or reset still shows how far it got.
+    // The log stays closed while the book is written, so the two files never
+    // share the card at once. Progress goes to the device log ring instead.
     size_t nextMark = 0;
-    const auto progress = [&out, &nextMark](size_t done, size_t total) {
+    const auto progress = [&nextMark](size_t done, size_t total) {
       if (done < nextMark) return;
       nextMark = done + 32 * 1024;
-      out.printf("    %u/%u bytes, heap %u\n", static_cast<unsigned>(done), static_cast<unsigned>(total),
-                 static_cast<unsigned>(ESP.getFreeHeap()));
-      out.flush();
+      LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
+              static_cast<unsigned>(ESP.getFreeHeap()));
     };
     const auto attempt = [&](const std::string& from) {
       out.printf("  download %s -> %s (size %u, heap %u, max block %u)\n", from.c_str(), dest.c_str(),
                  static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
                  static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      out.flush();
+      out.close();
       nextMark = 0;
       const unsigned long started = millis();
       auto r = HttpDownloader::downloadToFile(from, dest, progress);
       if (r == HttpDownloader::UNAUTHORIZED) {
         r = HttpDownloader::downloadToFile(from, dest, progress, nullptr, "", "", {{"Authorization", g_authorization}});
       }
-      out.printf("  -> result %d, HTTP %d, %lu ms\n", static_cast<int>(r), HttpDownloader::lastStatus(),
-                 millis() - started);
-      out.flush();
+      const unsigned long elapsed = millis() - started;
+      out = openLog();
+      out.printf("  -> result %d, HTTP %d, %lu ms, part file %s\n", static_cast<int>(r), HttpDownloader::lastStatus(),
+                 elapsed, Storage.exists((dest + ".part").c_str()) ? "left" : "gone");
       return r;
     };
     // The push list gives plain-http storage links; try the same link over
