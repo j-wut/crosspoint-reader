@@ -48,6 +48,7 @@
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
+#include "TilesCloud.h"
 #include "WifiPowerSaveGuard.h"
 #include "apps/AppLists.h"
 #include "html/AppsPageHtml.generated.h"
@@ -486,6 +487,22 @@ void CrossPointWebServer::begin() {
     });
   }
 
+  // Diagnostic for the BOOX Tiles app: log every request on the Picco.
+  if (BoardConfig::isPicco()) {
+    server->addMiddleware([](WebServer& s, Middleware::Callback next) {
+      // Skip the web UI's own page loads and polling; unknown GETs show up as 404s.
+      if ((s.method() == HTTP_GET || s.method() == HTTP_HEAD) && s.uri() != "/" && s.uri() != "/ping") return next();
+      String args;
+      for (int i = 0; i < s.args() && args.length() < 120; ++i) {
+        args += " " + s.argName(i) + "=" + s.arg(i).substring(0, 40);
+      }
+      tilescloud::logLine("%s %s%s | type=%s len=%s ua=%s", http_method_str(s.method()), s.uri().c_str(),
+                          args.c_str(), s.header("Content-Type").c_str(), s.header("Content-Length").c_str(),
+                          s.header("User-Agent").c_str());
+      return next();
+    });
+  }
+
   // Setup routes
   LOG_DBG("WEB", "Setting up routes...");
   server->addHandler(new RouteHandler(*this));  // Deleted with the WebServer (stop() resets it)
@@ -495,9 +512,10 @@ void CrossPointWebServer::begin() {
   // Collect WebDAV headers and register handler
   // If-None-Match is collected so static pages and plugin files can answer conditional GETs with 304,
   // and Host for the captive-portal check
-  const char* collectedHeaders[] = {"Depth",      "Destination", "Overwrite",     "If",
-                                    "Lock-Token", "Timeout",     "If-None-Match", "Host"};
-  server->collectHeaders(collectedHeaders, 8);
+  const char* collectedHeaders[] = {"Depth",   "Destination",   "Overwrite", "If",           "Lock-Token",
+                                    "Timeout", "If-None-Match", "Host",      "Content-Type", "Content-Length",
+                                    "User-Agent"};
+  server->collectHeaders(collectedHeaders, 11);
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -774,6 +792,7 @@ void CrossPointWebServer::handleNotFound() const {
     return;
   }
 
+  tilescloud::logLine("-> 404 %s", server->uri().c_str());
   String message = "404 Not Found\n\n";
   message += "URI: " + server->uri() + "\n";
   server->send(404, "text/plain", message);
@@ -1098,6 +1117,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     writeCount = 0;
     state.buffer.reset();
 
+    tilescloud::logLine("upload start: field=%s file=%s type=%s", upload.name.c_str(), upload.filename.c_str(),
+                        upload.type.c_str());
     if (!FsHelpers::isSafePathComponent(state.fileName)) {
       state.error = "Invalid file name";
       LOG_DBG("WEB", "[UPLOAD] Rejected unsafe filename: %s", state.fileName.c_str());
@@ -1257,6 +1278,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         if (state.path == SdCardFontRegistry::FONTS_DIR_VISIBLE) sdFontSystem.markRegistryDirty();
       }
     }
+    tilescloud::logLine("upload end: %s/%s %u bytes, error=%s", state.path.c_str(), state.fileName.c_str(),
+                        static_cast<unsigned>(state.size), state.error.c_str());
     state.buffer.reset();
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     state.bufferPos = 0;  // Discard buffered data
@@ -1267,6 +1290,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     }
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
+    tilescloud::logLine("upload aborted: %s, %u bytes", state.fileName.c_str(), static_cast<unsigned>(state.size));
   }
 }
 
@@ -1295,6 +1319,8 @@ void CrossPointWebServer::handleFirmwareFlash() {
 }
 
 void CrossPointWebServer::handleUploadPost(UploadState& state) const {
+  tilescloud::logLine("upload reply: success=%d error=%s raw body=%u bytes", state.success, state.error.c_str(),
+                      static_cast<unsigned>(server->arg("plain").length()));
   if (state.success) {
     server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {

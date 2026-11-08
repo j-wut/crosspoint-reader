@@ -14,8 +14,16 @@ std::string mdnsHostname(const char* fallback);
 void addMdnsService();
 
 // Diagnostic: write the saved binding's layout (never secret values) and the
-// answer of the BOOX push list to /tiles-cloud-log.txt. Needs Wi-Fi with
+// answers of the BOOX push list and a few read-only endpoints to
+// /tiles-cloud-log.txt, and try to download pushed items. Needs Wi-Fi with
 // internet access. Picco only; does nothing elsewhere.
 void probe();
+
+// Check the push list again with the token found by probe(), and download
+// new items to /tiles-push. Picco only.
+void poll();
+
+// Append one printf-style line to the same log (Picco only).
+void logLine(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 }  // namespace tilescloud

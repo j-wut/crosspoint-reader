@@ -1,8 +1,8 @@
 #include "TilesCloud.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
-#include <Arduino.h>
 #include <ESPmDNS.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -11,20 +11,32 @@
 #include <nvs.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <vector>
+
+#include "HttpDownloader.h"
 
 namespace tilescloud {
 namespace {
 
 constexpr const char* LOG_PATH = "/tiles-cloud-log.txt";
 // Start a new log instead of growing past this.
-constexpr size_t LOG_MAX_BYTES = 64 * 1024;
+constexpr size_t LOG_MAX_BYTES = 256 * 1024;
 // Response bytes kept per request.
 constexpr size_t BODY_CAP = 6 * 1024;
 constexpr const char* NVS_NAMESPACE = "user_cred";
 constexpr const char* NVS_USER_INFO = "userInfo";
+constexpr const char* API_BASE = "https://push.boox.com/api/v2/nano";
 constexpr const char* PUSH_LIST_URL = "https://push.boox.com/api/v2/nano/push/list?limit=10&offset=0";
+// Read-only endpoints the stock firmware uses, logged for later work.
+constexpr const char* EXTRA_GETS[] = {"/todo", "/countdownDay", "/statistics/summary"};
+constexpr const char* PUSH_DIR = "/tiles-push";
+// Authorization value that worked, kept for polls during this session.
+std::string g_authorization;
+// Push items already downloaded this session.
+std::vector<std::string> g_downloaded;
 // The stock firmware's User-Agent; the server may expect it.
 constexpr const char* STOCK_USER_AGENT = "Picco-ESP32-1.0.5";
 
@@ -162,7 +174,8 @@ std::string findString(JsonVariantConst v, const char* key, int depth = 0) {
 }
 
 // GET `url` with an Authorization header and log the status and body.
-int logGet(Print& out, const char* url, const std::string& authorization, const char* label) {
+int logGet(Print& out, const char* url, const std::string& authorization, const char* label,
+           std::string* bodyOut = nullptr) {
   freeink::SecureHttpClient http;
   if (!http.begin(url)) {
     out.printf("[%s] bad URL\n", label);
@@ -182,10 +195,92 @@ int logGet(Print& out, const char* url, const std::string& authorization, const 
   out.printf("[%s] GET %s -> %d, %u bytes%s\n", label, url, status, static_cast<unsigned>(body.size()),
              body.size() >= BODY_CAP ? " (cut)" : "");
   out.println(body.c_str());
+  if (bodyOut) *bodyOut = std::move(body);
   return status;
 }
 
+// File name for a push item: its name-like field, else its id.
+std::string pushFileName(JsonObjectConst item) {
+  for (const char* key : {"name", "fileName", "filename", "title", "summary"}) {
+    const char* v = item[key] | "";
+    if (*v) {
+      std::string name = v;
+      for (char& c : name) {
+        if (c == '/' || c == '\\' || c == ':' || c == '"' || c == '*' || c == '?' || c == '<' || c == '>' || c == '|')
+          c = '_';
+      }
+      return name;
+    }
+  }
+  for (const char* key : {"guid", "id", "file_id", "fileId"}) {
+    if (item[key].is<const char*>()) return item[key].as<const char*>();
+    if (item[key].is<long long>()) return std::to_string(item[key].as<long long>());
+  }
+  return "push-item";
+}
+
+// Log each push item in full and try to download it from any http(s) URL it holds.
+void handlePushList(Print& out, const std::string& body) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return;
+  JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
+  if (list.isNull()) return;
+  for (JsonObjectConst item : list) {
+    out.print("push item: ");
+    serializeJson(item, out);
+    out.println();
+    const std::string name = pushFileName(item);
+    if (std::find(g_downloaded.begin(), g_downloaded.end(), name) != g_downloaded.end()) continue;
+    std::string url;
+    for (JsonPairConst kv : item) {
+      const char* v = kv.value() | "";
+      if (strncmp(v, "http://", 7) == 0 || strncmp(v, "https://", 8) == 0) {
+        url = v;
+        out.printf("  url field: %s\n", kv.key().c_str());
+        break;
+      }
+    }
+    if (url.empty()) {
+      out.println("  no URL field; not downloaded");
+      continue;
+    }
+    if (!Storage.exists(PUSH_DIR)) Storage.mkdir(PUSH_DIR);
+    const std::string dest = std::string(PUSH_DIR) + "/" + name;
+    out.flush();
+    auto result = HttpDownloader::downloadToFile(url, dest);
+    if (result == HttpDownloader::UNAUTHORIZED) {
+      result =
+          HttpDownloader::downloadToFile(url, dest, nullptr, nullptr, "", "", {{"Authorization", g_authorization}});
+    }
+    out.printf("  download to %s -> result %d, HTTP %d\n", dest.c_str(), static_cast<int>(result),
+               HttpDownloader::lastStatus());
+    if (result == HttpDownloader::OK) g_downloaded.push_back(name);
+  }
+}
+
+HalFile openLog() {
+  bool fresh = true;
+  if (Storage.exists(LOG_PATH)) {
+    HalFile existing = Storage.open(LOG_PATH);
+    fresh = !existing || existing.size() > LOG_MAX_BYTES;
+  }
+  return Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
+}
+
 }  // namespace
+
+void logLine(const char* format, ...) {
+  if (!BoardConfig::isPicco()) return;
+  char line[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  HalFile log = openLog();
+  if (!log) return;
+  log.printf("[%lu s] %s\n", millis() / 1000, line);
+  log.close();
+}
 
 std::string mdnsHostname(const char* fallback) {
   if (!BoardConfig::isPicco()) return fallback;
@@ -202,8 +297,7 @@ void addMdnsService() {
 void probe() {
   if (!BoardConfig::isPicco()) return;
 
-  const bool fresh = !Storage.exists(LOG_PATH) || Storage.open(LOG_PATH).size() > LOG_MAX_BYTES;
-  HalFile log = Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
+  HalFile log = openLog();
   if (!log) {
     LOG_ERR("TILES", "cannot open %s", LOG_PATH);
     return;
@@ -242,10 +336,30 @@ void probe() {
   log.flush();
 
   // The stock firmware's header format is unknown: try the raw token, then Bearer.
-  const int status = logGet(log, PUSH_LIST_URL, token, "raw");
-  if (status == 401 || status == 403) logGet(log, PUSH_LIST_URL, "Bearer " + token, "bearer");
+  std::string body;
+  g_authorization = token;
+  int status = logGet(log, PUSH_LIST_URL, g_authorization, "raw", &body);
+  if (status == 401 || status == 403) {
+    g_authorization = "Bearer " + token;
+    status = logGet(log, PUSH_LIST_URL, g_authorization, "bearer", &body);
+  }
+  if (status == 200) handlePushList(log, body);
+  for (const char* path : EXTRA_GETS) {
+    const std::string url = std::string(API_BASE) + path;
+    logGet(log, url.c_str(), g_authorization, "extra");
+  }
   log.close();
   LOG_INF("TILES", "probe written to %s", LOG_PATH);
+}
+
+void poll() {
+  if (!BoardConfig::isPicco() || g_authorization.empty()) return;
+  HalFile log = openLog();
+  if (!log) return;
+  log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
+  std::string body;
+  if (logGet(log, PUSH_LIST_URL, g_authorization, "poll", &body) == 200) handlePushList(log, body);
+  log.close();
 }
 
 }  // namespace tilescloud

@@ -46,6 +46,7 @@ class CrossPointWebServerActivity final : public Activity {
 
   // Performance monitoring
   unsigned long lastHandleClientTime = 0;
+  unsigned long lastTilesPollAt = 0;
 
   // Set when Back or Home is seen while an upload holds handleClient().
   bool leaveRequested = false;

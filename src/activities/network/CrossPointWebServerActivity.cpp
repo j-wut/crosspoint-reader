@@ -335,6 +335,7 @@ void CrossPointWebServerActivity::startWebServer() {
       pluginevents::drain(&renderer);
       // Diagnostic for the BOOX Tiles cloud (Picco only).
       tilescloud::probe();
+      lastTilesPollAt = millis();
     }
 
     // Force an immediate render since we're transitioning from a subactivity
@@ -398,6 +399,12 @@ void CrossPointWebServerActivity::loop() {
           }
         }
         if (repaint) requestUpdate();
+      }
+      // Diagnostic: check the BOOX Tiles push list again every minute (Picco only).
+      if (WiFi.status() == WL_CONNECTED && millis() - lastTilesPollAt > 60000) {
+        lastTilesPollAt = millis();
+        resetTaskWatchdogIfSubscribed();
+        tilescloud::poll();
       }
     }
 
