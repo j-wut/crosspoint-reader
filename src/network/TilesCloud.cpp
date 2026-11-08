@@ -646,7 +646,12 @@ void stopWifi(const bool joined) {
 // GET API_BASE + path and return the reply's data.list, as the stock
 // firmware's list request does ({result_code, message, data:{total, limit,
 // offset, list}}). A rejected token is replaced once from /users/deviceToken.
+// Set when the cloud refused the token and handed out no new one: the
+// device is no longer bound to an account.
+bool g_unbound = false;
+
 bool fetchList(Print& log, const char* path, JsonDocument& doc, JsonArrayConst& list) {
+  g_unbound = false;
   const std::string url = std::string(API_BASE) + path;
   std::string body;
   int status = logGet(log, url.c_str(), g_authorization, "sync", &body, 32 * 1024);
@@ -656,6 +661,10 @@ bool fetchList(Print& log, const char* path, JsonDocument& doc, JsonArrayConst& 
       g_authorization = token;
       status = logGet(log, url.c_str(), g_authorization, "sync retry", &body, 32 * 1024);
     }
+  }
+  if (status == 401 || status == 403) {
+    g_unbound = true;
+    log.println("token refused and no new one: device is not bound; bind it again");
   }
   if (status != 200) return false;
   const DeserializationError err = deserializeJson(doc, body);
@@ -795,6 +804,8 @@ SyncResult syncList(const char* label, const char* path, Parse parse) {
     if (fetchList(log, path, doc, list)) {
       parse(list, log);
       result = SyncResult::Ok;
+    } else if (g_unbound) {
+      result = SyncResult::NoBinding;
     }
   }
   stopWifi(joined);

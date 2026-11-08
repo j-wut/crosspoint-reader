@@ -660,6 +660,15 @@ bool start(std::string& qrUrl) {
     return false;
   }
   NimBLEDevice::setMTU(256);
+  // A fresh random static address each time: the phone then sees a new
+  // device and discovers our GATT table instead of reusing the stock
+  // table it cached for the public address (the app read a cached handle
+  // and never discovered ours, even after Service Changed).
+  uint8_t addr[6];
+  esp_fill_random(addr, sizeof(addr));
+  addr[5] |= 0xC0;  // static random: top two bits set
+  const bool randomAddr = NimBLEDevice::setOwnAddr(addr) && NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+  logf("own address %s (%s)", NimBLEDevice::getAddress().toString().c_str(), randomAddr ? "random" : "public");
   g_server = NimBLEDevice::createServer();
   g_server->setCallbacks(&g_serverCallbacks, false);
   g_server->advertiseOnDisconnect(true);
@@ -725,6 +734,8 @@ void stop() {
     step("host stop");
     // Keep the GATT objects until the next start(): a host event still in
     // flight may point at them.
+    // The page turner expects the public address.
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
     const bool stopped = NimBLEDevice::deinit(false);
     tilescloud::logLine("[bind] stop: host stopped %d", stopped);
   }
