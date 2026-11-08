@@ -9,6 +9,7 @@
 #include <Logging.h>
 #include <SecureHttpClient.h>
 #include <esp_mac.h>
+#include <esp_system.h>
 #include <nvs.h>
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "HttpDownloader.h"
+#include "util/TaskWatchdog.h"
 
 namespace tilescloud {
 namespace {
@@ -351,6 +353,7 @@ void handlePushList(HalFile& out, const std::string& body) {
     // share the card at once. Progress goes to the device log ring instead.
     size_t nextMark = 0;
     const auto progress = [&nextMark](size_t done, size_t total) {
+      resetTaskWatchdogIfSubscribed();
       if (done < nextMark) return;
       nextMark = done + 32 * 1024;
       LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
@@ -373,11 +376,11 @@ void handlePushList(HalFile& out, const std::string& body) {
                  elapsed, Storage.exists((dest + ".part").c_str()) ? "left" : "gone");
       return r;
     };
-    // The push list gives plain-http storage links; try the same link over
-    // https first, then the link as given.
-    auto result = HttpDownloader::HTTP_ERROR;
-    if (url.rfind("http://", 0) == 0) result = attempt("https://" + url.substr(7));
-    if (result != HttpDownloader::OK) result = attempt(url);
+    // The push list gives plain-http storage links, which the stock firmware
+    // fetches as given. Plain http needs no TLS buffers, so try it first and
+    // fall back to the same link over https.
+    auto result = attempt(url);
+    if (result != HttpDownloader::OK && url.rfind("http://", 0) == 0) result = attempt("https://" + url.substr(7));
     if (result != HttpDownloader::OK) {
       out.println("  recent device log:");
       out.print(getLastLogs().c_str());
@@ -442,6 +445,9 @@ void probe() {
   log.printf("\n=== %s, uptime %lu s, heap %u ===\n", CROSSPOINT_VERSION, millis() / 1000,
              static_cast<unsigned>(ESP.getFreeHeap()));
   log.printf("mDNS name %s, MAC %s\n", mdnsHostname("").c_str(), macText().c_str());
+  // A crash during the last download shows up here as PANIC or TASK_WDT.
+  log.printf("last reset reason %d, max block %u, PSRAM free %u\n", static_cast<int>(esp_reset_reason()),
+             static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
   logNvsKeys(log);
   // Tests whether the server links the device by its MAC alone, which is
   // what binding from this firmware would rely on.
