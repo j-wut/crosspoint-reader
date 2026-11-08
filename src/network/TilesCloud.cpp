@@ -9,13 +9,16 @@
 #include <Logging.h>
 #include <SecureHttpClient.h>
 #include <esp_heap_caps.h>
+#include <esp_http_client.h>
 #include <esp_mac.h>
 #include <esp_system.h>
+#include <mbedtls/sha256.h>
 #include <nvs.h>
 #include <wolfssl/wolfcrypt/memory.h>
 #include <wolfssl/wolfcrypt/settings.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -349,6 +352,137 @@ const char* sdWriteTest() {
   return "ok";
 }
 
+// Result of stockDownload(), kept for the screen and the log.
+struct StockDownload {
+  bool ok = false;
+  bool netOk = false;
+  int status = 0;
+  int contentLength = -1;
+  size_t written = 0;
+  unsigned long ms = 0;
+  const char* sdResult = "not started";
+  char sha256[65] = "";
+};
+
+// The stock firmware's download routine, step for step (see handlePushList).
+StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
+  constexpr size_t BUF_SIZE = 32 * 1024;
+  StockDownload d;
+  const unsigned long started = millis();
+  if (!Storage.ready()) {
+    d.sdResult = "not ready";
+    return d;
+  }
+  if (expected > 0 && Storage.freeBytes() < expected) {
+    d.sdResult = "no space";
+    return d;
+  }
+
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.timeout_ms = 60000;
+  config.max_redirection_count = 10;
+  config.disable_auto_redirect = true;
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    d.sdResult = "http init failed";
+    return d;
+  }
+  esp_http_client_set_header(client, "User-Agent", STOCK_USER_AGENT);
+  for (int hop = 0; hop <= 10; ++hop) {
+    if (esp_http_client_open(client, 0) != ESP_OK) break;
+    d.contentLength = static_cast<int>(esp_http_client_fetch_headers(client));
+    d.status = esp_http_client_get_status_code(client);
+    LOG_INF("TILES", "download status=%d contentLength=%d redirect=%d", d.status, d.contentLength, hop);
+    if (d.status < 300 || d.status >= 400) break;
+    if (esp_http_client_set_redirection(client) != ESP_OK) break;
+    esp_http_client_close(client);
+  }
+  if (d.status < 200 || d.status >= 300) {
+    esp_http_client_cleanup(client);
+    d.ms = millis() - started;
+    d.sdResult = "skipped";
+    return d;
+  }
+
+  const std::string tmp = dest + ".tmp";
+  Storage.remove(tmp.c_str());
+  HalFile file;
+  if (!Storage.openFileForWrite("TILES", tmp.c_str(), file)) {
+    esp_http_client_cleanup(client);
+    d.sdResult = "open .tmp failed";
+    return d;
+  }
+  auto* buf = static_cast<uint8_t*>(heap_caps_malloc(BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!buf) {
+    esp_http_client_cleanup(client);
+    d.sdResult = "no PSRAM buffer";
+    return d;
+  }
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  mbedtls_sha256_starts(&sha, 0);
+  bool writeOk = true;
+  size_t fill = 0;
+  size_t nextMark = 0;
+  const auto flush = [&]() {
+    if (fill == 0) return true;
+    if (file.write(buf, fill) != fill) return false;
+    mbedtls_sha256_update(&sha, buf, fill);
+    d.written += fill;
+    fill = 0;
+    return true;
+  };
+  while (true) {
+    const int n = esp_http_client_read(client, reinterpret_cast<char*>(buf + fill), BUF_SIZE - fill);
+    if (n < 0) {
+      LOG_ERR("TILES", "http read failed errno=%d written=%u", errno, static_cast<unsigned>(d.written));
+      break;
+    }
+    if (n == 0) {
+      d.netOk = esp_http_client_is_complete_data_received(client) || d.contentLength <= 0;
+      break;
+    }
+    fill += n;
+    resetTaskWatchdogIfSubscribed();
+    if (fill == BUF_SIZE && !(writeOk = flush())) break;
+    if (d.written + fill >= nextMark) {
+      LOG_INF("TILES", "download %u bytes, heap %u", static_cast<unsigned>(d.written + fill),
+              static_cast<unsigned>(ESP.getFreeHeap()));
+      nextMark += 32 * 1024;
+    }
+  }
+  if (writeOk) writeOk = flush();
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  heap_caps_free(buf);
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&sha, digest);
+  mbedtls_sha256_free(&sha);
+  for (int i = 0; i < 32; ++i) snprintf(d.sha256 + i * 2, 3, "%02x", digest[i]);
+  const bool closeOk = file.close();
+  d.ms = millis() - started;
+
+  static char sdMsg[48];
+  if (!writeOk) {
+    snprintf(sdMsg, sizeof(sdMsg), "write failed at %u", static_cast<unsigned>(d.written));
+    d.sdResult = sdMsg;
+  } else if (!closeOk) {
+    d.sdResult = "close failed";
+  } else if (!d.netOk) {
+    d.sdResult = "incomplete";
+  } else if (d.written == 0) {
+    d.sdResult = "empty";
+  } else if (!Storage.replaceFile(tmp.c_str(), dest.c_str())) {
+    d.sdResult = "rename failed";
+  } else {
+    d.sdResult = "ok";
+    d.ok = true;
+  }
+  if (!d.ok) Storage.remove(tmp.c_str());
+  return d;
+}
+
 // Log each push item in full, download it to the SD card root from its URL
 // and report it as received.
 HalFile openLog();
@@ -391,12 +525,12 @@ void handlePushList(HalFile& out, const std::string& body) {
       LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
               static_cast<unsigned>(ESP.getFreeHeap()));
     };
-    // TLS memory stays in PSRAM (set in probe()) and the book is fetched from
-    // its link as given, as the stock firmware does. The whole file is held
-    // in PSRAM and written to the card only after the connection closes, so
-    // the card is never written during the transfer. If the card refuses the
-    // write, it is remounted and the write tried once more. Each step is kept
-    // for the screen, since the card log may not be writable after a failure.
+    // Same steps as the stock firmware's downloader: check the card is
+    // ready and has room, open "<name>.tmp", read the body with
+    // esp_http_client (60 s timeout, up to 10 redirects) into a 32 KB PSRAM
+    // buffer, write each full buffer to the file while updating a SHA-256,
+    // then rename the file into place. Each step is kept for the screen,
+    // since the card log may not be writable after a failure.
     g_status.attemptCount = 0;
     const auto step = [](const char* format, ...) {
       if (g_status.attemptCount >= Status::MAX_ATTEMPTS) return;
@@ -406,80 +540,25 @@ void handlePushList(HalFile& out, const std::string& body) {
       va_end(args);
       LOG_INF("TILES", "%s", g_status.attempts[g_status.attemptCount - 1]);
     };
-    out.printf("  download %s -> %s (size %u, heap %u, max block %u, PSRAM free %u)\n", url.c_str(), dest.c_str(),
-               static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
-               static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
+    const uint64_t freeBefore = Storage.freeBytes();
+    out.printf("  download %s -> %s (size %u, SD free %llu, heap %u, max block %u, PSRAM free %u)\n", url.c_str(),
+               dest.c_str(), static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned long long>(freeBefore),
+               static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+               static_cast<unsigned>(ESP.getFreePsram()));
     out.close();
-
-    size_t capacity = std::max<size_t>(item["size"] | 0u, 64 * 1024) + 16 * 1024;
-    auto* buf = static_cast<uint8_t*>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    size_t got = 0;
-    bool overflow = false;
-    const unsigned long started = millis();
-    const bool netOk = buf && HttpDownloader::fetchUrl(url, [&](const uint8_t* data, size_t len) {
-                         resetTaskWatchdogIfSubscribed();
-                         if (got + len > capacity) {
-                           // Grow by half again; a pushed book is a few MB at most.
-                           const size_t want = std::max(capacity + capacity / 2, got + len);
-                           auto* bigger =
-                               static_cast<uint8_t*>(heap_caps_realloc(buf, want, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                           if (!bigger) {
-                             overflow = true;
-                             return false;
-                           }
-                           buf = bigger;
-                           capacity = want;
-                         }
-                         memcpy(buf + got, data, len);
-                         got += len;
-                         return true;
-                       });
-    step("net %s HTTP %d %u B %lus%s", netOk ? "ok" : "FAIL", HttpDownloader::lastStatus(), static_cast<unsigned>(got),
-         (millis() - started) / 1000, buf ? (overflow ? ", PSRAM full" : "") : ", no PSRAM");
-
-    const auto writeBook = [&]() -> const char* {
-      const std::string part = dest + ".part";
-      Storage.remove(part.c_str());
-      HalFile f;
-      if (!Storage.openFileForWrite("TILES", part.c_str(), f)) return "open-fail";
-      size_t done = 0;
-      while (done < got) {
-        const size_t n = std::min<size_t>(4096, got - done);
-        if (f.write(buf + done, n) != n) {
-          f.close();
-          Storage.remove(part.c_str());
-          static char msg[32];
-          snprintf(msg, sizeof(msg), "write-fail@%u", static_cast<unsigned>(done));
-          return msg;
-        }
-        done += n;
-        resetTaskWatchdogIfSubscribed();
-      }
-      if (!f.close()) return "close-fail";
-      if (!Storage.replaceFile(part.c_str(), dest.c_str())) return "rename-fail";
-      return "ok";
-    };
-    bool gotBook = false;
-    if (netOk && got > 0) {
-      const char* w = writeBook();
-      step("SD write: %s", w);
-      if (strcmp(w, "ok") != 0) {
-        const bool remounted = Storage.remount();
-        const char* w2 = remounted ? writeBook() : "skipped";
-        step("remount %s, SD write: %s", remounted ? "ok" : "FAIL", w2);
-        w = w2;
-      }
-      gotBook = strcmp(w, "ok") == 0;
-    }
-    heap_caps_free(buf);
+    const StockDownload d = stockDownload(url, dest, item["size"] | 0u);
+    step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
+         static_cast<unsigned>((item["size"] | 0u) / 1024));
+    step("net %s HTTP %d len %d got %u %lus", d.netOk ? "ok" : "FAIL", d.status, d.contentLength,
+         static_cast<unsigned>(d.written), d.ms / 1000);
+    step("SD %s", d.sdResult);
+    const bool gotBook = d.ok;
 
     out = openLog();
-    if (!out) {
-      LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
-      Storage.remount();
-      out = openLog();
-    }
+    if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
     for (int i = 0; i < g_status.attemptCount; ++i) out.printf("  %s\n", g_status.attempts[i]);
+    out.printf("  %lu ms, sha256 %s, SD free now %llu\n", d.ms, d.sha256,
+               static_cast<unsigned long long>(Storage.freeBytes()));
     out.printf("  SD write test now: %s\n", sdWriteTest());
     if (!gotBook) {
       out.println("  recent device log:");
