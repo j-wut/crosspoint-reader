@@ -8,9 +8,9 @@
 #include "RecentBooksStore.h"
 #include "UiAppHost.h"
 
-// Tiles home: a row of three recent covers with the selected book's title and
-// progress, above a dock of Books, Transfer, Apps and Settings tiles.
-// Selection is one flat index: covers first, then the dock tiles.
+// Tiles home: the shown recent book's cover, title and progress (or an empty
+// slot), a divider, then a 2x2 grid of Bookshelf, Transfer, Apps and Settings.
+// Selection is one flat index: recent books first, then the grid.
 class TilesHomeUi final : public UiAppHost {
  public:
   static constexpr int MAX_BOOKS = 3;
@@ -33,10 +33,9 @@ class TilesHomeUi final : public UiAppHost {
   static void screenFn(UiScreen& screen, void* user);
   static void onAction(const freeink::ui::ActionEvent& event, void* user);
   void draw(UiScreen& screen);
-  void drawCovers(UiScreen& screen, freeink::ui::Rect rect);
-  void drawBookInfo(UiScreen& screen, freeink::ui::Rect rect);
-  void drawEmpty(UiScreen& screen, freeink::ui::Rect rect);
-  void drawDock(UiScreen& screen, freeink::ui::Rect rect);
+  void drawBook(UiScreen& screen, freeink::ui::Rect rect);
+  void drawPlaceholder(UiScreen& screen, freeink::ui::Rect cover);
+  void drawGrid(UiScreen& screen, freeink::ui::Rect rect);
   void loadProgress();
   void noteThumbHeight(int slotHeight);
 
