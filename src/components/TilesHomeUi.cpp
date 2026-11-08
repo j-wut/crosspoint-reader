@@ -114,7 +114,9 @@ void TilesHomeUi::draw(UiScreen& screen) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.batteryBarHeight}, nullptr);
 
   // Two rows of shortcuts at the bottom, a divider, and the book above it.
-  const fui::Rect grid = screen.takeBottom(static_cast<int16_t>(GRID_ROW_HEIGHT * 2), 0);
+  // The gap above the grid matches the one below it.
+  const auto gridPad = static_cast<int16_t>(renderer.getScreenHeight() - safe.y - safe.height + theme.spaceMd);
+  const fui::Rect grid = screen.takeBottom(static_cast<int16_t>(GRID_ROW_HEIGHT * 2), gridPad);
   const fui::Rect body = screen.body();
   const fui::Rect divider{static_cast<int16_t>(body.x - side), static_cast<int16_t>(body.bottom() - DIVIDER_WIDTH),
                           static_cast<int16_t>(body.width + 2 * side), DIVIDER_WIDTH};
