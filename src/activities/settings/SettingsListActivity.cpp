@@ -23,29 +23,22 @@ constexpr const freeink::Icon* SECTION_ICONS[SETTINGS_SECTION_COUNT] = {
 
 SettingsListActivity::SettingsListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const SettingsSection openSection)
-    : UiListActivity("SettingsList", renderer, mappedInput), pendingSection(openSection) {}
+    : UiListActivity("SettingsList", renderer, mappedInput), initialSection(openSection) {}
 
 void SettingsListActivity::onEnter() {
   UiListActivity::onEnter();
   rebuildRows();
   // Tiles switches sections with tabs inside SettingsActivity, so it skips
   // this list.
-  if (UITheme::hasTilesHome() && pendingSection == SettingsSection::End) pendingSection = SettingsSection::General;
+  if (UITheme::hasTilesHome() && initialSection == SettingsSection::End) initialSection = SettingsSection::General;
+  // Open now, not on the first loop pass: the push runs before this list's
+  // first render, so the list never flashes on screen.
+  if (initialSection != SettingsSection::End) openSection(initialSection);
 }
 
 void SettingsListActivity::onExit() {
   UiListActivity::onExit();
   UITheme::getInstance().reload();  // Re-apply theme in case it was changed
-}
-
-void SettingsListActivity::loop() {
-  if (pendingSection != SettingsSection::End) {
-    const SettingsSection section = pendingSection;
-    pendingSection = SettingsSection::End;
-    openSection(section);
-    return;
-  }
-  UiListActivity::loop();
 }
 
 // Rebuilds row labels; call when entering and after a section returns (the
