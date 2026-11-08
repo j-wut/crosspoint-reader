@@ -798,15 +798,18 @@ void setup() {
                               : slideSwitchOwnsLight()
                                   ? gpio.isToggleSwitchOn()
                                   : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
+  // With Short Power Button Press = Sleep, a single click wakes on any
+  // device; otherwise the button must still be held (ghost-wake debounce).
+  // Picco: plugging in USB pulses the wake line; power on, as stock does.
+  const bool wakeRejected = wakeupReason == HalGPIO::WakeupReason::PowerButton && !wakeHoldVerified &&
+                            SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+                            !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected());
+  // A rejected wake goes straight back to sleep, so it must not light up.
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn && !wakeRejected);
 
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
-      // With Short Power Button Press = Sleep, a single click wakes on any
-      // device; otherwise the button must still be held (ghost-wake debounce).
-      // Picco: plugging in USB pulses the wake line; power on, as stock does.
-      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-          !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected())) {
+      if (wakeRejected) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
         powerManager.startDeepSleep(gpio);
