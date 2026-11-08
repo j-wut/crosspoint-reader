@@ -616,6 +616,54 @@ class ServerCallbacks final : public NimBLEServerCallbacks {
 ServerCallbacks g_serverCallbacks;
 std::vector<EndpointCallbacks*> g_endpointCallbacks;
 
+// Raw GAP events, including ones for the GATT service (Service Changed) that
+// the server callbacks never see. Stock registers a listener the same way.
+int onGapEvent(ble_gap_event* event, void*) {
+  switch (event->type) {
+    case BLE_GAP_EVENT_SUBSCRIBE:
+      logf("gap subscribe attr %u: notify %d->%d, indicate %d->%d, reason %d", event->subscribe.attr_handle,
+           event->subscribe.prev_notify, event->subscribe.cur_notify, event->subscribe.prev_indicate,
+           event->subscribe.cur_indicate, event->subscribe.reason);
+      break;
+    case BLE_GAP_EVENT_NOTIFY_TX:
+      logf("gap %s tx attr %u status %d", event->notify_tx.indication ? "indication" : "notify",
+           event->notify_tx.attr_handle, event->notify_tx.status);
+      break;
+    case BLE_GAP_EVENT_ENC_CHANGE:
+      logf("gap encryption change status %d", event->enc_change.status);
+      break;
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+      logf("gap repeat pairing");
+      break;
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+      logf("gap passkey action %d", event->passkey.params.action);
+      break;
+    case BLE_GAP_EVENT_CONN_UPDATE_REQ:
+      logf("gap conn update request");
+      break;
+    case BLE_GAP_EVENT_DISCONNECT:
+      logf("gap disconnect reason %d", event->disconnect.reason);
+      break;
+    default:
+      break;
+  }
+  return 0;
+}
+ble_gap_event_listener g_gapListener;
+bool g_gapListenerOn = false;
+
+void logHandles() {
+  NimBLEService* service = g_server ? g_server->getServiceByUUID(SERVICE_UUID) : nullptr;
+  if (!service) return;
+  logf("service handle %u", service->getHandle());
+  for (const auto& ep : ENDPOINTS) {
+    NimBLECharacteristic* c = service->getCharacteristic(ep.uuid);
+    if (!c) continue;
+    NimBLEDescriptor* d = c->getDescriptorByUUID("2901");
+    logf("%s: value handle %u, name handle %u", ep.name, c->getHandle(), d ? d->getHandle() : 0);
+  }
+}
+
 std::string efuseHex() {
   char buf[17];
   snprintf(buf, sizeof(buf), "%llx", static_cast<unsigned long long>(ESP.getEfuseMac()));
@@ -691,6 +739,10 @@ bool start(std::string& qrUrl) {
     return false;
   }
   setStage(Stage::Advertising);
+  logHandles();
+  ble_gap_event_listener_unregister(&g_gapListener);  // in case the host kept it from a previous start
+  g_gapListenerOn = ble_gap_event_listener_register(&g_gapListener, onGapEvent, nullptr) == 0;
+  logf("gap listener %s", g_gapListenerOn ? "on" : "failed");
 
   uint8_t mac[6] = {};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -718,6 +770,8 @@ void stop() {
     for (const uint16_t handle : g_server->getPeerDevices()) g_server->disconnect(handle);
     for (int i = 0; i < 25 && g_server->getConnectedCount() > 0; ++i) delay(20);
     g_server->setCallbacks(nullptr, false);
+    if (g_gapListenerOn) ble_gap_event_listener_unregister(&g_gapListener);
+    g_gapListenerOn = false;
     step("host stop");
     // Keep the GATT objects until the next start(): a host event still in
     // flight may point at them.
