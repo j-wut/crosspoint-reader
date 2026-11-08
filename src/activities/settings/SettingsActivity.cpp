@@ -312,6 +312,79 @@ void SettingsActivity::switchSection(const SettingsSection next) {
   requestUpdate();
 }
 
+SettingsSection SettingsActivity::nextSection(const int direction) const {
+  constexpr int count = static_cast<int>(SETTINGS_SECTION_COUNT);
+  return static_cast<SettingsSection>((static_cast<int>(section) + direction + count) % count);
+}
+
+void SettingsActivity::stepSection(const int direction) {
+  tabsFocused = true;
+  switchSection(nextSection(direction));
+}
+
+void SettingsActivity::focusTabs() {
+  tabsFocused = true;
+  requestUpdate();
+}
+
+bool SettingsActivity::handleButtons() {
+  if (tabsFocused && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    stepSection(1);
+    return true;
+  }
+  return UiListActivity::handleButtons();
+}
+
+void SettingsActivity::navigateButtons() {
+  if (!UITheme::hasTilesHome()) {
+    UiListActivity::navigateButtons();
+    return;
+  }
+  // The tab band sits before the first row and after the last one.
+  if (mappedInput.wasPressed(MappedInputManager::Button::NavNext) ||
+      mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
+    holdStartedOnTabs = tabsFocused;
+  }
+  const int count = listCount();
+  buttonNavigator.onNextPress([this, count] {
+    if (tabsFocused || count == 0) {
+      tabsFocused = count == 0;
+      moveSelectionTo(0);
+    } else if (nav.selected >= count - 1) {
+      focusTabs();
+    } else {
+      moveSelectionTo(nav.selected + 1);
+    }
+  });
+  buttonNavigator.onPreviousPress([this, count] {
+    if (tabsFocused || count == 0) {
+      tabsFocused = count == 0;
+      moveSelectionTo(std::max(0, count - 1));
+    } else if (nav.selected <= 0) {
+      focusTabs();
+    } else {
+      moveSelectionTo(nav.selected - 1);
+    }
+  });
+  // A hold that began on the tabs steps the section; one in the list pages.
+  buttonNavigator.onNextContinuous([this] {
+    if (holdStartedOnTabs) {
+      stepSection(1);
+      return;
+    }
+    tabsFocused = false;
+    moveSelectionTo(ButtonNavigator::nextPageIndex(nav.selected, listCount(), nav.inputPageRows()));
+  });
+  buttonNavigator.onPreviousContinuous([this] {
+    if (holdStartedOnTabs) {
+      stepSection(-1);
+      return;
+    }
+    tabsFocused = false;
+    moveSelectionTo(ButtonNavigator::previousPageIndex(nav.selected, listCount(), nav.inputPageRows()));
+  });
+}
+
 void SettingsActivity::buildSectionTabs(UiScreen& screen) {
   const auto& theme = screen.theme();
   const fui::Paint ink = fui::Paint::solid(fui::Color::Black);
@@ -319,6 +392,11 @@ void SettingsActivity::buildSectionTabs(UiScreen& screen) {
   constexpr int16_t ICON = 32;
   const auto& metrics = UITheme::getInstance().getMetrics();
   const fui::Rect band = screen.takeTop(TAB_HEIGHT);
+  // Button focus on the tabs: the band gets the gray wash other tab bars use.
+  if (tabsFocused) {
+    screen.target().fill(fui::Rect{band.x, band.y, band.width, static_cast<int16_t>(band.height - 2)},
+                         fui::Paint::dither(fui::Color::LightGray));
+  }
   const auto side = static_cast<int16_t>(metrics.contentSidePadding);
   const auto slotW = static_cast<int16_t>((band.width - 2 * side) / static_cast<int>(SETTINGS_SECTION_COUNT));
   for (size_t i = 0; i < SETTINGS_SECTION_COUNT; ++i) {
@@ -345,15 +423,16 @@ void SettingsActivity::activateIndex(const int index) {
   // Most rows repaint a different surface (popup, sub-activity, new value);
   // a lingering tap flash would gray an unrelated element.
   app.clearTapFlash();
+  tabsFocused = false;
   nav.selected = index;
   toggleSelectedSetting();
   requestUpdate();
 }
 
-void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
+void SettingsActivity::applyUiSettingChange(const StrId nameId) {
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
-  if (valuePtr != &CrossPointSettings::uiTheme) {
+  if (nameId != StrId::STR_UI_THEME) {
     return;
   }
   UITheme::getInstance().reload();
@@ -391,13 +470,14 @@ void SettingsActivity::toggleSelectedSetting() {
     const auto enumLabels = setting.enumLabels();
     if (enumLabels.size() > 2) {
       const auto valuePtr = setting.valuePtr;
+      const auto nameId = setting.nameId;
       optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), currentValue,
-                       [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                       [this, valuePtr, nameId, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
                          SETTINGS.*valuePtr = idx;
                          syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
                          SETTINGS.saveToFile();
                          rebuildSettings();
-                         applyUiSettingChange(valuePtr);
+                         applyUiSettingChange(nameId);
                        });
       requestUpdate();
       return;
@@ -410,11 +490,13 @@ void SettingsActivity::toggleSelectedSetting() {
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+      const auto nameId = setting.nameId;
+      auto onSelect = [this, valueSetter, nameId, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
         valueSetter(idx);
         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         SETTINGS.saveToFile();
         rebuildSettings();
+        applyUiSettingChange(nameId);
       };
       if (!setting.enumStringValues.empty()) {
         optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
@@ -572,9 +654,9 @@ void SettingsActivity::toggleSelectedSetting() {
 
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
   SETTINGS.saveToFile();
-  const auto valuePtr = setting.valuePtr;  // rebuildSettings() replaces `setting`
+  const auto nameId = setting.nameId;  // rebuildSettings() replaces `setting`
   rebuildSettings();
-  applyUiSettingChange(valuePtr);
+  applyUiSettingChange(nameId);
   // Rows can appear/disappear with a change (e.g. the footnote-back toggle).
   nav.selected = std::min(selectedSetting, static_cast<int>(settings.size()) - 1);
 }
@@ -696,6 +778,7 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.headerText = screen.theme().smallText;
   props.headerText.bold = true;
   syncListViewport(screen, props);
+  if (tabsFocused) props.selectedIndex = -1;
   if (tabbed) {
     // Switches and row rules as on the stock Picco settings (after the sync,
     // which sets the checkbox look).
@@ -712,6 +795,13 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
 }
 
 void SettingsActivity::drawFooter() {
+  if (tabsFocused) {
+    // Confirm on the tabs opens the next section.
+    const char* next = I18N.get(SETTINGS_SECTION_TITLES[static_cast<size_t>(nextSection(1))]);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), next, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    return;
+  }
   const int selected = nav.selected;
   const bool picker =
       selected >= 0 && selected < static_cast<int>(settings.size()) &&

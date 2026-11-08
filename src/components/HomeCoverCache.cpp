@@ -10,6 +10,8 @@
 namespace fui = freeink::ui;
 
 void HomeCoverCache::begin() {
+  // Boards without PSRAM always draw covers from the card.
+  if (HalMemory::getPsramHeap().totalBytes == 0) return;
   // Cover regions do not overlap. Each may widen by one physical byte per row.
   coverCacheCapacity = renderer.getRegionByteSize(0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()) +
                        MAX_COVERS * std::max(renderer.getScreenWidth(), renderer.getScreenHeight());

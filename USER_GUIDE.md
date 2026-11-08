@@ -261,6 +261,11 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
   - "Lyra" - The new theme for Crosspoint featuring rounded elements and menu icons
   - "Lyra Extended" - Lyra, but displays 3 books instead of 1 on the **[Home Screen](#31-home-screen)**
   - "RoundedRaff" - A rounded theme with additional visual styling
+  - "Cover Grid" (boards with PSRAM only) - A grid of book covers on the **[Home Screen](#31-home-screen)**
+  - "Tiles" - A cover carousel with a Library, Transfer, Apps and Settings dock, an Apps page (Reading Stats, Todo, Pomodoro, Countdown, Weather, Fortune), a cover Bookshelf and tabbed Settings. On button devices:
+    - Settings: move past the first or last row to reach the section tabs; Confirm (or holding Up/Down there) changes the section.
+    - Bookshelf: move past the first or last book to reach "List"; hold Confirm on a book to delete it.
+    - Todo: hold Confirm on an item to delete it. Countdown: Confirm deletes the selected date.
 
 - **Sunlight Fading Fix**: Configure whether to enable a software-fix for the issue where white X4 models may fade when used in direct sunlight:
   

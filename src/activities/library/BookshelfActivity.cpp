@@ -33,6 +33,7 @@ constexpr fui::ActionId PAGE = 3;  // value -1 / +1
 constexpr int16_t GAP = 14;
 constexpr int16_t PROGRESS_HEIGHT = 6;
 constexpr int16_t BAR_HEIGHT = 44;
+constexpr unsigned long DELETE_HOLD_MS = 1000;
 const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
 const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
 
@@ -171,11 +172,27 @@ void BookshelfActivity::screenFn(UiScreen& screen, void* user) { static_cast<Boo
 void BookshelfActivity::select(const int index) {
   const int count = bookCount;
   if (count == 0) return;
+  listFocused = false;
   const int flat = (index % count + count) % count;
   const int targetPage = flat / PER_PAGE;
   selected = flat % PER_PAGE;
   if (targetPage != page) loadPage(targetPage);
   requestUpdate();
+}
+
+void BookshelfActivity::step(const int direction) {
+  if (bookCount == 0) return;
+  if (listFocused) {
+    select(direction > 0 ? 0 : bookCount - 1);
+    return;
+  }
+  const int flat = page * PER_PAGE + selected + direction;
+  if (flat < 0 || flat >= bookCount) {
+    listFocused = true;
+    requestUpdate();
+    return;
+  }
+  select(flat);
 }
 
 void BookshelfActivity::openCell(const int slot) {
@@ -250,12 +267,21 @@ void BookshelfActivity::loop() {
     activityManager.goHome(HomeMenuItem::LIBRARY);
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    openCell(selected);
+  // The hold fires mid-press and swallows its release (as in the Library list).
+  if (!listFocused && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, DELETE_HOLD_MS)) {
+    promptDelete(selected);
     return;
   }
-  buttonNavigator.onNext([this] { select(page * PER_PAGE + selected + 1); });
-  buttonNavigator.onPrevious([this] { select(page * PER_PAGE + selected - 1); });
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (listFocused || bookCount == 0) {
+      activityManager.goToLibrary();
+    } else {
+      openCell(selected);
+    }
+    return;
+  }
+  buttonNavigator.onNext([this] { step(1); });
+  buttonNavigator.onPrevious([this] { step(-1); });
 }
 
 void BookshelfActivity::draw(UiScreen& screen) {
@@ -263,11 +289,11 @@ void BookshelfActivity::draw(UiScreen& screen) {
   const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
-      static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
+                  static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
   const fui::Rect body = screen.body();
   const int16_t smallH = screen.target().lineHeight(theme.smallText.font);
   const int16_t bodyH = screen.target().lineHeight(theme.bodyText.font);
@@ -283,7 +309,13 @@ void BookshelfActivity::draw(UiScreen& screen) {
       screen.target().measureText(listText.font, tr(STR_BOOKSHELF_LIST), listText).width + theme.spaceLg * 2);
   const fui::Rect listButton{static_cast<int16_t>(body.right() - listW), static_cast<int16_t>(body.y + 4), listW,
                              static_cast<int16_t>(BAR_HEIGHT - 8)};
-  screen.target().stroke(listButton, INK, 2, theme.controlRadius);
+  const bool listSelected = (listFocused || bookCount == 0) && !BoardConfig::hasTouch();
+  if (listSelected) {
+    screen.target().fill(listButton, INK, theme.controlRadius);
+    listText.inverted = true;
+  } else {
+    screen.target().stroke(listButton, INK, 2, theme.controlRadius);
+  }
   screen.target().text(
       fui::Rect{listButton.x, static_cast<int16_t>(listButton.y + (listButton.height - bodyH) / 2), listW, bodyH},
       tr(STR_BOOKSHELF_LIST), listText);
@@ -325,14 +357,14 @@ void BookshelfActivity::draw(UiScreen& screen) {
     const int16_t arrowH = screen.target().lineHeight(arrow.font);
     if (page > 0) {
       screen.target().stroke(prev, INK, 2, theme.controlRadius);
-      screen.target().text(fui::Rect{prev.x, static_cast<int16_t>(prev.y + (pagerH - arrowH) / 2), arrowW, arrowH},
-                           "<", arrow);
+      screen.target().text(fui::Rect{prev.x, static_cast<int16_t>(prev.y + (pagerH - arrowH) / 2), arrowW, arrowH}, "<",
+                           arrow);
       screen.frame().hit(prev, PAGE, -1, fui::InputTouch);
     }
     if (page + 1 < pages) {
       screen.target().stroke(next, INK, 2, theme.controlRadius);
-      screen.target().text(fui::Rect{next.x, static_cast<int16_t>(next.y + (pagerH - arrowH) / 2), arrowW, arrowH},
-                           ">", arrow);
+      screen.target().text(fui::Rect{next.x, static_cast<int16_t>(next.y + (pagerH - arrowH) / 2), arrowW, arrowH}, ">",
+                           arrow);
       screen.frame().hit(next, PAGE, 1, fui::InputTouch);
     }
   }
@@ -378,7 +410,7 @@ void BookshelfActivity::drawCell(UiScreen& screen, const int slot, const fui::Re
     cardTitle.maxLines = 6;
     screen.target().text(cover.inset(fui::Insets{16, 8, 16, 8}), cell.title.c_str(), cardTitle);
   }
-  if (slot == selected && !BoardConfig::hasTouch()) {
+  if (slot == selected && !listFocused && !BoardConfig::hasTouch()) {
     screen.target().stroke(cover.inset(fui::Insets{-5, -5, -5, -5}), INK, 3, 6);
   }
   auto y = static_cast<int16_t>(cover.bottom() + theme.spaceSm);

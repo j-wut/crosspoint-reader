@@ -7,7 +7,7 @@
 #include "apps/AppLists.h"
 
 // Days left until each saved date, soonest first. Dates are added on the web
-// page; swipe left on a row to delete it.
+// page; swipe left on a row to delete it (buttons: Confirm).
 class CountdownActivity final : public UiListActivity {
  public:
   CountdownActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -24,10 +24,14 @@ class CountdownActivity final : public UiListActivity {
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int) override {}
   const char* headerTitle() const override;
+  bool handleButtons() override;
+  void drawFooter() override;
 #if FREEINK_CAP_TOUCH
   bool canSwipeDelete(int index) const override { return index >= 0 && index < listCount(); }
-  void swipeDelete(int index) override;
+  void swipeDelete(int index) override { deleteRow(index); }
 #endif
+  void deleteRow(int index);
+  void promptDelete(int index);
   void refreshRows();
 
   std::vector<applists::CountdownItem> items;
