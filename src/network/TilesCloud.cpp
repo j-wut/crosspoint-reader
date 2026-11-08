@@ -38,6 +38,7 @@ constexpr const char* PUSH_REPORT_URL = "https://push.boox.com/api/v2/nano/push/
 std::string g_authorization;
 // Push items already downloaded this session.
 std::vector<std::string> g_downloaded;
+Status g_status;
 // The stock firmware's User-Agent; the server may expect it.
 constexpr const char* STOCK_USER_AGENT = "Picco-ESP32-1.0.5";
 
@@ -257,6 +258,7 @@ void handlePushList(Print& out, const std::string& body) {
   if (deserializeJson(doc, body)) return;
   JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
   if (list.isNull()) return;
+  g_status.waiting = static_cast<int>(list.size());
   std::vector<std::string> reported;
   for (JsonObjectConst item : list) {
     out.print("push item: ");
@@ -287,8 +289,10 @@ void handlePushList(Print& out, const std::string& body) {
     }
     out.printf("  download to %s -> result %d, HTTP %d\n", dest.c_str(), static_cast<int>(result),
                HttpDownloader::lastStatus());
+    if (result != HttpDownloader::OK) g_status.failed++;
     if (result == HttpDownloader::OK) {
       g_downloaded.push_back(name);
+      g_status.received++;
       if (library::isLibraryBookFile(dest.c_str())) library::markLibraryIndexDirty();
       const std::string id = pushItemId(item);
       if (!id.empty()) reported.push_back(id);
@@ -372,6 +376,7 @@ void probe() {
     return;
   }
   log.printf("token: %u chars\n", static_cast<unsigned>(token.size()));
+  g_status.bound = true;
   log.flush();
 
   // The stock firmware's header format is unknown: try the raw token, then Bearer.
@@ -382,6 +387,7 @@ void probe() {
     g_authorization = "Bearer " + token;
     status = logGet(log, PUSH_LIST_URL, g_authorization, "bearer", &body);
   }
+  g_status.lastHttp = status;
   if (status == 200) handlePushList(log, body);
   for (const char* path : EXTRA_GETS) {
     const std::string url = std::string(API_BASE) + path;
@@ -391,13 +397,16 @@ void probe() {
   LOG_INF("TILES", "probe written to %s", LOG_PATH);
 }
 
+const Status& status() { return g_status; }
+
 void poll() {
   if (!BoardConfig::isPicco() || g_authorization.empty()) return;
   HalFile log = openLog();
   if (!log) return;
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;
-  if (logGet(log, PUSH_LIST_URL, g_authorization, "poll", &body) == 200) handlePushList(log, body);
+  g_status.lastHttp = logGet(log, PUSH_LIST_URL, g_authorization, "poll", &body);
+  if (g_status.lastHttp == 200) handlePushList(log, body);
   log.close();
 }
 

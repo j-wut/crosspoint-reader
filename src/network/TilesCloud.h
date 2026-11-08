@@ -23,6 +23,16 @@ void probe();
 // new items to the SD card root. Picco only.
 void poll();
 
+// Result of the last probe() or poll(), for the BOOX Cloud screen.
+struct Status {
+  bool bound = false;  // a saved binding with a token was found
+  int lastHttp = 0;    // HTTP status of the last push list check (0: none)
+  int waiting = 0;     // items in the last push list
+  int received = 0;    // items downloaded this session
+  int failed = 0;      // downloads that failed this session
+};
+const Status& status();
+
 // Append one printf-style line to the same log (Picco only).
 void logLine(const char* format, ...) __attribute__((format(printf, 1, 2)));
 

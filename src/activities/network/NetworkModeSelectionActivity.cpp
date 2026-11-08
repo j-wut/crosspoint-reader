@@ -47,9 +47,18 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.actionValue = static_cast<int16_t>(i);
     rowItems_[i] = item;
   }
+  if (BoardConfig::isPicco()) {
+    fui::ListItem item;
+    item.label = tr(STR_BOOX_CLOUD);
+    item.subtitle = tr(STR_BOOX_CLOUD_DESC);
+    item.icon = listIconFor(UIIcon::Wifi, 32);
+    item.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT);
+    rowItems_[MENU_ITEM_COUNT] = item;
+    itemCount_ = MENU_ITEM_COUNT + 1;
+  }
 }
 
-int NetworkModeSelectionActivity::listCount() const { return MENU_ITEM_COUNT; }
+int NetworkModeSelectionActivity::listCount() const { return itemCount_; }
 
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
@@ -59,7 +68,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  onModeSelected(static_cast<NetworkMode>(index));
+  onModeSelected(index < MENU_ITEM_COUNT ? static_cast<NetworkMode>(index) : NetworkMode::BOOX_CLOUD);
 }
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
@@ -73,7 +82,7 @@ void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   // repaint.
   fui::ListProps props;
   props.items = rowItems_;
-  props.count = static_cast<uint16_t>(MENU_ITEM_COUNT);
+  props.count = static_cast<uint16_t>(itemCount_);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.subtitleText = screen.theme().smallText;

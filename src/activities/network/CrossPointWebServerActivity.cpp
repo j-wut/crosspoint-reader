@@ -14,10 +14,10 @@
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
-#include "network/TilesCloud.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/TilesCloud.h"
 #include "util/PluginEvents.h"
 #include "util/QrUtils.h"
 #include "util/TaskWatchdog.h"
@@ -153,7 +153,9 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   }
 
   const char* modeName = "Join Network";
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
+  if (mode == NetworkMode::BOOX_CLOUD) {
+    modeName = "BOOX Cloud";
+  } else if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
@@ -191,7 +193,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     return;
   }
 
-  if (mode == NetworkMode::JOIN_NETWORK) {
+  if (mode == NetworkMode::JOIN_NETWORK || mode == NetworkMode::BOOX_CLOUD) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     WiFi.mode(WIFI_STA);
@@ -217,6 +219,15 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 
 void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) {
   LOG_DBG("WEBACT", "WifiSelectionActivity completed, connected=%d", connected);
+
+  if (connected && networkMode == NetworkMode::BOOX_CLOUD) {
+    isApMode = false;
+    state = WebServerActivityState::CLOUD_RUNNING;
+    cloudCheckDue = true;
+    lastWifiBars = barsForRssi(WiFi.RSSI(), 0);
+    requestUpdate();
+    return;
+  }
 
   if (connected) {
     // Get connection info before exiting subactivity
@@ -333,9 +344,6 @@ void CrossPointWebServerActivity::startWebServer() {
     // the drain's per-call event budget so serving is not noticeably delayed.
     if (!isApMode) {
       pluginevents::drain(&renderer);
-      // Diagnostic for the BOOX Tiles cloud (Picco only).
-      tilescloud::probe();
-      lastTilesPollAt = millis();
     }
 
     // Force an immediate render since we're transitioning from a subactivity
@@ -349,7 +357,40 @@ void CrossPointWebServerActivity::startWebServer() {
   }
 }
 
+void CrossPointWebServerActivity::loopCloud() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
+    onGoHome();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) cloudCheckDue = true;
+  if (WiFi.status() == WL_CONNECTED && millis() - lastCloudCheckAt > 60000) cloudCheckDue = true;
+  if (!cloudCheckDue || WiFi.status() != WL_CONNECTED) return;
+
+  // Show "Checking" first; the check blocks this loop for a few seconds.
+  if (!cloudChecking) {
+    cloudChecking = true;
+    requestUpdate();
+    return;
+  }
+  resetTaskWatchdogIfSubscribed();
+  if (!cloudProbed) {
+    tilescloud::probe();  // reads the binding, then checks the push list
+    cloudProbed = true;
+  } else {
+    tilescloud::poll();
+  }
+  lastCloudCheckAt = millis();
+  cloudCheckDue = false;
+  cloudChecking = false;
+  lastWifiBars = barsForRssi(WiFi.RSSI(), lastWifiBars);
+  requestUpdate();
+}
+
 void CrossPointWebServerActivity::loop() {
+  if (state == WebServerActivityState::CLOUD_RUNNING) {
+    loopCloud();
+    return;
+  }
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
     // Handle DNS requests for captive portal (AP mode only)
@@ -399,12 +440,6 @@ void CrossPointWebServerActivity::loop() {
           }
         }
         if (repaint) requestUpdate();
-      }
-      // Diagnostic: check the BOOX Tiles push list again every minute (Picco only).
-      if (WiFi.status() == WL_CONNECTED && millis() - lastTilesPollAt > 60000) {
-        lastTilesPollAt = millis();
-        resetTaskWatchdogIfSubscribed();
-        tilescloud::poll();
       }
     }
 
@@ -465,6 +500,12 @@ void CrossPointWebServerActivity::loop() {
 void CrossPointWebServerActivity::render(RenderLock&&) {
   // Only render our own UI when server is running
   // Subactivities handle their own rendering
+  if (state == WebServerActivityState::CLOUD_RUNNING) {
+    renderer.clearScreen();
+    renderCloudRunning();
+    renderer.displayBuffer();
+    return;
+  }
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
     const auto& metrics = UITheme::getInstance().getMetrics();
@@ -563,6 +604,45 @@ void CrossPointWebServerActivity::renderServerRunning() const {
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void CrossPointWebServerActivity::renderCloudRunning() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOX_CLOUD), nullptr);
+  const int subHeaderTop = metrics.topPadding + metrics.headerHeight;
+  GUI.drawSubHeader(renderer, Rect{0, subHeaderTop, pageWidth, metrics.tabBarHeight}, WiFi.SSID().c_str());
+  renderWifiIndicator(subHeaderTop);
+
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+  int y = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing * 4;
+  const auto& st = tilescloud::status();
+  char line[64];
+  if (cloudChecking || !cloudProbed) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_CHECKING), true, EpdFontFamily::BOLD);
+  } else if (!st.bound) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_NOT_BOUND), true, EpdFontFamily::BOLD);
+  } else if (st.lastHttp != 200) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_ERROR), st.lastHttp);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true, EpdFontFamily::BOLD);
+  } else if (st.waiting == 0 && st.received == 0) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_NO_NEW), true, EpdFontFamily::BOLD);
+  }
+  y += lineHeight * 2;
+  if (st.received > 0) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_RECEIVED), st.received);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (st.failed > 0) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_FAILED), st.failed);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (st.bound) renderer.drawCenteredText(SMALL_FONT_ID, y + lineHeight, tr(STR_CLOUD_AUTO_HINT), true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_CHECK_NOW), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

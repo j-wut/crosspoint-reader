@@ -14,6 +14,7 @@ enum class WebServerActivityState {
   WIFI_SELECTION,  // WiFi selection subactivity is active (for Join Network mode)
   AP_STARTING,     // Starting Access Point mode
   SERVER_RUNNING,  // Web server is running and handling requests
+  CLOUD_RUNNING,   // BOOX Cloud: checking the push list (Picco)
   SHUTTING_DOWN    // Shutting down server and WiFi
 };
 
@@ -46,7 +47,11 @@ class CrossPointWebServerActivity final : public Activity {
 
   // Performance monitoring
   unsigned long lastHandleClientTime = 0;
-  unsigned long lastTilesPollAt = 0;
+  // BOOX Cloud: when the push list was last checked, and a check is due/running.
+  unsigned long lastCloudCheckAt = 0;
+  bool cloudCheckDue = false;
+  bool cloudChecking = false;
+  bool cloudProbed = false;
 
   // Set when Back or Home is seen while an upload holds handleClient().
   bool leaveRequested = false;
@@ -62,6 +67,8 @@ class CrossPointWebServerActivity final : public Activity {
   int lastWifiBars = 0;
 
   void renderServerRunning() const;
+  void renderCloudRunning() const;
+  void loopCloud();
   void renderWifiIndicator(int subHeaderTop) const;
 
   void onNetworkModeSelected(NetworkMode mode);
