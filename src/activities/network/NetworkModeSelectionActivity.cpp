@@ -3,9 +3,13 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
+#include "components/TilesGrid.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
+#include "components/icons/appIcons.h"
 
 namespace fui = freeink::ui;
 
@@ -32,6 +36,15 @@ constexpr UIIcon menuIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
     UIIcon::Hotspot,
 #if FREEINK_CAP_USB_MSC
     UIIcon::Usb,
+#endif
+};
+// 48 px icons for the Tiles theme grid.
+const freeink::Icon* const menuTileIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
+    &icon_app_wifi_48,
+    &icon_app_calibre_48,
+    &icon_app_hotspot_48,
+#if FREEINK_CAP_USB_MSC
+    &icon_app_usb_48,
 #endif
 };
 }  // namespace
@@ -62,7 +75,32 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   onModeSelected(static_cast<NetworkMode>(index));
 }
 
+void NetworkModeSelectionActivity::navigateButtons() {
+  if (!UITheme::hasTilesHome()) {
+    UiListActivity::navigateButtons();
+    return;
+  }
+  // The grid has no list viewport to page through: a hold just steps.
+  buttonNavigator.onNext([this] { moveSelectionTo(ButtonNavigator::nextIndex(nav.selected, listCount())); });
+  buttonNavigator.onPrevious([this] { moveSelectionTo(ButtonNavigator::previousIndex(nav.selected, listCount())); });
+}
+
+void NetworkModeSelectionActivity::buildTiles(UiScreen& screen) {
+  tilesgrid::setContentMargin(screen, renderer);
+  const int count = listCount();
+  tilesgrid::Tile tiles[tilesgrid::PER_PAGE];
+  for (int i = 0; i < count && i < tilesgrid::PER_PAGE; i++) {
+    // Rows added after the fixed ones (BOOX Cloud on the Picco) use the cloud icon.
+    tiles[i] = {rowItems_[i].label, i < MENU_ITEM_COUNT ? menuTileIcons[i] : &icon_app_cloud_48};
+  }
+  tilesgrid::draw(screen, tiles, std::min(count, tilesgrid::PER_PAGE), nav.selected, ACTION_ROW);
+}
+
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
+  if (UITheme::hasTilesHome()) {
+    buildTiles(screen);
+    return;
+  }
   const auto& metrics = UITheme::getInstance().getMetrics();
   // Content below the GUI.drawHeader band, above the button hints.
   screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,

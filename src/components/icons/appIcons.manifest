@@ -1,4 +1,4 @@
-# Manifest for src/components/icons/appIcons.h (Tiles home dock and Apps grid) — regenerate with:
+# Manifest for src/components/icons/appIcons.h (Tiles home dock, Apps and File Transfer grids) — regenerate with:
 #   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
 #     --manifest src/components/icons/appIcons.manifest \
 #     --svgdir <lucide-static 0.460.0>/icons \
@@ -17,3 +17,8 @@ app-weather = cloud-sun
 app-fortune = sparkles
 app-gallery = images
 app-files = folder
+app-wifi = wifi
+app-calibre = library
+app-hotspot = radio-tower
+app-usb = usb
+app-cloud = cloud-download
