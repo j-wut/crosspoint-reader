@@ -30,6 +30,9 @@ struct Status {
   int waiting = 0;     // items in the last push list
   int received = 0;    // items downloaded this session
   int failed = 0;      // downloads that failed this session
+  // Details of the last failed download, shown on screen in case the SD card
+  // log cannot be written after it.
+  char lastFailure[96] = "";
 };
 const Status& status();
 

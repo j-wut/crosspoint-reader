@@ -371,9 +371,21 @@ void handlePushList(HalFile& out, const std::string& body) {
         r = HttpDownloader::downloadToFile(from, dest, progress, nullptr, "", "", {{"Authorization", g_authorization}});
       }
       const unsigned long elapsed = millis() - started;
+      const bool partLeft = Storage.exists((dest + ".part").c_str());
+      snprintf(g_status.lastFailure, sizeof(g_status.lastFailure), "%s r%d HTTP %d %lus heap %u blk %u part %s",
+               from.rfind("https", 0) == 0 ? "https" : "http", static_cast<int>(r), HttpDownloader::lastStatus(),
+               elapsed / 1000, static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+               partLeft ? "left" : "gone");
+      LOG_INF("TILES", "download result: %s", g_status.lastFailure);
       out = openLog();
-      out.printf("  -> result %d, HTTP %d, %lu ms, part file %s\n", static_cast<int>(r), HttpDownloader::lastStatus(),
-                 elapsed, Storage.exists((dest + ".part").c_str()) ? "left" : "gone");
+      if (!out) {
+        LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
+        delay(500);
+        out = openLog();
+      }
+      out.printf("  -> result %d, HTTP %d, %lu ms, part file %s, heap %u, max block %u\n", static_cast<int>(r),
+                 HttpDownloader::lastStatus(), elapsed, partLeft ? "left" : "gone",
+                 static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
       return r;
     };
     // The push list gives plain-http storage links, which the stock firmware
