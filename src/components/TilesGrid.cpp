@@ -1,6 +1,7 @@
 #include "TilesGrid.h"
 
 #include <BoardConfig.h>
+#include <FreeInkUIIcon.h>
 #include <GfxRenderer.h>
 
 #include <algorithm>
