@@ -639,7 +639,9 @@ void CrossPointWebServerActivity::renderCloudRunning() const {
     snprintf(line, sizeof(line), tr(STR_CLOUD_FAILED), st.failed);
     renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
     y += lineHeight;
-    renderer.drawCenteredText(SMALL_FONT_ID, y, st.lastFailure, true);
+  }
+  for (int i = 0; i < st.attemptCount; ++i) {
+    renderer.drawCenteredText(SMALL_FONT_ID, y, st.attempts[i], true);
     y += lineHeight;
   }
   if (st.bound) renderer.drawCenteredText(SMALL_FONT_ID, y + lineHeight, tr(STR_CLOUD_AUTO_HINT), true);

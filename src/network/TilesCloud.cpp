@@ -8,9 +8,12 @@
 #include <LibraryBuilder.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
+#include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <nvs.h>
+#include <wolfssl/wolfcrypt/memory.h>
+#include <wolfssl/wolfcrypt/settings.h>
 
 #include <algorithm>
 #include <cstdarg>
@@ -317,6 +320,35 @@ void reportDownloaded(Print& out, const std::vector<std::string>& ids) {
   http.end();
 }
 
+// TLS memory from PSRAM first, as the stock firmware does ("mbedtls
+// allocator -> PSRAM"), so TLS buffers don't take the internal RAM the SD
+// card and Wi-Fi need. ESP-IDF free() and realloc() accept memory from
+// either pool, so switching back and forth is safe.
+void* tlsMallocPsram(size_t size) { return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_8BIT); }
+void tlsFree(void* ptr) { heap_caps_free(ptr); }
+void* tlsReallocPsram(void* ptr, size_t size) {
+  return heap_caps_realloc_prefer(ptr, size, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_8BIT);
+}
+
+void setTlsInPsram(const bool on) {
+  if (on && ESP.getPsramSize() > 0) {
+    wolfSSL_SetAllocators(tlsMallocPsram, tlsFree, tlsReallocPsram);
+  } else {
+    wolfSSL_SetAllocators(nullptr, nullptr, nullptr);
+  }
+}
+
+// Write, read back and remove a small file: "ok" or the step that failed.
+const char* sdWriteTest() {
+  constexpr const char* PATH = "/.tiles-sd-test";
+  HalFile f = Storage.open(PATH, O_WRONLY | O_CREAT | O_TRUNC);
+  if (!f) return "open-fail";
+  if (f.write(reinterpret_cast<const uint8_t*>("ok"), 2) != 2) return "write-fail";
+  f.close();
+  if (!Storage.remove(PATH)) return "remove-fail";
+  return "ok";
+}
+
 // Log each push item in full, download it to the SD card root from its URL
 // and report it as received.
 HalFile openLog();
@@ -359,47 +391,55 @@ void handlePushList(HalFile& out, const std::string& body) {
       LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
               static_cast<unsigned>(ESP.getFreeHeap()));
     };
-    const auto attempt = [&](const std::string& from) {
-      out.printf("  download %s -> %s (size %u, heap %u, max block %u)\n", from.c_str(), dest.c_str(),
-                 static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
-                 static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    // As the stock firmware does: TLS memory stays in PSRAM (set in probe())
+    // and the book is fetched from its link as given. After the download a
+    // small SD write checks the card still works.
+    bool gotBook = false;
+    const auto attempt = [&](const char* label, const std::string& from) {
+      const std::string& target = dest;
+      out.printf("  [%s] download %s -> %s (size %u, heap %u, max block %u, PSRAM free %u)\n", label, from.c_str(),
+                 target.c_str(), static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned>(ESP.getFreeHeap()),
+                 static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
       out.close();
       nextMark = 0;
       const unsigned long started = millis();
-      auto r = HttpDownloader::downloadToFile(from, dest, progress);
+      auto r = HttpDownloader::downloadToFile(from, target, progress);
       if (r == HttpDownloader::UNAUTHORIZED) {
-        r = HttpDownloader::downloadToFile(from, dest, progress, nullptr, "", "", {{"Authorization", g_authorization}});
+        r = HttpDownloader::downloadToFile(from, target, progress, nullptr, "", "",
+                                           {{"Authorization", g_authorization}});
       }
       const unsigned long elapsed = millis() - started;
-      const bool partLeft = Storage.exists((dest + ".part").c_str());
-      snprintf(g_status.lastFailure, sizeof(g_status.lastFailure), "%s r%d HTTP %d %lus heap %u blk %u part %s",
-               from.rfind("https", 0) == 0 ? "https" : "http", static_cast<int>(r), HttpDownloader::lastStatus(),
-               elapsed / 1000, static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
-               partLeft ? "left" : "gone");
-      LOG_INF("TILES", "download result: %s", g_status.lastFailure);
+      const unsigned heapAfter = ESP.getFreeHeap();
+      const unsigned blockAfter = ESP.getMaxAllocHeap();
+      const bool partLeft = Storage.exists((target + ".part").c_str());
+      const char* sd = sdWriteTest();
+      if (g_status.attemptCount < Status::MAX_ATTEMPTS) {
+        snprintf(g_status.attempts[g_status.attemptCount++], sizeof(g_status.attempts[0]),
+                 "%s: r%d HTTP %d %lus heap %u blk %u part %s SD %s", label, static_cast<int>(r),
+                 HttpDownloader::lastStatus(), elapsed / 1000, heapAfter, blockAfter, partLeft ? "left" : "gone", sd);
+      }
+      LOG_INF("TILES", "download %s result %d HTTP %d SD %s", label, static_cast<int>(r), HttpDownloader::lastStatus(),
+              sd);
       out = openLog();
       if (!out) {
         LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
         delay(500);
         out = openLog();
       }
-      out.printf("  -> result %d, HTTP %d, %lu ms, part file %s, heap %u, max block %u\n", static_cast<int>(r),
-                 HttpDownloader::lastStatus(), elapsed, partLeft ? "left" : "gone",
-                 static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      return r;
+      out.printf("  [%s] -> result %d, HTTP %d, %lu ms, part file %s, heap %u, max block %u, SD write %s\n", label,
+                 static_cast<int>(r), HttpDownloader::lastStatus(), elapsed, partLeft ? "left" : "gone", heapAfter,
+                 blockAfter, sd);
+      if (r != HttpDownloader::OK) {
+        out.println("  recent device log:");
+        out.print(getLastLogs().c_str());
+        out.println();
+      }
+      if (r == HttpDownloader::OK) gotBook = true;
     };
-    // The push list gives plain-http storage links, which the stock firmware
-    // fetches as given. Plain http needs no TLS buffers, so try it first and
-    // fall back to the same link over https.
-    auto result = attempt(url);
-    if (result != HttpDownloader::OK && url.rfind("http://", 0) == 0) result = attempt("https://" + url.substr(7));
-    if (result != HttpDownloader::OK) {
-      out.println("  recent device log:");
-      out.print(getLastLogs().c_str());
-      out.println();
-    }
-    if (result != HttpDownloader::OK) g_status.failed++;
-    if (result == HttpDownloader::OK) {
+    g_status.attemptCount = 0;
+    attempt("download", url);
+    if (!gotBook) g_status.failed++;
+    if (gotBook) {
       g_downloaded.push_back(name);
       g_status.received++;
       if (library::isLibraryBookFile(dest.c_str())) library::markLibraryIndexDirty();
@@ -461,6 +501,7 @@ void probe() {
   log.printf("last reset reason %d, max block %u, PSRAM free %u\n", static_cast<int>(esp_reset_reason()),
              static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
   logNvsKeys(log);
+  setTlsInPsram(true);
   // Tests whether the server links the device by its MAC alone, which is
   // what binding from this firmware would rely on.
   std::string macToken = requestDeviceToken(log);
