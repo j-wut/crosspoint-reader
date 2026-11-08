@@ -146,10 +146,11 @@ Typical persisted areas on SD:
   epub_<hash>/
     book.bin
     css_rules.cache
-    progress.bin
     cover.bmp
     sections/*.bin
     img_* cache files
+  progress/<book folders>/<book file>.bin    (reading position)
+  bookmarks/<book folders>/<book file>.json
   settings.json
   state.json
 ```

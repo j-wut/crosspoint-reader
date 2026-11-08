@@ -372,7 +372,7 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **OPDS Servers**: Manage one or more OPDS [(Open Publication Distribution System)](https://en.wikipedia.org/wiki/Open_Publication_Distribution_System) libraries for browsing and downloading books. See [OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries) below.
 
-- **Clear Reading Cache** (**Settings → Reader**): Clear the internal SD card cache.
+- **Clear Reading Cache** (**Settings → Reader**): Clear the internal SD card cache. This also deletes saved reading progress.
 
 - **Use book metadata**: Read the title and author stored inside each book when the Library index is rebuilt. When disabled or unavailable, the Library uses the filename.
 
@@ -763,7 +763,7 @@ To create a bookmark, hold **Confirm** for about half a second while inside a bo
 
 To open bookmarks, press **Confirm** while inside a book. Then navigate to the **Bookmarks** menu. Bookmarks can be opened by navigating to them and pressing **Confirm**, which will redirect you to that place in the book. You can delete bookmarks by holding **Confirm** for about 0.7 seconds, and then pressing **Confirm** again to confirm deletion, or **Back** to cancel.
 
-Bookmarks are stored in the `.crosspoint/bookmarks` folder in the JSON format.
+Bookmarks are stored in the `.crosspoint/bookmarks` folder in the JSON format, in folders that mirror the book folders (for example, bookmarks for `/Books/My Book.epub` are in `.crosspoint/bookmarks/Books/My Book.epub.json`). Reading progress uses the same layout under `.crosspoint/progress` (for example, `.crosspoint/progress/Books/My Book.epub.bin`). Both follow a book when you move or rename it, or the folder it is in.
 
 ### 5.3 Clippings and Highlights
 

@@ -15,6 +15,7 @@
 #include "CrossPointState.h"
 #include "RecentBooksStore.h"
 #include "util/BookmarkUtil.h"
+#include "util/MirroredPath.h"
 #include "util/TaskWatchdog.h"
 
 namespace {
@@ -33,7 +34,7 @@ std::string getBookCachePath(const std::string& path) {
 }
 
 // The caller made sure no book lives at the new path, so state keyed by the
-// full path (cache hash, sidecars) found there is left over from a deleted
+// full path (cache hash, bookmarks, sidecars) found there is left over from a deleted
 // book and is replaced.
 bool moveStatePath(const std::string& oldPath, const std::string& newPath, bool& moved) {
   moved = false;
@@ -53,45 +54,67 @@ bool moveStatePath(const std::string& oldPath, const std::string& newPath, bool&
       return false;
     }
   }
+  MirroredPath::ensureParent(newPath);
   moved = Storage.rename(oldPath.c_str(), newPath.c_str());
   if (!moved) LOG_ERR("BookCache", "Failed to move book state: %s -> %s", oldPath.c_str(), newPath.c_str());
   return moved;
 }
 
 void rollBackStatePath(const std::string& oldPath, const std::string& newPath, const bool moved) {
-  if (moved && !Storage.rename(newPath.c_str(), oldPath.c_str())) {
+  if (!moved) return;
+  MirroredPath::ensureParent(oldPath);
+  if (!Storage.rename(newPath.c_str(), oldPath.c_str())) {
     LOG_ERR("BookCache", "Failed to roll back book state: %s -> %s", newPath.c_str(), oldPath.c_str());
   }
 }
 
-// Bookmark file names drop the extension and flatten folders, so another live
-// book (a.txt next to a.epub, or /x_y.epub for /x/y.epub) can own the target
-// name. Never replace it: the moved book just loses its bookmarks instead.
-bool moveBookmarks(const std::string& oldBook, const std::string& newBook, bool& moved) {
-  moved = false;
-  if (!FsHelpers::hasReflowableBookExtension(oldBook)) return true;
-  const std::string from = BookmarkUtil::getBookmarkPath(oldBook);
-  const std::string to = BookmarkUtil::getBookmarkPath(newBook);
-  if (strcasecmp(from.c_str(), to.c_str()) == 0 || !Storage.exists(from.c_str())) return true;
-  if (Storage.exists(to.c_str())) {
-    LOG_ERR("BookCache", "Bookmark name taken, bookmarks not moved: %s", to.c_str());
-    return true;
+// Bookmark and progress paths for a book, in their mirrored folders.
+struct MirroredState {
+  std::string bookmarks;
+  std::string progress;
+};
+
+MirroredState mirroredStateFor(const std::string& bookPath) {
+  return {FsHelpers::hasReflowableBookExtension(bookPath) ? BookmarkUtil::getBookmarkPath(bookPath) : "",
+          MirroredPath::progressFor(bookPath)};
+}
+
+// Moves bookmarks and progress; on failure everything moved here is put back.
+bool moveMirroredState(const MirroredState& from, const MirroredState& to, bool moved[2]) {
+  moved[0] = moved[1] = false;
+  if (!moveStatePath(from.bookmarks, to.bookmarks, moved[0])) return false;
+  if (!moveStatePath(from.progress, to.progress, moved[1])) {
+    rollBackStatePath(from.bookmarks, to.bookmarks, moved[0]);
+    return false;
   }
-  moved = Storage.rename(from.c_str(), to.c_str());
-  if (!moved) LOG_ERR("BookCache", "Failed to move bookmarks: %s -> %s", from.c_str(), to.c_str());
-  return moved;
+  return true;
+}
+
+void rollBackMirroredState(const MirroredState& from, const MirroredState& to, const bool moved[2]) {
+  rollBackStatePath(from.progress, to.progress, moved[1]);
+  rollBackStatePath(from.bookmarks, to.bookmarks, moved[0]);
+}
+
+void pruneMirroredState(const MirroredState& from, const bool moved[2]) {
+  if (moved[0]) MirroredPath::removeEmptyParents(MirroredPath::BOOKMARKS_ROOT, from.bookmarks);
+  if (moved[1]) MirroredPath::removeEmptyParents(MirroredPath::PROGRESS_ROOT, from.progress);
+}
+
+void adoptLegacyState(const std::string& bookPath, const std::string& cachePath) {
+  if (FsHelpers::hasReflowableBookExtension(bookPath)) BookmarkUtil::adoptLegacyBookmarks(bookPath);
+  MirroredPath::adoptLegacyProgress(bookPath, cachePath);
 }
 
 bool moveBookFile(const std::string& oldPath, const std::string& newPath) {
   const std::string oldCachePath = getBookCachePath(oldPath);
   const std::string newCachePath = getBookCachePath(newPath);
-  const bool hasBookmarks = FsHelpers::hasReflowableBookExtension(oldPath);
-  const std::string oldBookmarkPath = hasBookmarks ? BookmarkUtil::getBookmarkPath(oldPath) : "";
-  const std::string newBookmarkPath = hasBookmarks ? BookmarkUtil::getBookmarkPath(newPath) : "";
+  adoptLegacyState(oldPath, oldCachePath);
+  const MirroredState oldState = mirroredStateFor(oldPath);
+  const MirroredState newState = mirroredStateFor(newPath);
   bool cacheMoved = false;
-  bool bookmarksMoved = false;
+  bool stateMoved[2] = {};
   if (!moveStatePath(oldCachePath, newCachePath, cacheMoved)) return false;
-  if (!moveBookmarks(oldPath, newPath, bookmarksMoved)) {
+  if (!moveMirroredState(oldState, newState, stateMoved)) {
     rollBackStatePath(oldCachePath, newCachePath, cacheMoved);
     return false;
   }
@@ -103,7 +126,7 @@ bool moveBookFile(const std::string& oldPath, const std::string& newPath) {
     for (size_t i = 0; i < std::size(SIDECARS); i++) {
       rollBackStatePath(oldPath + SIDECARS[i], newPath + SIDECARS[i], sidecarMoved[i]);
     }
-    rollBackStatePath(oldBookmarkPath, newBookmarkPath, bookmarksMoved);
+    rollBackMirroredState(oldState, newState, stateMoved);
     rollBackStatePath(oldCachePath, newCachePath, cacheMoved);
   };
   for (size_t i = 0; i < std::size(SIDECARS); i++) {
@@ -118,6 +141,7 @@ bool moveBookFile(const std::string& oldPath, const std::string& newPath) {
     return false;
   }
 
+  pruneMirroredState(oldState, stateMoved);
   RECENT_BOOKS.updatePath(oldPath, newPath, oldCachePath, newCachePath);
   if (APP_STATE.openEpubPath == oldPath) {
     APP_STATE.openEpubPath = newPath;
@@ -154,9 +178,19 @@ void moveFolderBookState(const std::string& oldDir, const std::string& newDir, c
       const std::string oldCachePath = getBookCachePath(oldBook);
       if (oldCachePath.empty()) continue;  // not a book
       const std::string newCachePath = getBookCachePath(newBook);
+      const MirroredState oldState = mirroredStateFor(oldBook);
+      const MirroredState newState = mirroredStateFor(newBook);
+      // Mirror folders were moved as a whole. Old-layout state is carried over
+      // only when the book has no state of that kind at the new path, which is newer.
+      if (!newState.bookmarks.empty() && !Storage.exists(newState.bookmarks.c_str())) {
+        BookmarkUtil::adoptLegacyBookmarks(oldBook);
+      }
+      if (!Storage.exists(newState.progress.c_str())) MirroredPath::adoptLegacyProgress(oldBook, oldCachePath);
       bool moved = false;
+      bool stateMoved[2] = {};
       moveStatePath(oldCachePath, newCachePath, moved);
-      moveBookmarks(oldBook, newBook, moved);
+      moveMirroredState(oldState, newState, stateMoved);
+      pruneMirroredState(oldState, stateMoved);
       RECENT_BOOKS.updatePath(oldBook, newBook, oldCachePath, newCachePath);
     }
   }
@@ -168,10 +202,19 @@ bool moveBookFolder(const std::string& oldPath, const std::string& newPath) {
     LOG_ERR("BookCache", "Failed to move folder: %s -> %s", oldPath.c_str(), newPath.c_str());
     return false;
   }
+  // Bookmarks and progress mirror the book folders, so each mirror folder
+  // moves in one step; the walk below handles leftovers and old layouts.
+  MirroredPath::moveFolder(MirroredPath::BOOKMARKS_ROOT, oldPath, newPath);
+  MirroredPath::moveFolder(MirroredPath::PROGRESS_ROOT, oldPath, newPath);
   // Transient name buffer for the state walk, freed on return.
   auto name = makeUniqueNoThrow<char[]>(NAME_BUFFER_SIZE);
   if (name) {
     moveFolderBookState(oldPath, newPath, name.get());
+    // Drop old mirror folders the walk emptied.
+    MirroredPath::removeEmptyParents(MirroredPath::BOOKMARKS_ROOT,
+                                     MirroredPath::forFolder(MirroredPath::BOOKMARKS_ROOT, oldPath) + "/");
+    MirroredPath::removeEmptyParents(MirroredPath::PROGRESS_ROOT,
+                                     MirroredPath::forFolder(MirroredPath::PROGRESS_ROOT, oldPath) + "/");
   } else {
     LOG_ERR("BookCache", "OOM: folder state walk skipped, books in %s start fresh", newPath.c_str());
   }
@@ -206,12 +249,23 @@ void clearBookCache(const std::string& path) {
   } else {
     return;
   }
+  // A replaced book starts over, as it did when progress lived in the cache.
+  const std::string progress = MirroredPath::progressFor(path);
+  if (Storage.exists(progress.c_str()) && Storage.remove(progress.c_str())) {
+    MirroredPath::removeEmptyParents(MirroredPath::PROGRESS_ROOT, progress);
+  }
   LOG_DBG("BookCache", "Done checking metadata cache for: %s", path.c_str());
 }
 
 bool removeBookFile(const std::string& path) {
   if (!Storage.remove(path.c_str())) return false;
   clearBookCache(path);
+  if (FsHelpers::hasReflowableBookExtension(path)) {
+    const std::string bookmarks = BookmarkUtil::getBookmarkPath(path);
+    if (Storage.exists(bookmarks.c_str()) && Storage.remove(bookmarks.c_str())) {
+      MirroredPath::removeEmptyParents(MirroredPath::BOOKMARKS_ROOT, bookmarks);
+    }
+  }
   return ClippingStore::deleteForFilePath(path, "epub");
 }
 

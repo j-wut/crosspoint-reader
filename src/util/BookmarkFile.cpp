@@ -6,12 +6,14 @@
 #include <PersistableStore.h>
 
 #include "BookmarkUtil.h"
+#include "MirroredPath.h"
 
 bool BookmarkFile::load(const std::string& bookPath, std::vector<BookmarkEntry>& bookmarks) {
   bookmarks.clear();
 
   // Read/write go through PersistableStoreBase so the JSON parser and
   // serializer stay instantiated once, in PersistableStore.cpp.
+  BookmarkUtil::adoptLegacyBookmarks(bookPath);
   const std::string path = BookmarkUtil::getBookmarkPath(bookPath);
   JsonDocument doc;
   if (!PersistableStoreBase::readDocFromFile(path.c_str(), doc)) {
@@ -70,8 +72,8 @@ bool BookmarkFile::save(const std::string& bookPath, const std::vector<BookmarkE
     }
   }
 
-  // writeDocToFile ensures /.crosspoint; the bookmarks subdirectory is ours.
-  Storage.mkdir(BookmarkUtil::getBookmarksDir().c_str());
+  // writeDocToFile ensures /.crosspoint; the mirrored folders are ours.
   const std::string path = BookmarkUtil::getBookmarkPath(bookPath);
+  MirroredPath::ensureParent(path);
   return PersistableStoreBase::writeDocToFile(path.c_str(), doc);
 }

@@ -9,6 +9,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
+#include "util/MirroredPath.h"
 
 void ClearCacheActivity::onEnter() {
   Activity::onEnter();
@@ -121,6 +122,16 @@ void ClearCacheActivity::clearCache() {
     }
   }
   root.close();
+
+  // Reading progress is kept outside the book caches; the warning says it goes too.
+  if (Storage.exists(MirroredPath::PROGRESS_ROOT)) {
+    if (MirroredPath::removeTree(MirroredPath::PROGRESS_ROOT)) {
+      clearedCount++;
+    } else {
+      LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", MirroredPath::PROGRESS_ROOT);
+      failedCount++;
+    }
+  }
 
   LOG_DBG("CLEAR_CACHE", "Cache cleared: %d removed, %d failed", clearedCount, failedCount);
 

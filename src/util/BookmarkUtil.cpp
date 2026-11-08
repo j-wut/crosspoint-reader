@@ -1,12 +1,19 @@
 #include "BookmarkUtil.h"
 
+#include <HalStorage.h>
+#include <Logging.h>
+
 #include <algorithm>
+#include <functional>
 #include <string>
+
+#include "MirroredPath.h"
 
 std::string BookmarkUtil::getBookmarksDir() { return "/.crosspoint/bookmarks/"; }
 
-std::string BookmarkUtil::getBookmarkPath(const std::string& bookPath) {
-  // remove leading slash and replace internal slashes to create a flat filename
+namespace {
+// Old naming: a.txt and a.epub, or /x/y.epub and /x_y.epub, shared one file.
+std::string legacyBookmarkPath(const std::string& bookPath) {
   std::string bookName = std::string(bookPath).erase(0, 1);
   std::replace(bookName.begin(), bookName.end(), '/', '_');
   std::replace(bookName.begin(), bookName.end(), '\\', '_');
@@ -14,8 +21,23 @@ std::string BookmarkUtil::getBookmarkPath(const std::string& bookPath) {
   if (lastDot != std::string::npos) {
     bookName.erase(lastDot);
   }
-  bookName += ".json";
-  return getBookmarksDir() + bookName;
+  return BookmarkUtil::getBookmarksDir() + bookName + ".json";
+}
+}  // namespace
+
+std::string BookmarkUtil::getBookmarkPath(const std::string& bookPath) {
+  return MirroredPath::forBook(MirroredPath::BOOKMARKS_ROOT, bookPath, ".json");
+}
+
+void BookmarkUtil::adoptLegacyBookmarks(const std::string& bookPath) {
+  const std::string path = getBookmarkPath(bookPath);
+  if (Storage.exists(path.c_str())) return;
+  const std::string legacy = legacyBookmarkPath(bookPath);
+  if (!Storage.exists(legacy.c_str())) return;
+  MirroredPath::ensureParent(path);
+  if (!Storage.rename(legacy.c_str(), path.c_str())) {
+    LOG_ERR("BKM", "Failed to adopt legacy bookmarks: %s", legacy.c_str());
+  }
 }
 
 std::string BookmarkUtil::sanitizeBookmarkSummary(std::string summary) {

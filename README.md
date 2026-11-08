@@ -251,7 +251,6 @@ cache. This cache directory exists at `.crosspoint` on the SD card. The structur
 ```text
 .crosspoint/
 ├── epub_<hash>/         # one directory per book, named by content hash
-│   ├── progress.bin     # reading position (chapter, page, etc.)
 │   ├── cover.bmp        # generated cover image
 │   ├── book.bin         # metadata: title, author, spine, TOC
 │   ├── css_rules.cache  # parsed CSS rule cache
@@ -260,6 +259,8 @@ cache. This cache directory exists at `.crosspoint` on the SD card. The structur
 │       ├── 0.bin
 │       ├── 1.bin
 │       └── ...
+├── progress/            # reading position, one .bin per book in folders that mirror the books
+├── bookmarks/           # bookmarks, one .json per book in the same layout
 ├── settings.json        # device settings
 ├── state.json           # resume/runtime state
 └── recent.json          # recent books list

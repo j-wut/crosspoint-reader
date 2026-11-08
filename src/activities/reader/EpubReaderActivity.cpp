@@ -57,8 +57,10 @@
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
+#include "util/MirroredPath.h"
 #include "util/ScreenshotUtil.h"
 
 namespace {
@@ -166,45 +168,11 @@ std::string buildReadFolderDestination(const std::string& srcPath) {
   return dstPath;
 }
 
-void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string& dstPath,
-                                  const std::string& oldCachePath) {
+void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string& dstPath) {
   LOG_INF("ERS", "Moving finished epub: %s -> %s", srcPath.c_str(), dstPath.c_str());
-  if (!ClippingStore::moveBook(srcPath, dstPath)) {
-    LOG_ERR("ERS", "Failed to move finished book and clippings to '/Read' folder");
-    return;
-  }
-
-  // Protected-book sidecars travel with the book; a protected book separated
-  // from its key no longer opens, so a failed move rolls everything back.
-  static constexpr const char* SIDECARS[] = {".key", ".rights"};
-  for (size_t i = 0; i < std::size(SIDECARS); i++) {
-    const std::string from = srcPath + SIDECARS[i];
-    if (!Storage.exists(from.c_str())) continue;
-    const std::string to = dstPath + SIDECARS[i];
-    if (Storage.rename(from.c_str(), to.c_str())) continue;
-    LOG_ERR("ERS", "Failed to move sidecar %s -> %s", from.c_str(), to.c_str());
-    for (size_t j = 0; j < i; j++) {
-      Storage.rename((dstPath + SIDECARS[j]).c_str(), (srcPath + SIDECARS[j]).c_str());
-    }
-    if (!Storage.rename(dstPath.c_str(), srcPath.c_str())) {
-      LOG_ERR("ERS", "Failed to restore epub after sidecar move failure: %s -> %s", dstPath.c_str(), srcPath.c_str());
-    }
-    return;
-  }
-
-  const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
-  bool cacheMoved = false;
-  if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
-    cacheMoved = Storage.rename(oldCachePath.c_str(), newCachePath.c_str());
-    if (!cacheMoved) {
-      LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
-    }
-  }
-
-  RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
-  if (APP_STATE.openEpubPath == srcPath) {
-    APP_STATE.openEpubPath = dstPath;
-    APP_STATE.saveToFile();
+  // Cache, progress, bookmarks, sidecars and clippings travel with the book.
+  if (!moveBookEntry(srcPath, dstPath)) {
+    LOG_ERR("ERS", "Failed to move finished book to '/Read' folder");
   }
 }
 
@@ -238,10 +206,9 @@ EpubReaderActivity::~EpubReaderActivity() {
   CLIPPINGS.unload();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
-    const std::string oldCachePath = epub->getCachePath();
     const std::string dstPath = buildReadFolderDestination(srcPath);
     epub.reset();
-    moveFinishedBookToReadFolder(srcPath, dstPath, oldCachePath);
+    moveFinishedBookToReadFolder(srcPath, dstPath);
   } else {
     epub.reset();
   }
@@ -283,7 +250,8 @@ bool EpubReaderActivity::loadBook() {
   epub->setupCacheDir();
 
   HalFile f;
-  if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
+  MirroredPath::adoptLegacyProgress(epub->getPath(), epub->getCachePath());
+  if (Storage.openFileForRead("ERS", MirroredPath::progressFor(epub->getPath()), f)) {
     uint8_t data[10];
     int dataSize = f.read(data, sizeof(data));
     if (dataSize == 4 || dataSize == 6 || dataSize == 10) {

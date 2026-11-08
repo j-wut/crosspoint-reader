@@ -336,7 +336,7 @@ void XtcReaderActivity::saveProgress() const {
   data[1] = (currentPage >> 8) & 0xFF;
   data[2] = (currentPage >> 16) & 0xFF;
   data[3] = (currentPage >> 24) & 0xFF;
-  if (!ProgressFile::writeAtomic(xtc->getCachePath(), data, sizeof(data))) {
+  if (!ProgressFile::writeAtomic(MirroredPath::progressFor(xtc->getPath()), data, sizeof(data))) {
     LOG_ERR("XTC", "Failed to save progress: page %lu", currentPage);
   }
 }
@@ -344,7 +344,8 @@ void XtcReaderActivity::saveProgress() const {
 void XtcReaderActivity::loadProgress() {
   if (!xtc) return;
   HalFile f;
-  if (Storage.openFileForRead("XTC", xtc->getCachePath() + "/progress.bin", f)) {
+  MirroredPath::adoptLegacyProgress(xtc->getPath(), xtc->getCachePath());
+  if (Storage.openFileForRead("XTC", MirroredPath::progressFor(xtc->getPath()), f)) {
     uint8_t data[4];
     if (f.read(data, 4) == 4) {
       currentPage = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);

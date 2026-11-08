@@ -34,7 +34,7 @@ inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int p
     data[9] = (*visibleTextOffset >> 24) & 0xFF;
     dataSize = sizeof(data);
   }
-  if (!ProgressFile::writeAtomic(epub.getCachePath(), data, dataSize)) {
+  if (!ProgressFile::writeAtomic(MirroredPath::progressFor(epub.getPath()), data, dataSize)) {
     return false;
   }
   LOG_DBG("ERS", "Progress saved: spine=%d offset=%u page=%d", spineIndex, visibleTextOffset.value_or(0), pageNumber);
