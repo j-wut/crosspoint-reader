@@ -17,10 +17,6 @@ class AppsActivity final : public Activity, private UiAppHost {
   void render(RenderLock&&) override;
 
  private:
-  static constexpr int COLUMNS = 3;
-  static constexpr int ROWS = 3;
-  static constexpr int PER_PAGE = COLUMNS * ROWS;
-
   static void screenFn(UiScreen& screen, void* user);
   static void onAction(const freeink::ui::ActionEvent& event, void* user);
   void draw(UiScreen& screen);

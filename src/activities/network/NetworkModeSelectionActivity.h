@@ -15,7 +15,8 @@ enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIV
  * The onModeSelected callback is called with the user's choice.
  * The onCancel callback is called if the user presses back.
  *
- * The header stays on GUI.drawHeader for the battery indicator.
+ * The header stays on GUI.drawHeader for the battery indicator. The Tiles
+ * theme shows the choices as a tile grid instead of a list.
  */
 class NetworkModeSelectionActivity final : public UiListActivity {
  public:
@@ -33,6 +34,9 @@ class NetworkModeSelectionActivity final : public UiListActivity {
  private:
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
+  void navigateButtons() override;
+  // Tiles theme: the rows as a tile grid like the Apps screen.
+  void buildTiles(UiScreen& screen);
   void activateIndex(int index) override;
   void onBackButton() override { onCancel(); }
   // The Picco adds BOOX Cloud and BOOX Tiles binding rows after the fixed ones.

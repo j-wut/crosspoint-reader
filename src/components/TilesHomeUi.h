@@ -51,4 +51,5 @@ class TilesHomeUi final : public UiAppHost {
   int pending = -1;
   int progress = -1;
   char progressText[12]{};
+  std::string chapterLine;  // "<chapter>  ·  <page>/<pages>" of the shown book
 };
