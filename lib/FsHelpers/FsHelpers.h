@@ -66,6 +66,8 @@ inline bool hasTxtExtension(const String& fileName) {
 // Check for .md extension (case-insensitive)
 bool hasMarkdownExtension(std::string_view fileName);
 
+// BOOX .opub book (read through a converted EPUB in its cache folder)
+bool hasOpubExtension(std::string_view fileName);
 bool hasReflowableBookExtension(std::string_view fileName);
 
 // Check for .css extension (case-insensitive)
