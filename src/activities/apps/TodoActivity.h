@@ -1,9 +1,11 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "activities/UiListActivity.h"
 #include "apps/AppLists.h"
+#include "network/CloudSyncJob.h"
 
 // To-do list: tap a row to tick it off, swipe left to delete (buttons: hold
 // Confirm). The first row adds an item with the keyboard; the web page edits
@@ -16,10 +18,12 @@ class TodoActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
-  // BOOX Tiles cloud sync once the list is on screen (Picco only), like the
-  // stock app's sync on open.
+  // BOOX Tiles cloud sync on open (Picco only), like the stock app. It runs
+  // in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
-  bool syncPending = false;
+  CloudSyncJob<applists::TodoItem> sync;
+  bool editedDuringSync = false;
+  std::string syncingTitle;
   // Row 0 adds an item; rows 1..n are the items; a last row clears done items.
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;

@@ -21,21 +21,26 @@ constexpr unsigned long DELETE_HOLD_MS = 1000;
 
 void TodoActivity::onEnter() {
   applists::loadTodos(items);
-  syncPending = BoardConfig::isPicco();
+  syncingTitle = std::string(tr(STR_APP_TODO)) + " - " + tr(STR_CLOUD_SYNCING);
+  editedDuringSync = false;
+  if (BoardConfig::isPicco() && !sync.start(items, tilescloud::syncTodos)) LOG_ERR("TODO", "Sync task not started");
   UiListActivity::onEnter();
 }
 
 bool TodoActivity::handleCustomInput() {
-  if (!syncPending) return false;
-  syncPending = false;
-  requestUpdateAndWait();
-  GUI.drawPopup(renderer, tr(STR_CLOUD_SYNCING));
-  if (tilescloud::syncTodos(items) == tilescloud::SyncResult::Ok) save();
+  std::vector<applists::TodoItem> synced;
+  tilescloud::SyncResult result;
+  if (!sync.take(synced, result)) return false;
+  // An edit made meanwhile wins; the next open syncs again.
+  if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
+    items = std::move(synced);
+    save();
+  }
   requestUpdate();
-  return true;
+  return false;
 }
 
-const char* TodoActivity::headerTitle() const { return tr(STR_APP_TODO); }
+const char* TodoActivity::headerTitle() const { return sync.running() ? syncingTitle.c_str() : tr(STR_APP_TODO); }
 
 int TodoActivity::listCount() const { return 1 + static_cast<int>(items.size()) + (hasDone() ? 1 : 0); }
 
@@ -49,6 +54,7 @@ bool TodoActivity::hasDone() const {
 }
 
 void TodoActivity::save() {
+  if (sync.running()) editedDuringSync = true;
   if (!applists::saveTodos(items)) LOG_ERR("TODO", "Save failed");
 }
 

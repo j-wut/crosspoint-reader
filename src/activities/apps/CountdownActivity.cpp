@@ -18,21 +18,26 @@ namespace fui = freeink::ui;
 void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
   sortAndRefresh();
-  syncPending = BoardConfig::isPicco();
+  syncingTitle = std::string(tr(STR_APP_COUNTDOWN)) + " - " + tr(STR_CLOUD_SYNCING);
+  editedDuringSync = false;
+  if (BoardConfig::isPicco() && !sync.start(items, tilescloud::syncCountdowns)) {
+    LOG_ERR("CDN", "Sync task not started");
+  }
   UiListActivity::onEnter();
 }
 
 bool CountdownActivity::handleCustomInput() {
-  if (!syncPending) return false;
-  syncPending = false;
-  requestUpdateAndWait();
-  GUI.drawPopup(renderer, tr(STR_CLOUD_SYNCING));
-  if (tilescloud::syncCountdowns(items) == tilescloud::SyncResult::Ok) {
+  std::vector<applists::CountdownItem> synced;
+  tilescloud::SyncResult result;
+  if (!sync.take(synced, result)) return false;
+  // An edit made meanwhile wins; the next open syncs again.
+  if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
+    items = std::move(synced);
     if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
     sortAndRefresh();
   }
   requestUpdate();
-  return true;
+  return false;
 }
 
 void CountdownActivity::sortAndRefresh() {
@@ -49,7 +54,9 @@ void CountdownActivity::sortAndRefresh() {
   refreshRows();
 }
 
-const char* CountdownActivity::headerTitle() const { return tr(STR_APP_COUNTDOWN); }
+const char* CountdownActivity::headerTitle() const {
+  return sync.running() ? syncingTitle.c_str() : tr(STR_APP_COUNTDOWN);
+}
 
 void CountdownActivity::refreshRows() {
   texts.clear();
@@ -79,6 +86,7 @@ void CountdownActivity::refreshRows() {
 void CountdownActivity::deleteRow(const int index) {
   if (index < 0 || index >= listCount()) return;
   items.erase(items.begin() + index);
+  if (sync.running()) editedDuringSync = true;
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
   refreshRows();
   if (nav.selected >= listCount()) moveSelectionTo(std::max(0, listCount() - 1));

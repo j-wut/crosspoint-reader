@@ -5,6 +5,7 @@
 
 #include "activities/UiListActivity.h"
 #include "apps/AppLists.h"
+#include "network/CloudSyncJob.h"
 
 // Days left until each saved date, soonest first. Dates are added on the web
 // page; swipe left on a row to delete it (buttons: Confirm).
@@ -16,10 +17,12 @@ class CountdownActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
-  // BOOX Tiles cloud sync once the list is on screen (Picco only), like the
-  // stock app's sync on open.
+  // BOOX Tiles cloud sync on open (Picco only), like the stock app. It runs
+  // in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
-  bool syncPending = false;
+  CloudSyncJob<applists::CountdownItem> sync;
+  bool editedDuringSync = false;
+  std::string syncingTitle;
   struct Row {
     std::string value;
     std::string date;

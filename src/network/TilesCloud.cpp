@@ -742,20 +742,49 @@ std::string clip(const char* text) {
   return out;
 }
 
+// Print that writes each finished line to the log file at once, so a sync
+// that hangs still leaves its last step in the log.
+class LineLog final : public Print {
+ public:
+  ~LineLog() override { flushLine(); }
+  size_t write(const uint8_t c) override {
+    if (c == '\n') {
+      flushLine();
+    } else if (line.size() < 1024) {
+      line.push_back(static_cast<char>(c));
+    }
+    return 1;
+  }
+  using Print::write;
+
+ private:
+  void flushLine() {
+    if (line.empty()) return;
+    HalFile log = openLog();
+    if (log) {
+      log.println(line.c_str());
+      log.close();
+    }
+    line.clear();
+  }
+  std::string line;
+};
+
 // Shared steps of syncTodos and syncCountdowns; `parse` turns the list into items.
 template <typename Parse>
 SyncResult syncList(const char* label, const char* path, Parse parse) {
   if (!BoardConfig::isPicco()) return SyncResult::Skipped;
-  HalFile log = openLog();
-  if (!log) return SyncResult::Failed;
+  LineLog log;
   log.printf("\n--- %s sync, uptime %lu s, heap %u\n", label, millis() / 1000,
              static_cast<unsigned>(ESP.getFreeHeap()));
   bool joined = false;
+  log.println("joining Wi-Fi");
   if (!ensureWifi(log, joined)) {
     stopWifi(joined);
     return SyncResult::NoWifi;
   }
   setTlsInPsram(true);
+  log.printf("requesting %s\n", path);
   SyncResult result = SyncResult::Failed;
   if (!ensureAuthorization(log)) {
     log.println("no binding token; skip cloud sync");
@@ -769,7 +798,7 @@ SyncResult syncList(const char* label, const char* path, Parse parse) {
     }
   }
   stopWifi(joined);
-  log.close();
+  log.printf("%s sync done: %d, %lu s\n", label, static_cast<int>(result), millis() / 1000);
   return result;
 }
 
