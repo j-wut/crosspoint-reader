@@ -69,16 +69,14 @@ jobs:
           uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
           ~/.platformio/penv/bin/pio --version
 
-      # Keep compiled objects between runs so a push only rebuilds changed
-      # files. SCons keeps its signature database in .cache (build_cache_dir).
-      - name: Cache build output
+      # Keep the PlatformIO build cache (build_cache_dir) between runs, so a
+      # push only compiles the files that changed.
+      - name: Cache compiled objects
         uses: actions/cache@v4
         with:
-          path: |
-            .cache
-            .pio/build/${{ matrix.pio_env }}
-          key: build-v1-${{ runner.os }}-${{ matrix.pio_env }}-${{ github.sha }}
-          restore-keys: build-v1-${{ runner.os }}-${{ matrix.pio_env }}-
+          path: .cache
+          key: build-v2-${{ runner.os }}-${{ matrix.pio_env }}-${{ github.sha }}
+          restore-keys: build-v2-${{ runner.os }}-${{ matrix.pio_env }}-
 
       - name: Extract env
         run: |
@@ -96,12 +94,14 @@ jobs:
       - name: Build CrossPoint Release Candidate
         env:
           CROSSPOINT_RC_HASH: ${{ env.SHORT_SHA }}
-        run: pio run -e ${{ matrix.pio_env }}
+        run: |
+          touch "$RUNNER_TEMP/build-start"
+          pio run -e ${{ matrix.pio_env }}
 
-      # The object copies in .cache are not needed once .pio/build is cached,
-      # and they would grow the saved cache on every run.
+      # SCons touches a cache entry when it uses or adds it. Drop the entries
+      # this build did not use, so the saved cache does not grow every run.
       - name: Trim build cache
-        run: find .cache -mindepth 1 -maxdepth 1 -type d -name '??' -exec rm -rf {} +
+        run: find .cache -mindepth 2 -type f ! -newer "$RUNNER_TEMP/build-start" -delete
 
       - name: Name release asset
         run: |
