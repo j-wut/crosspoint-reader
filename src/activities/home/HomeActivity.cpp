@@ -630,7 +630,7 @@ void HomeActivity::activateTilesSelection() {
   }
   switch (static_cast<TilesHomeUi::Dock>(selectorIndex - bookCount)) {
     case TilesHomeUi::Dock::Books:
-      onLibraryOpen();
+      activityManager.goToBookshelf();
       break;
     case TilesHomeUi::Dock::Transfer:
       onFileTransferOpen();

@@ -23,6 +23,7 @@
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
+#include "library/BookshelfActivity.h"
 #include "library/LibraryListActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
@@ -300,6 +301,15 @@ void ActivityManager::goToSettings(const SettingsSection openSection) {
 
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
+}
+
+void ActivityManager::goToBookshelf() {
+  auto activity = makeUniqueNoThrow<BookshelfActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: bookshelf activity");
+    return;
+  }
+  replaceActivity(std::move(activity));
 }
 
 void ActivityManager::goToLibrary() {
