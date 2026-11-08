@@ -94,16 +94,17 @@ The File Manager page can:
 - Upload files, using WebSocket upload when available and HTTP upload as a fallback
 - Create folders
 - Download files
-- Rename files
-- Move files into existing folders
+- Rename files and folders
+- Move files and folders into existing folders
 - Delete one or more selected files or empty folders, hidden ones included
   (shown when **Show Hidden Files** is on)
 
 Uploads do not replace a file that has the same name: the upload fails with
 "File already exists". API clients can replace a file with
 `POST /upload?overwrite=1` (see `webserver-endpoints.md`). When EPUB files are
-replaced, moved, renamed, or deleted through the web server, the matching book
-cache is cleared so stale metadata is not reused.
+replaced or deleted through the web server, the matching book cache is cleared
+so stale metadata is not reused. When books, or folders holding them, are moved
+or renamed, their reading progress, bookmarks, and clippings move with them.
 
 ### Settings
 

@@ -11,3 +11,8 @@ bool isBookCacheDirectoryName(const char* name);
 
 // Delete a local book and its local clipping state after the file is removed.
 bool removeBookFile(const std::string& path);
+
+// Move a book file or a folder of books, carrying the reading state (cache
+// and progress, bookmarks, clippings, recent list, open book) of every book
+// to its new path. The caller checks that newPath is free and allowed.
+bool moveBookEntry(const std::string& oldPath, const std::string& newPath);

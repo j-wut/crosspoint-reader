@@ -5,7 +5,6 @@
 #include <HiddenItems.h>
 #include <Logging.h>
 
-#include "ClippingStore.h"
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
 
@@ -560,9 +559,8 @@ void WebDAVHandler::handleMove(WebServer& s) {
     return;
   }
 
-  clearBookCache(srcPath.c_str());
   file.close();
-  const bool success = ClippingStore::moveBook(srcPath.c_str(), dstPath.c_str());
+  const bool success = moveBookEntry(srcPath.c_str(), dstPath.c_str());
 
   if (success) {
     s.send(dstExists ? 204 : 201);
