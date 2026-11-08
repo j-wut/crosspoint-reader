@@ -17,9 +17,18 @@ class FileBrowserActivity final : public UiListActivity {
   bool removeDirFile(const std::string& fullPath);
   void showEntryActions();
   void startRename();
-  void renameSelectedFile(const std::string& oldPath, const std::string& oldEntry, const std::string& newStem,
-                          const std::string& extension);
+  void renameSelected(const std::string& oldPath, const std::string& oldEntry, const std::string& newStem,
+                      const std::string& extension);
   void deleteSelected();
+  void startMove();
+  void finishMove();
+  void cancelMove();
+  void startNewFolder();
+  void createFolder(const std::string& name);
+  bool relocateEntry(const std::string& oldPath, const std::string& newPath);
+  void showFileActionError(StrId message);
+  void reloadAndSelect(const std::string& entry);
+  std::string currentDir() const;
 
   Mode mode = Mode::Books;
 
@@ -28,6 +37,11 @@ class FileBrowserActivity final : public UiListActivity {
   std::vector<std::string> files;
   std::unique_ptr<char[]> fileNameBuffer;
   OptionPopup optionPopup;
+  // Full path of the entry being moved; non-empty while the user picks a
+  // destination folder. The list then shows only folders, after a
+  // "Move Here" row.
+  std::string movingPath;
+  bool isMoving() const { return !movingPath.empty(); }
 
   // Pull-based rows: the SDK list resolves each drawn row on demand through
   // provideRow() (fui::ListProps::rowProvider), so the only per-file
@@ -54,7 +68,9 @@ class FileBrowserActivity final : public UiListActivity {
   void activateIndex(int index) override;
   void onRowLongPress(int index) override;
 #if FREEINK_CAP_TOUCH
-  bool canSwipeDelete(int index) const override { return mode == Mode::Books && index >= 0 && index < listCount(); }
+  bool canSwipeDelete(int index) const override {
+    return mode == Mode::Books && !isMoving() && index >= 0 && index < listCount();
+  }
   void swipeDelete(int index) override;
 #endif
   // Long-press BACK goes to root; short Back goes up a directory (home/cancel at

@@ -1170,7 +1170,7 @@
 <dialog class="modal-overlay" id="renameModal" aria-labelledby="renameModalTitle">
   <div class="modal">
     <button class="modal-close" aria-label="Close rename dialog" onclick="closeRenameModal()">&times;</button>
-    <h3 id="renameModalTitle"><svg class="icon"><use href="/assets/icons.svg#edit"></use></svg> Rename File</h3>
+    <h3 id="renameModalTitle"><svg class="icon"><use href="/assets/icons.svg#edit"></use></svg> <span id="renameModalLabel">Rename File</span></h3>
     <div class="folder-form">
       <p class="file-info">Renaming <strong id="renameItemName"></strong></p>
       <input type="text" id="renameNewName" class="folder-input" placeholder="New file name...">
@@ -1187,7 +1187,7 @@
 <dialog class="modal-overlay" id="moveModal" aria-labelledby="moveModalTitle">
   <div class="modal">
     <button class="modal-close" aria-label="Close move dialog" onclick="closeMoveModal()">&times;</button>
-    <h3 id="moveModalTitle"><svg class="icon"><use href="/assets/icons.svg#move"></use></svg> Move File</h3>
+    <h3 id="moveModalTitle"><svg class="icon"><use href="/assets/icons.svg#move"></use></svg> <span id="moveModalLabel">Move File</span></h3>
     <div class="folder-form">
       <p class="file-info">Moving <strong id="moveItemName"></strong></p>
       <input type="text" id="moveDestPath" class="folder-input" list="moveFolderOptions" placeholder="/Destination/Folder">
@@ -1445,7 +1445,7 @@
           fileTableContent += `<td><span class="file-icon"><svg class="icon"><use href="/assets/icons.svg#folder"></use></svg></span><a href="/files?path=${encodeURIComponent(folderPath)}" class="folder-link">${escapeHtml(file.name)}</a></td>`;
           fileTableContent += '<td>FOLDER</td>';
           fileTableContent += '<td>-</td>';
-          fileTableContent += `<td class="actions-col"><div class="action-icon-group"><button class="delete-btn" data-action="delete" data-name="${escapeHtml(file.name)}" data-path="${escapeHtml(folderPath)}" data-folder="true" title="Delete folder" aria-label="Delete folder"><svg class="icon"><use href="/assets/icons.svg#trash"></use></svg></button></div></td>`;
+          fileTableContent += `<td class="actions-col"><div class="action-icon-group"><button class="move-btn" data-action="move" data-name="${escapeHtml(file.name)}" data-path="${escapeHtml(folderPath)}" data-folder="true" title="Move folder" aria-label="Move folder"><svg class="icon"><use href="/assets/icons.svg#move"></use></svg></button><button class="rename-btn" data-action="rename" data-name="${escapeHtml(file.name)}" data-path="${escapeHtml(folderPath)}" data-folder="true" title="Rename folder" aria-label="Rename folder"><svg class="icon"><use href="/assets/icons.svg#edit"></use></svg></button><button class="delete-btn" data-action="delete" data-name="${escapeHtml(file.name)}" data-path="${escapeHtml(folderPath)}" data-folder="true" title="Delete folder" aria-label="Delete folder"><svg class="icon"><use href="/assets/icons.svg#trash"></use></svg></button></div></td>`;
           fileTableContent += '</tr>';
         } else {
           let filePath = currentPath;
@@ -2398,9 +2398,9 @@
       const name = btn.dataset.name;
       const path = btn.dataset.path;
       if (btn.dataset.action === 'move') {
-        openMoveModal(name, path);
+        openMoveModal(name, path, btn.dataset.folder === 'true');
       } else if (btn.dataset.action === 'rename') {
-        openRenameModal(name, path);
+        openRenameModal(name, path, btn.dataset.folder === 'true');
       } else if (btn.dataset.action === 'delete') {
         openDeleteModal(name, path, btn.dataset.folder === 'true');
       }
@@ -4080,7 +4080,9 @@ function retryAllFailedUploads() {
   }
 
   // Rename functions
-  function openRenameModal(name, path) {
+  function openRenameModal(name, path, isFolder) {
+    document.getElementById('renameModalLabel').textContent = isFolder ? 'Rename Folder' : 'Rename File';
+    document.getElementById('renameNewName').placeholder = isFolder ? 'New folder name...' : 'New file name...';
     document.getElementById('renameItemName').textContent = name;
     document.getElementById('renameItemPath').value = path;
     document.getElementById('renameNewName').value = name;
@@ -4105,7 +4107,7 @@ function retryAllFailedUploads() {
       return;
     }
     if (newName.includes('/') || newName.includes('\\')) {
-      showWebAlert('File name cannot include slashes.');
+      showWebAlert('Name cannot include slashes.');
       return;
     }
 
@@ -4151,6 +4153,9 @@ function retryAllFailedUploads() {
     return idx <= 0 ? '/' : normalized.slice(0, idx);
   }
 
+  // Path of the folder being moved; it and its subfolders are not valid destinations.
+  let movingFolderPath = null;
+
   async function loadMoveFolderOptions() {
     const options = new Set();
     options.add('/');
@@ -4188,14 +4193,18 @@ function retryAllFailedUploads() {
 
     const dataList = document.getElementById('moveFolderOptions');
     dataList.innerHTML = '';
-    Array.from(options).sort().forEach(path => {
+    const insideMovingFolder = path =>
+      movingFolderPath && (path === movingFolderPath || path.startsWith(movingFolderPath + '/'));
+    Array.from(options).filter(path => !insideMovingFolder(path)).sort().forEach(path => {
       const option = document.createElement('option');
       option.value = path;
       dataList.appendChild(option);
     });
   }
 
-  function openMoveModal(name, path) {
+  function openMoveModal(name, path, isFolder) {
+    movingFolderPath = isFolder ? normalizePath(path) : null;
+    document.getElementById('moveModalLabel').textContent = isFolder ? 'Move Folder' : 'Move File';
     document.getElementById('moveItemName').textContent = name;
     document.getElementById('moveItemPath').value = path;
     document.getElementById('moveDestPath').value = currentPath === '/' ? '/' : currentPath;

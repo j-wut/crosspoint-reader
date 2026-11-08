@@ -177,7 +177,7 @@ Form parameters:
 
 ### `POST /rename`
 
-Renames a file.
+Renames a file or folder.
 
 ```bash
 curl -X POST -d "path=/Books/old.epub&name=new.epub" http://crosspoint.local/rename
@@ -187,15 +187,15 @@ Form parameters:
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `path` | Yes | Existing file path |
-| `name` | Yes | New file name, not a path |
+| `path` | Yes | Existing file or folder path |
+| `name` | Yes | New name, not a path |
 
-Only files can be renamed through this endpoint. The old EPUB cache path is
-cleared before the rename.
+Reading progress, bookmarks, and clippings of every renamed book move to the
+new path.
 
 ### `POST /move`
 
-Moves a file into an existing folder.
+Moves a file or folder into an existing folder.
 
 ```bash
 curl -X POST -d "path=/Books/mybook.epub&dest=/Read" http://crosspoint.local/move
@@ -205,11 +205,11 @@ Form parameters:
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `path` | Yes | Existing file path |
+| `path` | Yes | Existing file or folder path |
 | `dest` | Yes | Existing destination folder |
 
-Only files can be moved through this endpoint. The old EPUB cache path is
-cleared before the move.
+Reading progress, bookmarks, and clippings of every moved book move to the new
+path. Moving a folder into itself returns 400.
 
 ### `POST /delete`
 
@@ -547,6 +547,7 @@ Notes:
 
 - `PUT` writes to a temporary `.davtmp` file first, then renames it into place.
 - Protected paths are rejected.
+- `MOVE` keeps the reading progress, bookmarks, and clippings of moved books.
 - `LOCK` and `UNLOCK` are accepted for client compatibility only. The server
   does not implement full WebDAV Class 2 locking semantics such as persistent
   locks or lock discovery.

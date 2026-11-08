@@ -39,7 +39,6 @@
 #include <cstring>
 #include <string_view>
 
-#include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "FirmwareFlasher.h"
 #include "FontInstaller.h"
@@ -50,9 +49,9 @@
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "WifiPowerSaveGuard.h"
-#include "html/FilesPageHtml.generated.h"
 #include "apps/AppLists.h"
 #include "html/AppsPageHtml.generated.h"
+#include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
 #include "html/PluginsPageHtml.generated.h"
@@ -1408,11 +1407,6 @@ void CrossPointWebServer::handleRename() const {
     server->send(500, "text/plain", "Failed to open file");
     return;
   }
-  if (file.isDirectory()) {
-    file.close();
-    server->send(400, "text/plain", "Only files can be renamed");
-    return;
-  }
 
   String parentPath = itemPath.substring(0, itemPath.lastIndexOf('/'));
   if (parentPath.isEmpty()) {
@@ -1435,12 +1429,11 @@ void CrossPointWebServer::handleRename() const {
     return;
   }
 
-  clearBookCache(itemPath.c_str());
   file.close();
-  const bool success = ClippingStore::moveBook(itemPath.c_str(), newPath.c_str());
+  const bool success = moveBookEntry(itemPath.c_str(), newPath.c_str());
 
   if (success) {
-    LOG_DBG("WEB", "Renamed file: %s -> %s", itemPath.c_str(), newPath.c_str());
+    LOG_DBG("WEB", "Renamed: %s -> %s", itemPath.c_str(), newPath.c_str());
     server->send(200, "text/plain", "Renamed successfully");
   } else {
     LOG_ERR("WEB", "Failed to rename file: %s -> %s", itemPath.c_str(), newPath.c_str());
@@ -1489,11 +1482,7 @@ void CrossPointWebServer::handleMove() const {
     server->send(500, "text/plain", "Failed to open file");
     return;
   }
-  if (file.isDirectory()) {
-    file.close();
-    server->send(400, "text/plain", "Only files can be moved");
-    return;
-  }
+  const bool isDirectory = file.isDirectory();
 
   if (!Storage.exists(destPath.c_str())) {
     file.close();
@@ -1527,18 +1516,22 @@ void CrossPointWebServer::handleMove() const {
     server->send(200, "text/plain", "Already in destination");
     return;
   }
+  if (isDirectory && (destPath == itemPath || destPath.startsWith(itemPath + "/"))) {
+    file.close();
+    server->send(400, "text/plain", "Cannot move a folder into itself");
+    return;
+  }
   if (Storage.exists(newPath.c_str())) {
     file.close();
     server->send(409, "text/plain", "Target already exists");
     return;
   }
 
-  clearBookCache(itemPath.c_str());
   file.close();
-  const bool success = ClippingStore::moveBook(itemPath.c_str(), newPath.c_str());
+  const bool success = moveBookEntry(itemPath.c_str(), newPath.c_str());
 
   if (success) {
-    LOG_DBG("WEB", "Moved file: %s -> %s", itemPath.c_str(), newPath.c_str());
+    LOG_DBG("WEB", "Moved: %s -> %s", itemPath.c_str(), newPath.c_str());
     server->send(200, "text/plain", "Moved successfully");
   } else {
     LOG_ERR("WEB", "Failed to move file: %s -> %s", itemPath.c_str(), newPath.c_str());
