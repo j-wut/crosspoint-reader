@@ -1,5 +1,6 @@
 #include "CrossPointWebServerActivity.h"
 
+#include <BoardConfig.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <FontCacheManager.h>
@@ -47,6 +48,8 @@ void restartMdns(const char* hostname, const char* tag) {
   MDNS.end();
   if (MDNS.begin(hostname)) {
     LOG_DBG(tag, "mDNS started: http://%s.local/", hostname);
+    // The BOOX Tiles app looks for the stock Picco firmware's service.
+    if (BoardConfig::isPicco()) MDNS.addService("nanoreader", "tcp", 80);
   } else {
     LOG_DBG(tag, "WARNING: mDNS failed to start");
   }

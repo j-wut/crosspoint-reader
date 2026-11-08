@@ -365,6 +365,14 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/files", HTTP_GET, [](S& s) { s.handleFileListData(); }, nullptr},
         {"/download", HTTP_GET, [](S& s) { s.handleDownload(); }, nullptr},
         {"/upload", HTTP_POST, [](S& s) { s.handleUploadPost(s.upload); }, [](S& s) { s.handleUpload(s.upload); }},
+        // BOOX Tiles app "Import File" checks the reader with HEAD /ping before it uploads.
+        {"/ping", HTTP_GET, [](S& s) { s.server->send(200, "text/plain", "pong"); }, nullptr},
+        {"/ping", HTTP_HEAD,
+         [](S& s) {
+           s.server->setContentLength(4);  // HEAD sends the GET length without a body
+           s.server->send(200, "text/plain", "");
+         },
+         nullptr},
         {"/mkdir", HTTP_POST, [](S& s) { s.handleCreateFolder(); }, nullptr},
         {"/rename", HTTP_POST, [](S& s) { s.handleRename(); }, nullptr},
         {"/move", HTTP_POST, [](S& s) { s.handleMove(); }, nullptr},
@@ -751,6 +759,14 @@ void CrossPointWebServer::handleJszip() const {
 // one app slot (partitions_picco.csv), so it cannot flash itself.
 static bool canUpdateFirmware() { return !BoardConfig::isPicco(); }
 
+// The BOOX Tiles app uploads with ?fileType= instead of ?path=, like the stock
+// Picco firmware: 0 books, 1 images, 2 fonts.
+static String fileTypeUploadDir(const String& fileType) {
+  if (fileType == "1") return "/sleep";
+  if (fileType == "2") return SdCardFontRegistry::FONTS_DIR_VISIBLE;
+  return "/";
+}
+
 void CrossPointWebServer::handleNotFound() const {
   // CORS preflight: routes are registered per-method, so OPTIONS requests land
   // here. The Access-Control-Allow-* headers are added by enableCORS().
@@ -1092,8 +1108,13 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Get upload path from query parameter (defaults to root if not specified)
     // Note: We use query parameter instead of form data because multipart form
     // fields aren't available until after file upload completes
+    bool fileTypeUpload = false;
     if (server->hasArg("path")) {
       state.path = normalizeWebPath(server->arg("path"));
+    } else if (server->hasArg("fileType")) {
+      fileTypeUpload = true;
+      state.path = fileTypeUploadDir(server->arg("fileType"));
+      if (!Storage.exists(state.path.c_str())) Storage.mkdir(state.path.c_str());
     } else {
       state.path = "/";
     }
@@ -1113,7 +1134,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     resetTaskWatchdogIfSubscribed();
     if (Storage.exists(filePath.c_str())) {
       const String overwrite = server->arg("overwrite");
-      if (overwrite != "1" && overwrite != "true") {
+      // Like the stock Picco firmware, a BOOX Tiles app upload replaces the old copy.
+      const bool replace = overwrite == "1" || overwrite == "true" || fileTypeUpload;
+      if (!replace) {
         state.error = "File already exists: " + state.fileName;
         LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
         return;
@@ -1232,6 +1255,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         filePath += state.fileName;
         clearBookCache(filePath.c_str());
         if (library::isLibraryBookFile(filePath.c_str())) library::markLibraryIndexDirty();
+        if (state.path == SdCardFontRegistry::FONTS_DIR_VISIBLE) sdFontSystem.markRegistryDirty();
       }
     }
     state.buffer.reset();
