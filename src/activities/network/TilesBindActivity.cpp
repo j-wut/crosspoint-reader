@@ -58,6 +58,7 @@ void TilesBindActivity::loop() {
     requestUpdate();
     return;
   }
+  tilesbind::serviceChanged();
   tilesbind::flushLog();
 
   const tilesbind::Stage stage = tilesbind::stage();

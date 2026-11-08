@@ -30,6 +30,9 @@ Stage stage();
 std::string ssid();
 // Password the app sent, for saving the network once it connects.
 std::string passphrase();
+// Tell a connected phone the GATT table changed (stock does this when its
+// firmware changes). Call from the activity loop.
+void serviceChanged();
 // Write queued log lines (from the BLE task) to the cloud log. Call from the
 // activity loop.
 void flushLog();

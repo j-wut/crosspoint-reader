@@ -211,6 +211,10 @@ std::string g_pass;
 bool g_applied = false;
 unsigned long g_appliedAt = 0;
 NimBLEServer* g_server = nullptr;
+// When the app connected (0 when not), and how many Service Changed
+// indications went out on this link.
+volatile unsigned long g_connectedAt = 0;
+volatile int g_changedSent = 0;
 
 void setStage(const Stage s) {
   std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -521,14 +525,36 @@ std::string handleCtrl(const std::string& req) {
   return {};
 }
 
+// First bytes of a GATT value as hex, for the log.
+std::string hexHead(const uint8_t* data, const size_t len) {
+  static constexpr char DIGITS[] = "0123456789abcdef";
+  std::string out;
+  for (size_t i = 0; i < len && i < 24; ++i) {
+    out.push_back(DIGITS[data[i] >> 4]);
+    out.push_back(DIGITS[data[i] & 0xF]);
+  }
+  if (len > 24) out += "..";
+  return out;
+}
+
 // ---- GATT glue: the app writes a request, then reads the reply ----
 class EndpointCallbacks final : public NimBLECharacteristicCallbacks {
  public:
   explicit EndpointCallbacks(const char* name) : name(name) {}
 
+  void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    logf("read %s (%u bytes)", name, static_cast<unsigned>(c->getValue().length()));
+  }
+
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, const uint16_t subValue) override {
+    logf("subscribe %s = %u", name, subValue);
+  }
+
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
     const NimBLEAttValue value = c->getValue();
     const std::string raw(reinterpret_cast<const char*>(value.data()), value.length());
+    logf("write %s (%u bytes) %s", name, static_cast<unsigned>(raw.size()),
+         hexHead(value.data(), value.length()).c_str());
     std::string reply;
     if (strcmp(name, "proto-ver") == 0) {
       reply = VERSION_JSON;
@@ -549,20 +575,41 @@ class EndpointCallbacks final : public NimBLECharacteristicCallbacks {
       reply = g_session.crypt(reinterpret_cast<const uint8_t*>(out.data()), out.size());
     }
     c->setValue(reinterpret_cast<const uint8_t*>(reply.data()), reply.size());
+    logf("reply %s (%u bytes)", name, static_cast<unsigned>(reply.size()));
   }
 
  private:
   const char* name;
 };
 
+class DescriptorCallbacks final : public NimBLEDescriptorCallbacks {
+ public:
+  void onRead(NimBLEDescriptor* d, NimBLEConnInfo&) override {
+    logf("read name of %s", d->getCharacteristic()->getUUID().toString().c_str());
+  }
+};
+DescriptorCallbacks g_descriptorCallbacks;
+
 class ServerCallbacks final : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     g_session.reset();
+    g_connectedAt = millis();
+    g_changedSent = 0;
     setStage(Stage::Connected);
-    logf("app connected, MTU %u", info.getMTU());
+    logf("app connected, MTU %u, peer %s (%s), handle %u, bonded %d, encrypted %d", info.getMTU(),
+         info.getAddress().toString().c_str(), info.getAddress().isPublic() ? "public" : "random", info.getConnHandle(),
+         info.isBonded(), info.isEncrypted());
+  }
+  void onConnParamsUpdate(NimBLEConnInfo& info) override {
+    logf("conn params: interval %u, latency %u, timeout %u", info.getConnInterval(), info.getConnLatency(),
+         info.getConnTimeout());
+  }
+  void onAuthenticationComplete(NimBLEConnInfo& info) override {
+    logf("auth complete: bonded %d, encrypted %d", info.isBonded(), info.isEncrypted());
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, const int reason) override {
     g_session.reset();
+    g_connectedAt = 0;
     logf("app disconnected, reason %d", reason);
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_stage == Stage::Connected || g_stage == Stage::SessionReady) g_stage = Stage::Advertising;
@@ -601,7 +648,10 @@ bool start(std::string& qrUrl) {
 
   // The page turner owns NimBLE as a central; release it first.
   bleturner::stopNow(3000);
-  if (NimBLEDevice::isInitialized()) NimBLEDevice::deinit(true);
+  // Also frees objects a previous stop() left behind (safe with the host off).
+  NimBLEDevice::deinit(true);
+  for (auto* cb : g_endpointCallbacks) delete cb;
+  g_endpointCallbacks.clear();
   WiFi.mode(WIFI_STA);
 
   if (!NimBLEDevice::init(name)) {
@@ -619,6 +669,7 @@ bool start(std::string& qrUrl) {
         service->createCharacteristic(ep.uuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE, 512);
     NimBLEDescriptor* desc = c->createDescriptor("2901", NIMBLE_PROPERTY::READ, strlen(ep.name));
     desc->setValue(ep.name);
+    desc->setCallbacks(&g_descriptorCallbacks);
     auto* cb = new (std::nothrow) EndpointCallbacks(ep.name);
     if (cb) {
       g_endpointCallbacks.push_back(cb);
@@ -659,15 +710,40 @@ bool start(std::string& qrUrl) {
 
 void stop() {
   if (NimBLEDevice::isInitialized() && g_server) {
+    // Each step is written to the log before it runs, so a crash shows where.
+    auto step = [](const char* what) {
+      flushLog();
+      tilescloud::logLine("[bind] stop: %s", what);
+    };
+    step("advertising off");
+    g_server->advertiseOnDisconnect(false);
     NimBLEDevice::getAdvertising()->stop();
-    NimBLEDevice::deinit(true);
-    logf("BLE stopped");
+    step("disconnect");
+    for (const uint16_t handle : g_server->getPeerDevices()) g_server->disconnect(handle);
+    for (int i = 0; i < 25 && g_server->getConnectedCount() > 0; ++i) delay(20);
+    g_server->setCallbacks(nullptr, false);
+    step("host stop");
+    // Keep the GATT objects until the next start(): a host event still in
+    // flight may point at them.
+    const bool stopped = NimBLEDevice::deinit(false);
+    tilescloud::logLine("[bind] stop: host stopped %d", stopped);
   }
   g_server = nullptr;
-  for (auto* cb : g_endpointCallbacks) delete cb;
-  g_endpointCallbacks.clear();
+  g_connectedAt = 0;
   g_session.reset();
   setStage(Stage::Off);
+}
+
+void serviceChanged() {
+  // As the stock firmware does when its GATT table changes: phones that cached
+  // the stock table must discover ours again.
+  const unsigned long at = g_connectedAt;
+  if (at == 0 || !g_server || g_changedSent >= 2) return;
+  const unsigned long wait = g_changedSent == 0 ? 1500 : 4000;
+  if (millis() - at < wait) return;
+  g_changedSent = g_changedSent + 1;
+  g_server->sendServiceChangedIndication();
+  logf("sent Service Changed (%d)", g_changedSent);
 }
 
 Stage stage() {
