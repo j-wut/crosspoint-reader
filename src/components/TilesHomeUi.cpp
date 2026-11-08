@@ -46,8 +46,17 @@ void TilesHomeUi::begin(const std::vector<RecentBook>& recent) {
 }
 
 void TilesHomeUi::loadProgress() {
-  progress = shownBook < static_cast<int>(books->size()) ? loadBookProgress((*books)[shownBook].path) : -1;
+  const BookProgressInfo info =
+      shownBook < static_cast<int>(books->size()) ? loadBookProgressInfo((*books)[shownBook].path) : BookProgressInfo{};
+  progress = info.percent;
   if (progress >= 0) snprintf(progressText, sizeof(progressText), "%d%%", progress);
+  chapterLine = info.chapter;
+  if (info.chapterPages > 0) {
+    char pages[16];
+    snprintf(pages, sizeof(pages), "%d/%d", info.page, info.chapterPages);
+    if (!chapterLine.empty()) chapterLine += "  ·  ";
+    chapterLine += pages;
+  }
 }
 
 void TilesHomeUi::setSelection(const int selection) {
@@ -140,10 +149,11 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
   const int16_t subtitleHeight = screen.target().lineHeight(subtitle.font);
   const int count = std::min<int>(MAX_BOOKS, books->size());
   const int16_t dotsHeight = count > 1 ? static_cast<int16_t>(DOT_SIZE + theme.spaceMd) : 0;
-  // Room for the progress bar is kept even when the book has none, so the
-  // cover does not change size between books.
-  const int16_t textHeight = static_cast<int16_t>(theme.spaceLg + titleHeight + theme.spaceSm + subtitleHeight +
-                                                  theme.spaceMd + PROGRESS_HEIGHT);
+  // Room for the author, progress and chapter lines is kept even when a book
+  // has none, so the cover does not change size between books.
+  const int16_t textHeight =
+      static_cast<int16_t>(theme.spaceLg + titleHeight + theme.spaceSm + subtitleHeight + theme.spaceMd +
+                           std::max<int16_t>(subtitleHeight, PROGRESS_HEIGHT) + theme.spaceSm + subtitleHeight);
 
   // One centered cover; the ring around it marks the button cursor.
   const int16_t frame = RING_GAP + RING_WIDTH;
@@ -207,23 +217,30 @@ void TilesHomeUi::drawBook(UiScreen& screen, const fui::Rect rect) {
     return;
   }
   const auto& author = (*books)[shownBook].author;
-  char line[96];
-  if (progress >= 0 && !author.empty()) {
-    snprintf(line, sizeof(line), "%s  ·  %s", progressText, author.c_str());
-  } else {
-    snprintf(line, sizeof(line), "%s", progress >= 0 ? progressText : author.c_str());
-  }
-  screen.target().text(fui::Rect{rect.x, y, rect.width, subtitleHeight}, line, subtitle);
+  if (!author.empty()) screen.target().text(fui::Rect{rect.x, y, rect.width, subtitleHeight}, author.c_str(), subtitle);
   if (progress < 0) return;
-  // Reading progress bar, as wide as the cover.
+
+  // Progress bar as wide as the cover, with the percent at its right end.
+  y = static_cast<int16_t>(y + subtitleHeight + theme.spaceMd);
+  const int16_t rowHeight = std::max<int16_t>(subtitleHeight, PROGRESS_HEIGHT);
+  auto percent = theme.smallText;
+  percent.align = fui::TextAlign::Right;
+  const int16_t percentWidth = screen.target().measureText(percent.font, "100%", percent).width;
+  screen.target().text(fui::Rect{static_cast<int16_t>(cover.right() - percentWidth), y, percentWidth, rowHeight},
+                       progressText, percent);
   fui::ProgressBarProps bar;
   bar.value = progress;
   bar.border = INK;
   bar.borderWidth = 1;
   bar.radius = PROGRESS_HEIGHT / 2;
-  fui::progressBar(
-      screen.frame(),
-      fui::Rect{cover.x, static_cast<int16_t>(y + subtitleHeight + theme.spaceMd), cover.width, PROGRESS_HEIGHT}, bar);
+  fui::progressBar(screen.frame(),
+                   fui::Rect{cover.x, static_cast<int16_t>(y + (rowHeight - PROGRESS_HEIGHT) / 2),
+                             static_cast<int16_t>(cover.width - percentWidth - theme.spaceSm), PROGRESS_HEIGHT},
+                   bar);
+
+  if (chapterLine.empty()) return;
+  y = static_cast<int16_t>(y + rowHeight + theme.spaceSm);
+  screen.target().text(fui::Rect{rect.x, y, rect.width, subtitleHeight}, chapterLine.c_str(), subtitle);
 }
 
 void TilesHomeUi::drawPlaceholder(UiScreen& screen, const fui::Rect cover) {
