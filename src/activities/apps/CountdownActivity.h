@@ -17,24 +17,27 @@ class CountdownActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
-  // BOOX Tiles cloud sync on open (Picco only), like the stock app. It runs
-  // in the background; the list stays usable meanwhile.
+  // BOOX Tiles cloud sync, only when the sync row is pressed (Picco only). It
+  // runs in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
+  void startSync();
   CloudSyncJob<applists::CountdownItem> sync;
   bool editedDuringSync = false;
-  std::string syncingTitle;
+  // Row 0 is the sync row on the Picco; the items follow.
+  int syncRows() const;
+  int itemAt(int row) const;
   struct Row {
     std::string value;
     std::string date;
   };
-  int listCount() const override { return static_cast<int>(items.size()); }
+  int listCount() const override { return syncRows() + static_cast<int>(items.size()); }
   void buildScreen(UiScreen& screen) override;
-  void activateIndex(int) override {}
+  void activateIndex(int index) override;
   const char* headerTitle() const override;
   bool handleButtons() override;
   void drawFooter() override;
 #if FREEINK_CAP_TOUCH
-  bool canSwipeDelete(int index) const override { return index >= 0 && index < listCount(); }
+  bool canSwipeDelete(int index) const override { return itemAt(index) >= 0; }
   void swipeDelete(int index) override { deleteRow(index); }
 #endif
   void deleteRow(int index);

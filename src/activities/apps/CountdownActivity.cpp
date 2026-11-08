@@ -18,19 +18,32 @@ namespace fui = freeink::ui;
 void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
   sortAndRefresh();
-  syncingTitle = std::string(tr(STR_APP_COUNTDOWN)) + " - " + tr(STR_CLOUD_SYNCING);
-  editedDuringSync = false;
-  if (BoardConfig::isPicco() && !sync.start(items, tilescloud::syncCountdowns)) {
-    LOG_ERR("CDN", "Sync task not started");
-  }
   UiListActivity::onEnter();
+}
+
+int CountdownActivity::syncRows() const { return BoardConfig::isPicco() ? 1 : 0; }
+
+int CountdownActivity::itemAt(const int row) const {
+  const int index = row - syncRows();
+  return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
+}
+
+void CountdownActivity::startSync() {
+  if (sync.running()) return;
+  editedDuringSync = false;
+  if (!sync.start(items, tilescloud::syncCountdowns)) LOG_ERR("CDN", "Sync task not started");
+  requestUpdate();
+}
+
+void CountdownActivity::activateIndex(const int index) {
+  if (syncRows() > 0 && index == 0) startSync();
 }
 
 bool CountdownActivity::handleCustomInput() {
   std::vector<applists::CountdownItem> synced;
   tilescloud::SyncResult result;
   if (!sync.take(synced, result)) return false;
-  // An edit made meanwhile wins; the next open syncs again.
+  // An edit made meanwhile wins; sync again to pick up the cloud list.
   if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
     items = std::move(synced);
     if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
@@ -54,9 +67,7 @@ void CountdownActivity::sortAndRefresh() {
   refreshRows();
 }
 
-const char* CountdownActivity::headerTitle() const {
-  return sync.running() ? syncingTitle.c_str() : tr(STR_APP_COUNTDOWN);
-}
+const char* CountdownActivity::headerTitle() const { return tr(STR_APP_COUNTDOWN); }
 
 void CountdownActivity::refreshRows() {
   texts.clear();
@@ -83,8 +94,9 @@ void CountdownActivity::refreshRows() {
   }
 }
 
-void CountdownActivity::deleteRow(const int index) {
-  if (index < 0 || index >= listCount()) return;
+void CountdownActivity::deleteRow(const int row) {
+  const int index = itemAt(row);
+  if (index < 0) return;
   items.erase(items.begin() + index);
   if (sync.running()) editedDuringSync = true;
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
@@ -93,31 +105,38 @@ void CountdownActivity::deleteRow(const int index) {
   requestUpdate();
 }
 
-void CountdownActivity::promptDelete(const int index) {
-  if (index < 0 || index >= listCount()) return;
+void CountdownActivity::promptDelete(const int row) {
+  const int index = itemAt(row);
+  if (index < 0) return;
   auto confirmation =
       makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_ITEM_CONFIRM), items[index].title);
   if (!confirmation) {
     LOG_ERR("CDN", "OOM: delete confirmation");
     return;
   }
-  startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
-    if (!result.isCancelled) deleteRow(index);
+  startActivityForResult(std::move(confirmation), [this, row](const ActivityResult& result) {
+    if (!result.isCancelled) deleteRow(row);
   });
 }
 
 bool CountdownActivity::handleButtons() {
-  // Rows have nothing to open, so Confirm offers delete; a tap still does nothing.
+  // Item rows have nothing to open, so Confirm offers delete; a tap still does
+  // nothing. On the sync row Confirm syncs.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    promptDelete(nav.selected);
+    if (itemAt(nav.selected) >= 0) {
+      promptDelete(nav.selected);
+    } else {
+      activateIndex(nav.selected);
+    }
     return true;
   }
   return UiListActivity::handleButtons();
 }
 
 void CountdownActivity::drawFooter() {
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), items.empty() ? "" : tr(STR_DELETE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(
+      tr(STR_BACK), itemAt(nav.selected) >= 0 ? tr(STR_DELETE) : (syncRows() > 0 ? tr(STR_SELECT) : ""), tr(STR_DIR_UP),
+      tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
@@ -144,13 +163,20 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
   }
 
   rows.clear();
-  rows.reserve(items.size());
+  rows.reserve(listCount());
+  if (syncRows() > 0) {
+    fui::ListItem syncRow;
+    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
+    syncRow.value = sync.statusText();
+    syncRow.actionValue = 0;
+    rows.push_back(syncRow);
+  }
   for (size_t i = 0; i < items.size(); ++i) {
     fui::ListItem row;
     row.label = items[i].title.c_str();
     row.subtitle = texts[i].date.c_str();
     row.value = texts[i].value.empty() ? nullptr : texts[i].value.c_str();
-    row.actionValue = static_cast<int16_t>(i);
+    row.actionValue = static_cast<int16_t>(i + syncRows());
     rows.push_back(row);
   }
   fui::ListProps props;

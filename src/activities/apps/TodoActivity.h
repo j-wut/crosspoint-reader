@@ -18,13 +18,15 @@ class TodoActivity final : public UiListActivity {
   void onEnter() override;
 
  private:
-  // BOOX Tiles cloud sync on open (Picco only), like the stock app. It runs
-  // in the background; the list stays usable meanwhile.
+  // BOOX Tiles cloud sync, only when the sync row is pressed (Picco only). It
+  // runs in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
+  void startSync();
   CloudSyncJob<applists::TodoItem> sync;
   bool editedDuringSync = false;
-  std::string syncingTitle;
-  // Row 0 adds an item; rows 1..n are the items; a last row clears done items.
+  // Rows: 0 adds an item, then the sync row (Picco), the items, and a last
+  // row that clears done items.
+  int syncRows() const;
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
