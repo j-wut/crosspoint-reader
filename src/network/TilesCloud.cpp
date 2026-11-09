@@ -691,15 +691,19 @@ bool refreshToken(Print& log) {
   const std::string deviceId = findString(info.as<JsonVariantConst>(), "id");
   const char* devId = info["device"]["id"] | deviceId.c_str();
   const char* secret = info["device"]["secretHex"] | "";
-  const auto now = static_cast<uint32_t>(time(nullptr));
+  // Stock only stamps tokenLastAt when the clock is set (after 2001).
+  const auto clock = static_cast<uint32_t>(time(nullptr));
+  const uint32_t now = clock > 1000000000u ? clock : 0;
 
+  // Same keys, types and order as the stock credential store (UCS). Stock
+  // also tries "tokenRefreshPending", which NVS rejects (key over 15 chars).
   nvs_handle_t handle;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
   if (err == ESP_OK) {
     err = nvs_set_str(handle, NVS_USER_INFO, userInfo.c_str());
-    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
     if (err == ESP_OK) err = nvs_set_str(handle, "deviceId", devId);
-    if (err == ESP_OK && *secret) err = nvs_set_str(handle, "secretHex", secret);
+    if (err == ESP_OK) err = nvs_set_str(handle, "secretHex", secret);
+    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
     if (err == ESP_OK) err = nvs_set_u32(handle, "tokenLastAt", now);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);

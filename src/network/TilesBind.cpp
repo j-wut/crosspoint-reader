@@ -565,10 +565,22 @@ std::string efuseHex() {
   return buf;
 }
 
+// Same as stock: 8 characters from 0-9a-z, one esp_random() per character,
+// skipping values that would favor the first characters. Stock does not save
+// it; the chip's random numbers repeat after each boot until the radio is on,
+// so the code stays the same between boots.
 std::string makePop() {
-  static constexpr char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  static constexpr char ALPHABET[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  constexpr uint32_t SIZE = sizeof(ALPHABET) - 1;
+  constexpr uint32_t LIMIT = ~(UINT32_MAX % SIZE);
   std::string pop;
-  for (int i = 0; i < 8; ++i) pop.push_back(ALPHABET[esp_random() % (sizeof(ALPHABET) - 1)]);
+  while (pop.size() < 8) {
+    uint32_t value;
+    do {
+      value = esp_random();
+    } while (value >= LIMIT);
+    pop.push_back(ALPHABET[value % SIZE]);
+  }
   return pop;
 }
 
@@ -603,8 +615,8 @@ bool start(std::string& qrUrl) {
            mac[4], mac[5]);
   qrUrl = "https://www.booxtiles.com/download/?ver=v1.0.5&model=picco&name=" + name + "&pop=" + g_pop +
           "&transport=ble&hostname=" + name + ".local&macAddress=" + macParam;
-  logf("advertising as %s, heap %u, PSRAM free %u", name.c_str(), static_cast<unsigned>(ESP.getFreeHeap()),
-       static_cast<unsigned>(ESP.getFreePsram()));
+  logf("advertising as %s, pop %s, heap %u, PSRAM free %u", name.c_str(), g_pop.c_str(),
+       static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()));
   return true;
 }
 
