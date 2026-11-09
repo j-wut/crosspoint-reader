@@ -20,7 +20,6 @@ class GalleryActivity final : public Activity, private UiAppHost {
       : Activity("Gallery", renderer, mappedInput), UiAppHost(renderer) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

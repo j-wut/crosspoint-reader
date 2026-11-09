@@ -178,7 +178,6 @@ void BmpViewerActivity::onEnter() {
   GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
   if (wallpaper::isOpg(filePath)) {
     // Straight from the file into the frame buffer; no converted copy.
-    wallpaper::startLogCapture();
     const unsigned long start = millis();
     renderer.clearScreen();
     const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
@@ -200,8 +199,7 @@ void BmpViewerActivity::onEnter() {
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
-    LOG_INF("BMP", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
-    wallpaper::stopLogCapture();
+    LOG_INF("GAL", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
     return;
   }
 

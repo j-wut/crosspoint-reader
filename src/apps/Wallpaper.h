@@ -72,13 +72,6 @@ bool keepsAlpha(Kind kind);
 // True when the file is an .opg image with an alpha channel.
 bool opgHasAlpha(const std::string& path);
 
-// Gallery log: while capturing, every log line is kept in memory; flushLog
-// appends them to LOG_PATH on the card (renamed to .old past 64 KB).
-constexpr const char* LOG_PATH = "/gallery-log.txt";
-void startLogCapture();
-void flushLog();
-void stopLogCapture();
-
 struct DrawResult {
   bool ok = false;
   bool hasAlpha = false;

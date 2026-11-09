@@ -91,7 +91,6 @@ class GalleryImageActivity final : public Activity {
 
 void GalleryActivity::onEnter() {
   Activity::onEnter();
-  wallpaper::startLogCapture();
   reload();
   resetUi();
   app.on(CELL, &GalleryActivity::onAction, this);
@@ -101,10 +100,6 @@ void GalleryActivity::onEnter() {
   requestUpdate();
 }
 
-void GalleryActivity::onExit() {
-  wallpaper::stopLogCapture();
-  Activity::onExit();
-}
 
 void GalleryActivity::reload() {
   images = wallpaper::list();
@@ -273,7 +268,7 @@ void GalleryActivity::loop() {
     }
   }
   // After the page is shown: write missing cache files, then the log.
-  if (previewsReady && !saveOnePreview()) wallpaper::flushLog();
+  if (previewsReady) saveOnePreview();
 
   pending = -1;
   const auto touch = routeTouch(mappedInput);
