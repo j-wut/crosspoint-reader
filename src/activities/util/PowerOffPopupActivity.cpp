@@ -91,7 +91,13 @@ void PowerOffPopupActivity::loop() {
     finish();
     return;
   }
-  for (uint8_t b = 0; b <= static_cast<uint8_t>(MappedInputManager::Button::Power); ++b) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+    LOG_INF("PWR", "Power Off confirmed by Power button");
+    activityManager.requestPowerOff();
+    finish();
+    return;
+  }
+  for (uint8_t b = 0; b < static_cast<uint8_t>(MappedInputManager::Button::Power); ++b) {
     if (mappedInput.wasReleased(static_cast<MappedInputManager::Button>(b))) {
       finish();
       return;
