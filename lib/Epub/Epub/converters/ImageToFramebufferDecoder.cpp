@@ -4,7 +4,8 @@
 #include <Logging.h>
 
 bool ImageToFramebufferDecoder::validateAndStoreDimensions(const int64_t width, const int64_t height,
-                                                           ImageDimensions& out, const char* format) {
+                                                           ImageDimensions& out, const char* format,
+                                                           const int64_t maxPixels) {
   if (width <= 0 || height <= 0) {
     LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld", format, static_cast<long long>(width),
             static_cast<long long>(height));
@@ -18,10 +19,10 @@ bool ImageToFramebufferDecoder::validateAndStoreDimensions(const int64_t width, 
   }
 
   const int64_t pixels = width * height;
-  if (pixels > MAX_SOURCE_PIXELS) {
+  if (pixels > maxPixels) {
     LOG_ERR("IMG", "%s too large (%lldx%lld = %lld pixels), max supported: %lld pixels", format,
             static_cast<long long>(width), static_cast<long long>(height), static_cast<long long>(pixels),
-            static_cast<long long>(MAX_SOURCE_PIXELS));
+            static_cast<long long>(maxPixels));
     return false;
   }
 

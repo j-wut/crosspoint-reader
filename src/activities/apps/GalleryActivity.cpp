@@ -1,6 +1,5 @@
 #include "GalleryActivity.h"
 
-#include <Bitmap.h>
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -10,13 +9,14 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "activities/util/BmpViewerActivity.h"
 #include "activities/util/ConfirmationActivity.h"
-#include "apps/Wallpaper.h"
 #include "components/OptionPopup.h"
 #include "components/UITheme.h"
 
@@ -33,17 +33,24 @@ constexpr int16_t BAR_HEIGHT = 44;
 const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
 const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
 
-// Option picker for one image, drawn over the Gallery list.
+// Option picker for one image, drawn over the Gallery list. Back cancels.
 class GalleryImageActivity final : public Activity {
  public:
-  GalleryImageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string name)
-      : Activity("GalleryImage", renderer, mappedInput), name(std::move(name)) {}
+  GalleryImageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* title, std::string name,
+                       std::vector<const char*> labels)
+      : Activity("GalleryImage", renderer, mappedInput),
+        title(title),
+        name(std::move(name)),
+        labels(std::move(labels)) {}
 
   void onEnter() override {
     Activity::onEnter();
-    labels = {tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN), tr(STR_SET_POWER_OFF_SCREEN),
-              tr(STR_DELETE)};
-    popup.show(tr(STR_APP_GALLERY), name.c_str(), labels.data(), ACTION_COUNT, 0,
+    {
+      // Keep the screen under the popup so the next popup or screen starts clean.
+      RenderLock lock(*this);
+      background = renderer.storeBwBuffer();
+    }
+    popup.show(title, name.c_str(), labels.data(), static_cast<int>(labels.size()), 0,
                [this](const int action) { chosen = action; });
     requestUpdate();
   }
@@ -61,11 +68,21 @@ class GalleryImageActivity final : public Activity {
     finish();
   }
 
+  void onExit() override {
+    if (background) {
+      RenderLock lock(*this);
+      renderer.restoreBwBuffer(false);
+    }
+    Activity::onExit();
+  }
+
   void render(RenderLock&&) override { popup.processRender(renderer, mappedInput); }
 
  private:
+  bool background = false;
+  const char* title;
   std::string name;
-  std::array<const char*, ACTION_COUNT> labels{};
+  std::vector<const char*> labels;
   OptionPopup popup;
   int chosen = -1;
 };
@@ -83,6 +100,7 @@ void GalleryActivity::onEnter() {
   requestUpdate();
 }
 
+
 void GalleryActivity::reload() {
   images = wallpaper::list();
   names.clear();
@@ -94,6 +112,7 @@ void GalleryActivity::reload() {
 int GalleryActivity::itemCount() const { return static_cast<int>(images.size()); }
 
 void GalleryActivity::loadPage(const int newPage) {
+  RenderLock lock(*this);
   const int count = itemCount();
   const int pages = std::max(1, (count + PER_PAGE - 1) / PER_PAGE);
   page = std::clamp(newPage, 0, pages - 1);
@@ -101,23 +120,63 @@ void GalleryActivity::loadPage(const int newPage) {
   for (int slot = 0; slot < PER_PAGE; ++slot) {
     const int item = page * PER_PAGE + slot;
     if (item >= count) break;
-    cells[cellCount++] = Cell{item, {}, false};
+    cells[cellCount++] = Cell{item, {}, {}, false};
   }
+  for (int slot = cellCount; slot < PER_PAGE; ++slot) cells[slot] = Cell{};
+  previewsReady = cellCount == 0;
+  loadingShown = false;
+  showRing = false;
+  ringDecided = false;
   selected = std::min(selected, std::max(0, cellCount - 1));
 }
 
-// Makes one missing preview per call so the page fills in image by image.
-bool GalleryActivity::makeMissingThumb() {
-  if (thumbW <= 0 || thumbH <= 0) return false;
+bool GalleryActivity::allPreviewsCached() const {
+  for (int i = 0; i < cellCount; ++i) {
+    const std::string cachePath = wallpaper::thumbCachePath(images[cells[i].item], thumbW, thumbH);
+    if (cachePath.empty() || !Storage.exists(cachePath.c_str())) return false;
+  }
+  return true;
+}
+
+// Makes every preview on the page before it is shown: from the cache file
+// when there is one, else straight from the image into memory.
+void GalleryActivity::makePreviews() {
+  RenderLock lock(*this);
+  const unsigned long start = millis();
+  int fromCache = 0;
+  int made = 0;
   for (int i = 0; i < cellCount; ++i) {
     Cell& cell = cells[i];
-    if (cell.thumbTried) continue;
-    cell.thumbTried = true;
-    RenderLock lock(*this);
-    if (!wallpaper::thumbBmp(images[cell.item], thumbW, thumbH, cell.thumb)) {
-      cell.thumb.clear();
-      LOG_ERR("GAL", "no preview for %s", images[cell.item].c_str());
+    const std::string& path = images[cell.item];
+    const unsigned long t0 = millis();
+    cell.cachePath = wallpaper::thumbCachePath(path, thumbW, thumbH);
+    const unsigned long t1 = millis();
+    if (wallpaper::loadThumb(cell.cachePath, cell.thumb)) {
+      ++fromCache;
+      LOG_INF("GAL", "preview %s: cache %lu ms (key %lu ms)", path.c_str(), millis() - t1, t1 - t0);
+    } else if (wallpaper::makeThumb(path, thumbW, thumbH, cell.thumb)) {
+      ++made;
+      cell.needsSave = !cell.cachePath.empty();
+      LOG_INF("GAL", "preview %s: made %lu ms (key %lu ms)", path.c_str(), millis() - t1, t1 - t0);
+    } else {
+      cell.thumb = {};
+      LOG_ERR("GAL", "no preview for %s (%lu ms)", path.c_str(), millis() - t0);
     }
+  }
+  previewsReady = true;
+  LOG_INF("GAL", "page %d: %d previews (%d cached, %d made) in %lu ms, free heap %u", page + 1, cellCount, fromCache,
+          made, millis() - start, static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
+// Writes one missing cache file per call, after the page is on screen.
+bool GalleryActivity::saveOnePreview() {
+  for (int i = 0; i < cellCount; ++i) {
+    Cell& cell = cells[i];
+    if (!cell.needsSave) continue;
+    cell.needsSave = false;
+    const unsigned long t0 = millis();
+    const bool ok = wallpaper::saveThumb(cell.thumb, cell.cachePath);
+    LOG_INF("GAL", "cache write %s: %s %lu ms", images[cell.item].c_str(), ok ? "ok" : "failed", millis() - t0);
     return true;
   }
   return false;
@@ -145,7 +204,10 @@ void GalleryActivity::activate(const int item) {
 }
 
 void GalleryActivity::openImage(const int index) {
-  auto menu = makeUniqueNoThrow<GalleryImageActivity>(renderer, mappedInput, names[index]);
+  auto menu = makeUniqueNoThrow<GalleryImageActivity>(
+      renderer, mappedInput, tr(STR_APP_GALLERY), names[index],
+      std::vector<const char*>{tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN),
+                               tr(STR_SET_POWER_OFF_SCREEN), tr(STR_DELETE)});
   if (!menu) {
     LOG_ERR("GAL", "OOM: image menu");
     return;
@@ -153,21 +215,60 @@ void GalleryActivity::openImage(const int index) {
   startActivityForResult(std::move(menu), [this, index](const ActivityResult& result) {
     if (result.isCancelled) return;
     const auto* menuResult = std::get_if<MenuResult>(&result.data);
-    if (menuResult) runAction(index, menuResult->action);
+    if (!menuResult) return;
+    const int action = menuResult->action;
+    const bool setsSleep = action == SET_SLEEP || action == SET_READING || action == SET_POWER_OFF;
+    if (setsSleep && wallpaper::opgHasAlpha(images[index])) {
+      askKeepAlpha(index, action);
+    } else {
+      runAction(index, action, true);
+    }
+  });
+}
+
+void GalleryActivity::askKeepAlpha(const int index, const int action) {
+  auto ask = makeUniqueNoThrow<GalleryImageActivity>(renderer, mappedInput, tr(STR_KEEP_TRANSPARENCY), names[index],
+                                                     std::vector<const char*>{tr(STR_YES), tr(STR_NO)});
+  if (!ask) {
+    LOG_ERR("GAL", "OOM: transparency choice");
+    return;
+  }
+  startActivityForResult(std::move(ask), [this, index, action](const ActivityResult& result) {
+    if (result.isCancelled) return;
+    const auto* choice = std::get_if<MenuResult>(&result.data);
+    if (choice) runAction(index, action, choice->action == 0);
   });
 }
 
 void GalleryActivity::loop() {
   if (thumbSizeChanged) {
+    // The first draw measures the preview size; previews for another size are dropped.
     thumbSizeChanged = false;
-    for (int i = 0; i < cellCount; ++i) cells[i] = Cell{cells[i].item, {}, false};
-    requestUpdate();
-    return;
+    if (previewsReady) {
+      loadPage(page);
+      requestUpdate();
+      return;
+    }
   }
-  if (makeMissingThumb()) {
-    requestUpdate();
-    return;
+  if (!previewsReady && thumbW > 0) {
+    // A page whose previews are all cached is shown straight away; otherwise
+    // the loading ring goes up first, so the touch shows at once.
+    if (!ringDecided) {
+      ringDecided = true;
+      showRing = !allPreviewsCached();
+      if (showRing) {
+        requestUpdate();
+        return;
+      }
+    }
+    if (!showRing || loadingShown) {
+      makePreviews();
+      requestUpdate();
+      return;
+    }
   }
+  // After the page is shown: write missing cache files, then the log.
+  if (previewsReady) saveOnePreview();
 
   pending = -1;
   const auto touch = routeTouch(mappedInput);
@@ -221,15 +322,19 @@ void GalleryActivity::loop() {
   });
 }
 
-void GalleryActivity::runAction(const int image, const int action) {
+void GalleryActivity::runAction(const int image, const int action, const bool keepAlpha) {
   if (image < 0 || image >= static_cast<int>(images.size())) return;
   const std::string path = images[image];
   switch (action) {
     case VIEW: {
-      std::string bmp;
-      GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-      // The viewer reads BMP, PNG and JPEG; .opg goes through its converted BMP.
-      activityManager.goToReader(wallpaper::isOpg(path) && wallpaper::screenBmp(path, bmp) ? bmp : path);
+      // Opened on top of the Gallery, so Back returns to this page.
+      auto viewer = makeUniqueNoThrow<BmpViewerActivity>(renderer, mappedInput, path);
+      if (!viewer) {
+        LOG_ERR("GAL", "OOM: image viewer");
+        return;
+      }
+      viewer->setReturnToCaller();
+      startActivityForResult(std::move(viewer), [this](const ActivityResult&) { requestUpdate(); });
       return;
     }
     case SET_POWER_OFF: {
@@ -237,7 +342,7 @@ void GalleryActivity::runAction(const int image, const int action) {
       std::string bmp;
       // Check now that the sleep screen will be able to draw it.
       const bool ok = (wallpaper::isOpg(path) || wallpaper::screenBmp(path, bmp)) &&
-                      wallpaper::setWallpaper(path, wallpaper::POWER_OFF);
+                      wallpaper::setWallpaper(path, wallpaper::POWER_OFF, keepAlpha);
       LOG_INF("GAL", "power-off image %s: %s", path.c_str(), ok ? "ok" : "failed");
       GUI.drawPopup(renderer, ok ? tr(STR_DONE) : tr(STR_SET_SLEEP_SCREEN_FAILED));
       delay(1000);
@@ -249,7 +354,7 @@ void GalleryActivity::runAction(const int image, const int action) {
       const bool reading = action == SET_READING;
       bool ok = wallpaper::setAs(path, reading ? wallpaper::READING_PATH : wallpaper::SLEEP_PATH);
       // The source path lets the sleep screen keep an .opg's transparency.
-      ok = ok && wallpaper::setWallpaper(path, reading ? wallpaper::READING : wallpaper::SLEEP);
+      ok = ok && wallpaper::setWallpaper(path, reading ? wallpaper::READING : wallpaper::SLEEP, keepAlpha);
       if (ok && !reading && SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM) {
         SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
         SETTINGS.saveToFile();
@@ -267,6 +372,7 @@ void GalleryActivity::runAction(const int image, const int action) {
         if (result.isCancelled) return;
         if (!Storage.remove(path.c_str())) LOG_ERR("GAL", "Delete failed: %s", path.c_str());
         reload();
+        loadPage(page);
         requestUpdate();
       });
       return;
@@ -303,7 +409,7 @@ void GalleryActivity::draw(UiScreen& screen) {
 
   // Pager along the bottom: previous, "page / pages", next.
   const int pages = std::max(1, (itemCount() + PER_PAGE - 1) / PER_PAGE);
-  const auto pagerY = static_cast<int16_t>(body.bottom() - BAR_HEIGHT);
+  const auto pagerY = static_cast<int16_t>(body.bottom() - BAR_HEIGHT - metrics.verticalSpacing);
   if (pages > 1) {
     char pagerText[16];
     snprintf(pagerText, sizeof(pagerText), "%d / %d", page + 1, pages);
@@ -313,7 +419,7 @@ void GalleryActivity::draw(UiScreen& screen) {
                          pagerText, text);
     const int16_t arrowW = 72;
     auto arrow = theme.titleText;
-    arrow.bold = true;
+    arrow.bold = false;
     arrow.align = fui::TextAlign::Center;
     const int16_t arrowH = screen.target().lineHeight(arrow.font);
     const auto drawArrow = [&](const fui::Rect r, const char* label, const int16_t value) {
@@ -335,6 +441,16 @@ void GalleryActivity::draw(UiScreen& screen) {
     const fui::Rect rect{static_cast<int16_t>(body.x + (slot % COLUMNS) * (cellW + GAP)),
                          static_cast<int16_t>(top + (slot / COLUMNS) * (cellH + GAP)), cellW, cellH};
     drawCell(screen, slot, rect);
+  }
+  if (!previewsReady && showRing && cellCount > 0) {
+    // Loading ring in the middle of the grid: a thin track with a thick quarter.
+    const int cx = body.x + body.width / 2;
+    const int cy = top + gridH / 2;
+    constexpr int RADIUS = 36;
+    for (const auto& [xDir, yDir] : {std::pair{1, -1}, std::pair{1, 1}, std::pair{-1, 1}, std::pair{-1, -1}}) {
+      renderer.drawArc(RADIUS, cx, cy, xDir, yDir, 3, true);
+    }
+    renderer.drawArc(RADIUS, cx, cy, 1, -1, 9, true);
   }
 }
 
@@ -366,27 +482,18 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
     thumbH = innerH;
     thumbSizeChanged = true;
   }
+  if (!previewsReady) return;  // loading: the ring stands in for the grid
 
   screen.target().fill(box, PAPER);
-  bool drawn = false;
-  if (!cell.thumb.empty() && !thumbSizeChanged) {
-    HalFile file;
-    if (Storage.openFileForRead("GAL", cell.thumb, file)) {
-      Bitmap bitmap(file);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        drawn = renderer.drawBitmap(bitmap, box.x + BORDER + (innerW - bitmap.getWidth()) / 2,
-                                    box.y + BORDER + (innerH - bitmap.getHeight()) / 2, innerW, innerH);
-      }
-      file.close();
-    }
-  }
-  if (!drawn) {
+  if (cell.thumb && !thumbSizeChanged) {
+    wallpaper::drawThumb(renderer, cell.thumb, box.x + BORDER, box.y + BORDER, innerW, innerH);
+  } else {
     // Preview not made yet, or it failed.
     auto label = theme.smallText;
     label.align = fui::TextAlign::Center;
     screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - nameH) / 2),
                                    static_cast<int16_t>(boxW - 16), nameH},
-                         cell.thumbTried ? "?" : "...", label);
+                         "?", label);
   }
   screen.target().stroke(box, INK, BORDER, 0);
   if (slot == selected && !BoardConfig::hasTouch()) {
@@ -405,5 +512,18 @@ void GalleryActivity::render(RenderLock&&) {
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!previewsReady && !showRing) {
+    // This draw only measured the preview size; the page is shown once its
+    // previews are made.
+    return;
+  }
+  const unsigned long start = millis();
   renderer.displayBuffer();
+  if (previewsReady) {
+    LOG_INF("GAL", "page %d shown, refresh %lu ms", page + 1, millis() - start);
+  } else {
+    // The loop makes the previews once the loading screen is up.
+    LOG_INF("GAL", "page %d loading screen, refresh %lu ms", page + 1, millis() - start);
+    loadingShown = true;
+  }
 }

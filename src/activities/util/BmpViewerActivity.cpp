@@ -1,6 +1,7 @@
 #include "BmpViewerActivity.h"
 
 #include <Bitmap.h>
+#include <BoardConfig.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
 #include <FsHelpers.h>
@@ -14,6 +15,8 @@
 
 #include "CrossPointSettings.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "apps/Wallpaper.h"
+#include "components/HeaderBackTapTarget.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -72,7 +75,7 @@ void BmpViewerActivity::loadSiblingImages() {
   for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     if (file.isDirectory()) continue;
     file.getName(name.get(), 500);
-    if (name[0] != '.' && FsHelpers::hasImageExtension(std::string_view{name.get()})) ++imageCount;
+    if (name[0] != '.' && wallpaper::isImage(std::string_view{name.get()})) ++imageCount;
   }
   dir.rewindDirectory();
   siblingImages.reserve(imageCount);
@@ -82,7 +85,7 @@ void BmpViewerActivity::loadSiblingImages() {
       file.getName(name.get(), 500);
       if (name[0] != '.') {
         std::string fname(name.get());
-        if (FsHelpers::hasImageExtension(fname)) {
+        if (wallpaper::isImage(fname)) {
           siblingImages.push_back(fname);
         }
       }
@@ -128,7 +131,7 @@ bool BmpViewerActivity::renderImage() {
 
   if (!drawImage()) return false;
   if (!jpeg) {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    showFrame();
     return true;
   }
 
@@ -156,11 +159,14 @@ bool BmpViewerActivity::renderImage() {
   renderer.clearScreen();
   if (!drawImage()) ready = false;
   renderer.cleanupGrayscaleWithFrameBuffer();
+  if (ready && keepOverlay) drawOverlay();
   return ready;
 }
 
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
+  overlayShown = false;
+  HeaderBackTapTarget::clear();
 
   if (siblingImages.empty() && !filePath.empty()) {
     loadSiblingImages();
@@ -170,6 +176,33 @@ void BmpViewerActivity::onEnter() {
   const auto pageHeight = renderer.getScreenHeight();
   Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
+  if (wallpaper::isOpg(filePath)) {
+    // Straight from the file into the frame buffer; no converted copy.
+    const unsigned long start = millis();
+    renderer.clearScreen();
+    const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
+    if (ok) {
+      const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
+      const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
+                           currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", hasPrevious ? "<" : "", hasNext ? ">" : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    } else {
+      renderer.clearScreen();
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
+    }
+    const unsigned long drawn = millis();
+    if (ok) {
+      showFrame();
+    } else {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
+    LOG_INF("GAL", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
+    return;
+  }
+
   if (FsHelpers::hasPngExtension(filePath) || FsHelpers::hasJpgExtension(filePath)) {
     renderer.clearScreen();
     if (!renderImage()) {
@@ -269,9 +302,10 @@ void BmpViewerActivity::onEnter() {
         }
         GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
         renderer.cleanupGrayscaleWithFrameBuffer();
+        if (planesReady && keepOverlay) drawOverlay();
         if (!planesReady) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
       } else {
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        showFrame();
       }
 
     } else {
@@ -439,6 +473,57 @@ void BmpViewerActivity::doSetSleepCover() {
   onEnter();
 }
 
+// Top bar: back arrow and file name. Bottom bar: previous / next arrows and
+// "image / images".
+void BmpViewerActivity::drawOverlayContent() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int barHeight = metrics.topPadding + metrics.headerHeight;
+  const std::string name = filePath.substr(filePath.find_last_of('/') + 1);
+  renderer.fillRect(0, 0, width, barHeight, false);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, name.c_str());
+
+  constexpr int ARROW_W = 72;
+  constexpr int ARROW_H = 44;
+  const int footHeight = ARROW_H + 2 * metrics.verticalSpacing;
+  const int footY = height - footHeight;
+  renderer.fillRect(0, footY, width, footHeight, false);
+  renderer.drawLine(0, footY, width - 1, footY, 2, true);
+  const int arrowY = footY + metrics.verticalSpacing;
+  const int side = metrics.contentSidePadding;
+  const int count = static_cast<int>(siblingImages.size());
+  prevArrow = currentImageIndex > 0 ? Rect{side, arrowY, ARROW_W, ARROW_H} : Rect{};
+  nextArrow = currentImageIndex >= 0 && currentImageIndex + 1 < count
+                  ? Rect{width - side - ARROW_W, arrowY, ARROW_W, ARROW_H}
+                  : Rect{};
+  const int textH = renderer.getLineHeight(UI_12_FONT_ID);
+  for (const auto& [rect, label] : {std::pair{prevArrow, "<"}, std::pair{nextArrow, ">"}}) {
+    if (rect.width == 0) continue;
+    renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 2, 6, true);
+    const int textW = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::REGULAR);
+    renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textW) / 2, rect.y + (rect.height - textH) / 2, label, true,
+                      EpdFontFamily::REGULAR);
+  }
+  if (currentImageIndex >= 0 && count > 0) {
+    char position[24];
+    snprintf(position, sizeof(position), "%d / %d", currentImageIndex + 1, count);
+    renderer.drawCenteredText(UI_12_FONT_ID, arrowY + (ARROW_H - textH) / 2, position);
+  }
+  overlayShown = true;
+}
+
+void BmpViewerActivity::drawOverlay() {
+  drawOverlayContent();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+// Shows the drawn image, with the bars when they were up before a page change.
+void BmpViewerActivity::showFrame() {
+  if (keepOverlay) drawOverlayContent();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
 void BmpViewerActivity::loop() {
   // Keep CPU awake/polling so 1st click works
   Activity::loop();
@@ -447,6 +532,7 @@ void BmpViewerActivity::loop() {
     if (currentImageIndex < 0) {
       return false;
     }
+    keepOverlay = overlayShown;
     const int nextIndex = currentImageIndex + delta;
     if (siblingImages.size() <= 1 || nextIndex < 0 || nextIndex >= static_cast<int>(siblingImages.size())) {
       return false;
@@ -456,11 +542,36 @@ void BmpViewerActivity::loop() {
     if (dirPath.back() != '/') dirPath += "/";
     filePath = dirPath + siblingImages[currentImageIndex];
     onEnter();
+    keepOverlay = false;
     return true;
   };
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.goToFileBrowser(filePath);
+    if (returnToCaller) {
+      finish();
+    } else {
+      activityManager.goToFileBrowser(filePath);
+    }
+    return;
+  }
+
+  // Like the stock Picco viewer: a tap shows the bars, a tap on an arrow
+  // changes the image, any other tap hides them.
+  int tapX = 0;
+  int tapY = 0;
+  if (BoardConfig::hasTouch() && mappedInput.wasScreenTapped(tapX, tapY)) {
+    const auto inside = [tapX, tapY](const Rect& r) {
+      return r.width > 0 && tapX >= r.x && tapX < r.x + r.width && tapY >= r.y && tapY < r.y + r.height;
+    };
+    if (overlayShown && inside(prevArrow)) {
+      openSibling(-1);
+    } else if (overlayShown && inside(nextArrow)) {
+      openSibling(1);
+    } else if (overlayShown) {
+      onEnter();
+    } else {
+      drawOverlay();
+    }
     return;
   }
 

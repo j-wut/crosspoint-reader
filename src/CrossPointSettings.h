@@ -424,6 +424,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char sleepWallpaperPath[128] = "";
   char readerSleepWallpaperPath[128] = "";
   char powerOffWallpaperPath[128] = "";
+  // Whether each Gallery sleep image keeps its transparency (1) or shows it white (0).
+  uint8_t sleepWallpaperAlpha = 1;
+  uint8_t readerSleepWallpaperAlpha = 1;
+  uint8_t powerOffWallpaperAlpha = 1;
   // Master switch for all SD-card plugin discovery/execution. New installs keep
   // this disabled; settings migration enables it when pre-existing plugin files
   // are found so a firmware update never silently disables an existing setup.
@@ -439,6 +443,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t removeReadBooksFromRecents = 0;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
+  // Write per-feature debug logs to /logs on the SD card (0 = off, 1 = on)
+  uint8_t debugLogging = 0;
   // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
   uint8_t backShortToFileBrowser = 0;
   // Image rendering mode in EPUB reader

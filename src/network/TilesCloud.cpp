@@ -36,6 +36,7 @@
 #include "apps/Wallpaper.h"
 #include "network/boox/BooxDiag.h"
 #include "network/boox/BooxSd.h"
+#include "util/DebugLog.h"
 #include "util/TaskWatchdog.h"
 
 void addToLogRingBuffer(const char* message);  // Logging.cpp
@@ -43,8 +44,9 @@ void addToLogRingBuffer(const char* message);  // Logging.cpp
 namespace tilescloud {
 namespace {
 
-using booxdiag::LOG_PATH;
-using booxdiag::openLog;
+// BOOX Cloud logs go to a separate file per SD stack.
+debuglog::Feature cloudLog() { return debuglog::booxCloud(booxsd::backend() == booxsd::Backend::SdFat); }
+
 // Response bytes kept per request.
 constexpr size_t BODY_CAP = 6 * 1024;
 constexpr const char* NVS_NAMESPACE = "user_cred";
@@ -541,7 +543,7 @@ const char* pushDir(const std::string& name) {
 
 // Log each push item in full, download it to the stock folder for its type
 // and report it as received.
-void handlePushList(booxdiag::LogFile& out, const std::string& body) {
+void handlePushList(debuglog::File& out, const std::string& body) {
   JsonDocument doc;
   if (const DeserializationError err = deserializeJson(doc, body)) {
     out.printf("push list: JSON error %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(body.size()));
@@ -615,8 +617,7 @@ void handlePushList(booxdiag::LogFile& out, const std::string& body) {
       step("net %s HTTP %d len %d got %u %lus", d.netOk ? "ok" : "FAIL", d.status, d.contentLength,
            static_cast<unsigned>(d.written), d.ms / 1000);
       step("SD %s", d.sdResult);
-      out = openLog();
-      if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
+      out = debuglog::open(cloudLog());
       booxdiag::Capture::dumpAndReset(out);
     }
     out.flush();
@@ -949,6 +950,7 @@ std::string clip(const char* text) {
 // that hangs still leaves its last step in the log.
 class LineLog final : public Print {
  public:
+  explicit LineLog(const debuglog::Feature feature) : feature_(feature) {}
   ~LineLog() override { flushLine(); }
   size_t write(const uint8_t c) override {
     if (c == '\n') {
@@ -963,21 +965,22 @@ class LineLog final : public Print {
  private:
   void flushLine() {
     if (line.empty()) return;
-    booxdiag::LogFile log = openLog();
+    debuglog::File log = debuglog::open(feature_);
     if (log) {
       log.println(line.c_str());
       log.close();
     }
     line.clear();
   }
+  debuglog::Feature feature_;
   std::string line;
 };
 
 // Shared steps of syncTodos and syncCountdowns; `parse` turns the list into items.
 template <typename Parse>
-SyncResult syncList(const char* label, const char* path, Parse parse) {
+SyncResult syncList(const debuglog::Feature feature, const char* label, const char* path, Parse parse) {
   if (!BoardConfig::isPicco()) return SyncResult::Skipped;
-  LineLog log;
+  LineLog log(feature);
   log.printf("\n--- %s sync, uptime %lu s, heap %u\n", label, millis() / 1000,
              static_cast<unsigned>(ESP.getFreeHeap()));
   bool joined = false;
@@ -1009,44 +1012,6 @@ SyncResult syncList(const char* label, const char* path, Parse parse) {
 
 }  // namespace
 
-void logLine(const char* format, ...) {
-  if (!BoardConfig::isPicco()) return;
-  char line[256];
-  va_list args;
-  va_start(args, format);
-  vsnprintf(line, sizeof(line), format, args);
-  va_end(args);
-  booxdiag::LogFile log = openLog();
-  if (!log) return;
-  log.printf("[%lu s] %s\n", millis() / 1000, line);
-  log.close();
-}
-
-void logBoot(const int resetReason, const std::string& previousLogs) {
-  if (!BoardConfig::isPicco()) return;
-  booxdiag::LogFile log = openLog();
-  if (!log) return;
-  log.printf("\n### boot %s, reset reason %d\n", CROSSPOINT_VERSION, resetReason);
-  if (!previousLogs.empty()) {
-    log.println("device log before the reset:");
-    log.print(previousLogs.c_str());
-    log.println();
-  }
-  log.close();
-}
-
-void logRecentDeviceLog(const char* why) {
-  if (!BoardConfig::isPicco()) return;
-  const std::string recent = getLastLogs();
-  booxdiag::LogFile log = openLog();
-  if (!log) return;
-  log.printf("[%lu s] recent device log (%s), heap %u, max block %u:\n", millis() / 1000, why,
-             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-  log.print(recent.c_str());
-  log.println();
-  log.close();
-}
-
 std::string mdnsHostname(const char* fallback) {
   if (!BoardConfig::isPicco()) return fallback;
   return "Picco-" + efuseHex();
@@ -1063,8 +1028,7 @@ void probe() {
   if (!BoardConfig::isPicco()) return;
 
   // The check runs even when the card log cannot be opened; log writes then do nothing.
-  booxdiag::LogFile log = openLog();
-  if (!log) LOG_ERR("TILES", "cannot open %s; checking without the card log", LOG_PATH);
+  debuglog::File log = debuglog::open(cloudLog());
   log.printf("\n=== %s, uptime %lu s, heap %u ===\n", CROSSPOINT_VERSION, millis() / 1000,
              static_cast<unsigned>(ESP.getFreeHeap()));
   log.printf("mDNS name %s, MAC %s\n", mdnsHostname("").c_str(), macText().c_str());
@@ -1103,15 +1067,14 @@ void probe() {
     authedGet(log, url.c_str(), "extra", nullptr);
   }
   log.close();
-  LOG_INF("TILES", "probe written to %s", LOG_PATH);
 }
 
 const Status& status() { return g_status; }
 
 bool finishBinding() {
   if (!BoardConfig::isPicco()) return false;
-  booxdiag::LogFile log = openLog();
-  if (!log) return false;
+  // Runs even when the bind log cannot be opened; log writes then do nothing.
+  debuglog::File log = debuglog::open(debuglog::Feature::BooxBind);
   setTlsInPsram(true);
   const bool ok = refreshToken(log);
   log.close();
@@ -1119,7 +1082,7 @@ bool finishBinding() {
 }
 
 SyncResult syncTodos(std::vector<applists::TodoItem>& items) {
-  return syncList("todo", "/todo", [&items](JsonArrayConst list, Print& log) {
+  return syncList(debuglog::Feature::Todo, "todo", "/todo", [&items](JsonArrayConst list, Print& log) {
     std::vector<applists::TodoItem> cloud;
     for (JsonObjectConst entry : list) {
       applists::TodoItem item;
@@ -1136,28 +1099,29 @@ SyncResult syncTodos(std::vector<applists::TodoItem>& items) {
 }
 
 SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items) {
-  return syncList("countdown", "/countdownDay", [&items](JsonArrayConst list, Print& log) {
-    std::vector<applists::CountdownItem> cloud;
-    for (JsonObjectConst entry : list) {
-      applists::CountdownItem item;
-      item.title = clip(entry["title"] | "");
-      item.cloudId = idOf(entry);
-      const bool dated = cloudDate(entry["date"], item);
-      std::string rawDate;
-      serializeJson(entry["date"], rawDate);
-      log.printf("  countdown id=%s date=%s -> %04d-%02d-%02d status=%d\n", item.cloudId.c_str(), rawDate.c_str(),
-                 item.year, item.month, item.day, entry["status"] | -1);
-      if (!item.title.empty() && dated && cloud.size() < applists::MAX_COUNTDOWNS) cloud.push_back(std::move(item));
-    }
-    applists::mergeCloudCountdowns(items, std::move(cloud));
-    log.printf("countdown list now %u items\n", static_cast<unsigned>(items.size()));
-  });
+  return syncList(debuglog::Feature::Countdown, "countdown", "/countdownDay",
+                  [&items](JsonArrayConst list, Print& log) {
+                    std::vector<applists::CountdownItem> cloud;
+                    for (JsonObjectConst entry : list) {
+                      applists::CountdownItem item;
+                      item.title = clip(entry["title"] | "");
+                      item.cloudId = idOf(entry);
+                      const bool dated = cloudDate(entry["date"], item);
+                      std::string rawDate;
+                      serializeJson(entry["date"], rawDate);
+                      log.printf("  countdown id=%s date=%s -> %04d-%02d-%02d status=%d\n", item.cloudId.c_str(),
+                                 rawDate.c_str(), item.year, item.month, item.day, entry["status"] | -1);
+                      if (!item.title.empty() && dated && cloud.size() < applists::MAX_COUNTDOWNS)
+                        cloud.push_back(std::move(item));
+                    }
+                    applists::mergeCloudCountdowns(items, std::move(cloud));
+                    log.printf("countdown list now %u items\n", static_cast<unsigned>(items.size()));
+                  });
 }
 
 void poll() {
   if (!BoardConfig::isPicco() || g_authorization.empty()) return;
-  booxdiag::LogFile log = openLog();
-  if (!log) LOG_ERR("TILES", "cannot open %s; checking without the card log", LOG_PATH);
+  debuglog::File log = debuglog::open(cloudLog());
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;
   g_status.lastHttp = authedGet(log, PUSH_LIST_URL, "poll", &body, PUSH_LIST_CAP);

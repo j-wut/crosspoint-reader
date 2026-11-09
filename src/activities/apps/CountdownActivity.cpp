@@ -19,6 +19,7 @@ namespace fui = freeink::ui;
 
 void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
+  LOG_INF("CDN", "opened: %u items", static_cast<unsigned>(items.size()));
   sortAndRefresh();
   UiListActivity::onEnter();
   app.on(ACTION_HEADER, &CountdownActivity::headerActionTrampoline, this);
@@ -106,6 +107,8 @@ bool CountdownActivity::handleCustomInput() {
   tilescloud::SyncResult result;
   if (!sync.take(synced, result)) return false;
   stopOwnWifi();
+  LOG_INF("CDN", "sync result %d: %u cloud items, edited meanwhile %d", static_cast<int>(result),
+          static_cast<unsigned>(synced.size()), editedDuringSync ? 1 : 0);
   // An edit made meanwhile wins; sync again to pick up the cloud list.
   if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
     items = std::move(synced);
@@ -160,6 +163,7 @@ void CountdownActivity::refreshRows() {
 void CountdownActivity::deleteRow(const int row) {
   const int index = itemAt(row);
   if (index < 0) return;
+  LOG_INF("CDN", "delete item %d", index);
   items.erase(items.begin() + index);
   if (sync.running()) editedDuringSync = true;
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");

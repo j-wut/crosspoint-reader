@@ -43,7 +43,8 @@ class ImageToFramebufferDecoder {
 
   // Validate decoder/header dimensions before narrowing them into the layout
   // representation. Shared by header probing and decoder fallbacks.
-  static bool validateAndStoreDimensions(int64_t width, int64_t height, ImageDimensions& out, const char* format);
+  static bool validateAndStoreDimensions(int64_t width, int64_t height, ImageDimensions& out, const char* format,
+                                         int64_t maxPixels = MAX_SOURCE_PIXELS);
 
  protected:
   // Size validation helpers. The cap bounds decode TIME, not memory: both decoders

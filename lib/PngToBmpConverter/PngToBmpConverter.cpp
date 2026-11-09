@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -323,6 +324,49 @@ static bool decodeScanline(PngDecodeContext& ctx) {
   return true;
 }
 
+// Transparent pixels are shown over white.
+static inline uint8_t overWhite(const int gray, const int alpha) {
+  return static_cast<uint8_t>((gray * alpha + 255 * (255 - alpha)) / 255);
+}
+
+// Grayscale value of one pixel of the current scanline, using the same
+// weights as convertScanlineToGray. Used when only some columns are sampled.
+static uint8_t grayPixel(const PngDecodeContext& ctx, const uint32_t x) {
+  const uint8_t* src = ctx.currentRow;
+  switch (ctx.colorType) {
+    case PNG_COLOR_GRAYSCALE:
+      if (ctx.bitDepth == 8) return src[x];
+      if (ctx.bitDepth == 16) return src[x * 2];
+      {
+        const int ppb = 8 / ctx.bitDepth;
+        const uint8_t mask = (1 << ctx.bitDepth) - 1;
+        const int shift = (ppb - 1 - (x % ppb)) * ctx.bitDepth;
+        return (src[x / ppb] >> shift & mask) * 255 / mask;
+      }
+    case PNG_COLOR_RGB:
+      if (ctx.bitDepth == 8) return (src[x * 3] * 25 + src[x * 3 + 1] * 50 + src[x * 3 + 2] * 25) / 100;
+      return (src[x * 6] * 25 + src[x * 6 + 2] * 50 + src[x * 6 + 4] * 25) / 100;
+    case PNG_COLOR_PALETTE: {
+      const int ppb = 8 / ctx.bitDepth;
+      const uint8_t mask = (1 << ctx.bitDepth) - 1;
+      const int shift = (ppb - 1 - (x % ppb)) * ctx.bitDepth;
+      uint8_t idx = (src[x / ppb] >> shift) & mask;
+      if (idx >= ctx.paletteSize) idx = 0;
+      const uint8_t* pal = ctx.palette;
+      return (pal[idx * 3] * 25 + pal[idx * 3 + 1] * 50 + pal[idx * 3 + 2] * 25) / 100;
+    }
+    case PNG_COLOR_GRAYSCALE_ALPHA:
+      return ctx.bitDepth == 8 ? overWhite(src[x * 2], src[x * 2 + 1]) : overWhite(src[x * 4], src[x * 4 + 2]);
+    case PNG_COLOR_RGBA:
+      if (ctx.bitDepth == 8) {
+        return overWhite((src[x * 4] * 25 + src[x * 4 + 1] * 50 + src[x * 4 + 2] * 25) / 100, src[x * 4 + 3]);
+      }
+      return overWhite((src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100, src[x * 8 + 6]);
+    default:
+      return 128;
+  }
+}
+
 // Batch-convert an entire scanline to grayscale.
 // Branches once on colorType/bitDepth, then runs a tight loop for the whole row.
 static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow) {
@@ -375,9 +419,9 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
 
     case PNG_COLOR_GRAYSCALE_ALPHA:
       if (ctx.bitDepth == 8) {
-        for (uint32_t x = 0; x < w; x++) grayRow[x] = src[x * 2];
+        for (uint32_t x = 0; x < w; x++) grayRow[x] = overWhite(src[x * 2], src[x * 2 + 1]);
       } else {
-        for (uint32_t x = 0; x < w; x++) grayRow[x] = src[x * 4];
+        for (uint32_t x = 0; x < w; x++) grayRow[x] = overWhite(src[x * 4], src[x * 4 + 2]);
       }
       break;
 
@@ -385,11 +429,11 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
       if (ctx.bitDepth == 8) {
         for (uint32_t x = 0; x < w; x++) {
           const uint8_t* p = src + x * 4;
-          grayRow[x] = (p[0] * 25 + p[1] * 50 + p[2] * 25) / 100;
+          grayRow[x] = overWhite((p[0] * 25 + p[1] * 50 + p[2] * 25) / 100, p[3]);
         }
       } else {
         for (uint32_t x = 0; x < w; x++) {
-          grayRow[x] = (src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100;
+          grayRow[x] = overWhite((src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100, src[x * 8 + 6]);
         }
       }
       break;
@@ -448,11 +492,14 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     return false;
   }
 
-  // Safety limits
-  constexpr int MAX_IMAGE_WIDTH = 2048;
-  constexpr int MAX_IMAGE_HEIGHT = 3072;
+  // Safety limits. Rows are streamed and scaled output buffers are sized by
+  // the target, so a scaled conversion can take larger sources; the row
+  // byte check below still bounds memory.
+  const bool scaledOutput = targetWidth > 0 && targetHeight > 0;
+  const uint32_t maxWidth = scaledOutput ? 8192 : 2048;
+  const uint32_t maxHeight = scaledOutput ? 8192 : 3072;
 
-  if (width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT || width == 0 || height == 0) {
+  if (width > maxWidth || height > maxHeight || width == 0 || height == 0) {
     LOG_ERR("PNG", "Image too large or zero (%ux%u)", width, height);
     return false;
   }
@@ -540,6 +587,17 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       pngFile.read(ctx.palette, palBytes);
       // Skip any remaining palette data
       if (chunkLen > palBytes) pngFile.seekCur(chunkLen - palBytes);
+      pngFile.seekCur(4);  // CRC
+    } else if (memcmp(chunkType, "tRNS", 4) == 0 && colorType == PNG_COLOR_PALETTE) {
+      // Palette alpha: blend those entries over white once, up front.
+      const uint32_t entries = chunkLen < 256 ? chunkLen : 256;
+      uint8_t alpha[256];
+      const int readBytes = pngFile.read(alpha, entries);
+      const uint32_t got = readBytes > 0 ? static_cast<uint32_t>(readBytes) : 0;
+      for (uint32_t i = 0; i < got && static_cast<int>(i) < ctx.paletteSize; i++) {
+        for (int c = 0; c < 3; c++) ctx.palette[i * 3 + c] = overWhite(ctx.palette[i * 3 + c], alpha[i]);
+      }
+      if (chunkLen > got) pngFile.seekCur(chunkLen - got);
       pngFile.seekCur(4);  // CRC
     } else if (memcmp(chunkType, "IDAT", 4) == 0) {
       ctx.chunkBytesRemaining = chunkLen;
@@ -651,6 +709,9 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     }
   }
 
+  // Source rows and columns averaged per output pixel when shrinking.
+  constexpr int MAX_SAMPLES_PER_AXIS = 2;
+
   // Scaling accumulators
   std::unique_ptr<uint32_t[]> rowAccum;
   std::unique_ptr<uint32_t[]> rowCount;
@@ -679,8 +740,16 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       break;
     }
 
-    // Batch-convert entire scanline to grayscale (one branch, tight loop)
-    convertScanlineToGray(ctx, grayRow);
+    // Every scanline must be inflated and unfiltered, since each row depends
+    // on the one before it. When scaling, only the first rows and columns of
+    // each output pixel's area are converted and averaged.
+    const bool sampleRow =
+        !needsScaling ||
+        y < ((static_cast<uint64_t>(currentOutY) * scaleY_fp) >> 16) + MAX_SAMPLES_PER_AXIS;
+    if (!needsScaling) {
+      // Batch-convert entire scanline to grayscale (one branch, tight loop)
+      convertScanlineToGray(ctx, grayRow);
+    }
 
     if (!needsScaling) {
       // Direct output (no scaling)
@@ -722,20 +791,21 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       bmpOut.write(rowBuffer, bytesPerRow);
       yieldDuringDecode(rowsSinceYield);
     } else {
-      // Area-averaging scaling (same as JpegToBmpConverter)
-      for (int outX = 0; outX < outWidth; outX++) {
+      // Area-averaging scaling over a sampled subset of each area
+      for (int outX = 0; sampleRow && outX < outWidth; outX++) {
         const int srcXStart = (static_cast<uint32_t>(outX) * scaleX_fp) >> 16;
-        const int srcXEnd = (static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16;
+        const int srcXEnd = std::min<int>((static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16,
+                                          srcXStart + MAX_SAMPLES_PER_AXIS);
 
         int sum = 0;
         int count = 0;
         for (int srcX = srcXStart; srcX < srcXEnd && srcX < static_cast<int>(width); srcX++) {
-          sum += grayRow[srcX];
+          sum += grayPixel(ctx, srcX);
           count++;
         }
 
         if (count == 0 && srcXStart < static_cast<int>(width)) {
-          sum = grayRow[srcXStart];
+          sum = grayPixel(ctx, srcXStart);
           count = 1;
         }
 
@@ -830,6 +900,6 @@ bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpO
 }
 
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
-                                                       int targetMaxHeight) {
-  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+                                                       int targetMaxHeight, const bool crop) {
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, crop);
 }

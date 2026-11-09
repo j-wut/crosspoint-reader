@@ -22,6 +22,7 @@
 #include "network/boox/BooxDiag.h"
 #include "network/boox/BooxLan.h"
 #include "network/boox/BooxSd.h"
+#include "util/DebugLog.h"
 #include "util/PluginEvents.h"
 #include "util/QrUtils.h"
 #include "util/TaskWatchdog.h"
@@ -138,8 +139,11 @@ void CrossPointWebServerActivity::onExit() {
   // session in place, so re-read event subscriptions here.
   pluginevents::refreshSubscriptions();
 
-  tilescloud::logLine("file transfer closed, restarting: %d", WiFi.getMode() != WIFI_MODE_NULL);
-  tilescloud::logRecentDeviceLog("file transfer closed");
+  const debuglog::Feature logFeature = !isBooxMode(networkMode) ? debuglog::Feature::FileTransfer
+                                       : isBooxLan(networkMode) ? debuglog::booxLan(isBooxSdFat(networkMode))
+                                                                : debuglog::booxCloud(isBooxSdFat(networkMode));
+  debuglog::line(logFeature, "file transfer closed, restarting: %d", WiFi.getMode() != WIFI_MODE_NULL);
+  debuglog::recentDeviceLog(logFeature, "file transfer closed");
   // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     if (isApMode) {
@@ -288,7 +292,8 @@ void CrossPointWebServerActivity::startBoox() {
   booxdiag::logPowerState(lan ? "BOOX LAN start" : "BOOX Cloud start");
   booxSdFailed = !booxsd::mount(backend);
   if (!booxSdFailed && lan) booxLanFailed = !booxlan::start();
-  if (booxdiag::LogFile log = booxdiag::openLog()) {
+  if (debuglog::File log = debuglog::open(lan ? debuglog::booxLan(backend == booxsd::Backend::SdFat)
+                                              : debuglog::booxCloud(backend == booxsd::Backend::SdFat))) {
     log.printf("\n=== [%lu s] %s, %s, %s, SD %s, IP %s ===\n", millis() / 1000, lan ? "BOOX LAN" : "BOOX Cloud",
                booxsd::backendName(backend), CROSSPOINT_VERSION, booxSdFailed ? "mount FAILED" : "mounted",
                connectedIP.c_str());
