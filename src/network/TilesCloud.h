@@ -58,6 +58,10 @@ SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items);
 // token for this device yet. Needs Wi-Fi. Picco only.
 bool finishBinding();
 
+// At boot: note the reset reason and, when given, the previous session's
+// device log (Picco only).
+void logBoot(int resetReason, const std::string& previousLogs);
+
 // Append the device's recent log lines to the same log, under `why` (Picco only).
 void logRecentDeviceLog(const char* why);
 

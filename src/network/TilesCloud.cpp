@@ -904,6 +904,19 @@ void logLine(const char* format, ...) {
   log.close();
 }
 
+void logBoot(const int resetReason, const std::string& previousLogs) {
+  if (!BoardConfig::isPicco()) return;
+  HalFile log = openLog();
+  if (!log) return;
+  log.printf("\n### boot %s, reset reason %d\n", CROSSPOINT_VERSION, resetReason);
+  if (!previousLogs.empty()) {
+    log.println("device log before the reset:");
+    log.print(previousLogs.c_str());
+    log.println();
+  }
+  log.close();
+}
+
 void logRecentDeviceLog(const char* why) {
   if (!BoardConfig::isPicco()) return;
   const std::string recent = getLastLogs();
