@@ -193,6 +193,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     LONG_PWR_READER_MENU = 6,
     LONG_PWR_CREATE_CLIPPING = 7,
     LONG_PWR_FRONTLIGHT = 8,
+    LONG_PWR_SHUTDOWN = 9,  // Picco only: Power Off popup
     LONG_PWRBTN_COUNT
   };
 

@@ -249,7 +249,8 @@ inline SettingInfo buildShortPowerButtonSetting() {
                                   setShortPowerButtonFromDisplayValue, "shortPwrBtn", StrId::STR_CAT_CONTROLS);
 }
 
-// Hold actions; Toggle Frontlight only where there is a light.
+// Hold actions; Toggle Frontlight only where there is a light, Power Off only
+// where it cuts the battery (Picco; Xteink sleep already does).
 inline std::vector<ShortPowerButtonOption> longPowerButtonOptions() {
   std::vector<ShortPowerButtonOption> options = {{StrId::STR_SLEEP, CrossPointSettings::LONG_PWR_SLEEP}};
   options.reserve(CrossPointSettings::LONG_PWRBTN_COUNT);
@@ -262,6 +263,9 @@ inline std::vector<ShortPowerButtonOption> longPowerButtonOptions() {
   options.push_back({StrId::STR_SAVE_CLIPPING, CrossPointSettings::LONG_PWR_CREATE_CLIPPING});
   if (Frontlight.present()) {
     options.push_back({StrId::STR_TOGGLE_FRONTLIGHT, CrossPointSettings::LONG_PWR_FRONTLIGHT});
+  }
+  if (BoardConfig::isPicco()) {
+    options.push_back({StrId::STR_POWER_OFF, CrossPointSettings::LONG_PWR_SHUTDOWN});
   }
   return options;
 }

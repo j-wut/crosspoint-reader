@@ -521,6 +521,8 @@ PowerHold powerHoldAction() {
     case CrossPointSettings::LONG_PWR_FRONTLIGHT:
       // Not listed without a frontlight, where the menu shows Sleep.
       return Frontlight.present() ? PowerHold::Action : PowerHold::Sleep;
+    case CrossPointSettings::LONG_PWR_SHUTDOWN:
+      return BoardConfig::isPicco() ? PowerHold::Action : PowerHold::Sleep;
     default:
       return PowerHold::Action;
   }
@@ -1266,6 +1268,13 @@ void loop() {
     }
     LOG_DBG("MAIN", "Power button held %lums, hold action %u", gpio.getPowerButtonHeldTime(), SETTINGS.longPwrBtn);
     mappedInputManager.firePowerHold(powerHoldHomeAction());
+    if (SETTINGS.longPwrBtn == CrossPointSettings::LONG_PWR_SHUTDOWN) activityManager.showPowerOffPopup();
+  }
+
+  if (activityManager.consumePowerOffRequest()) {
+    LOG_DBG("MAIN", "Power Off popup confirmed, shutting down");
+    enterDeepSleep(false, true);
+    return;
   }
 
   // Short Sleep with a hold bound elsewhere sleeps on release instead of on
