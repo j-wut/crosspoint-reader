@@ -1175,7 +1175,7 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
   if (frameWasInverted) renderer.invertScreen();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   releaseSdFontCachesForDecode(renderer);
-  const wallpaper::DrawResult drawn = wallpaper::drawOpg(renderer, path);
+  const wallpaper::DrawResult drawn = wallpaper::drawOpg(renderer, path, wallpaper::keepsAlpha(kind));
   if (!drawn.ok) {
     LOG_ERR("SLP", "gallery wallpaper draw failed: %s", path.c_str());
     if (frameWasInverted) renderer.invertScreen();

@@ -48,7 +48,9 @@ class GalleryActivity final : public Activity, private UiAppHost {
   bool saveOnePreview();
   void activate(int item);
   void openImage(int index);
-  void runAction(int image, int action);
+  // keepAlpha: whether a transparent .opg keeps its transparency as a sleep screen.
+  void runAction(int image, int action, bool keepAlpha);
+  void askKeepAlpha(int index, int action);
   void select(int item);
 
   ButtonNavigator buttonNavigator;

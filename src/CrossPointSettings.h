@@ -422,6 +422,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char sleepWallpaperPath[128] = "";
   char readerSleepWallpaperPath[128] = "";
   char powerOffWallpaperPath[128] = "";
+  // Whether each Gallery sleep image keeps its transparency (1) or shows it white (0).
+  uint8_t sleepWallpaperAlpha = 1;
+  uint8_t readerSleepWallpaperAlpha = 1;
+  uint8_t powerOffWallpaperAlpha = 1;
   // Master switch for all SD-card plugin discovery/execution. New installs keep
   // this disabled; settings migration enables it when pre-existing plugin files
   // are found so a firmware update never silently disables an existing setup.

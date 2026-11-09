@@ -324,6 +324,11 @@ static bool decodeScanline(PngDecodeContext& ctx) {
   return true;
 }
 
+// Transparent pixels are shown over white.
+static inline uint8_t overWhite(const int gray, const int alpha) {
+  return static_cast<uint8_t>((gray * alpha + 255 * (255 - alpha)) / 255);
+}
+
 // Grayscale value of one pixel of the current scanline, using the same
 // weights as convertScanlineToGray. Used when only some columns are sampled.
 static uint8_t grayPixel(const PngDecodeContext& ctx, const uint32_t x) {
@@ -351,10 +356,12 @@ static uint8_t grayPixel(const PngDecodeContext& ctx, const uint32_t x) {
       return (pal[idx * 3] * 25 + pal[idx * 3 + 1] * 50 + pal[idx * 3 + 2] * 25) / 100;
     }
     case PNG_COLOR_GRAYSCALE_ALPHA:
-      return ctx.bitDepth == 8 ? src[x * 2] : src[x * 4];
+      return ctx.bitDepth == 8 ? overWhite(src[x * 2], src[x * 2 + 1]) : overWhite(src[x * 4], src[x * 4 + 2]);
     case PNG_COLOR_RGBA:
-      if (ctx.bitDepth == 8) return (src[x * 4] * 25 + src[x * 4 + 1] * 50 + src[x * 4 + 2] * 25) / 100;
-      return (src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100;
+      if (ctx.bitDepth == 8) {
+        return overWhite((src[x * 4] * 25 + src[x * 4 + 1] * 50 + src[x * 4 + 2] * 25) / 100, src[x * 4 + 3]);
+      }
+      return overWhite((src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100, src[x * 8 + 6]);
     default:
       return 128;
   }
@@ -412,9 +419,9 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
 
     case PNG_COLOR_GRAYSCALE_ALPHA:
       if (ctx.bitDepth == 8) {
-        for (uint32_t x = 0; x < w; x++) grayRow[x] = src[x * 2];
+        for (uint32_t x = 0; x < w; x++) grayRow[x] = overWhite(src[x * 2], src[x * 2 + 1]);
       } else {
-        for (uint32_t x = 0; x < w; x++) grayRow[x] = src[x * 4];
+        for (uint32_t x = 0; x < w; x++) grayRow[x] = overWhite(src[x * 4], src[x * 4 + 2]);
       }
       break;
 
@@ -422,11 +429,11 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
       if (ctx.bitDepth == 8) {
         for (uint32_t x = 0; x < w; x++) {
           const uint8_t* p = src + x * 4;
-          grayRow[x] = (p[0] * 25 + p[1] * 50 + p[2] * 25) / 100;
+          grayRow[x] = overWhite((p[0] * 25 + p[1] * 50 + p[2] * 25) / 100, p[3]);
         }
       } else {
         for (uint32_t x = 0; x < w; x++) {
-          grayRow[x] = (src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100;
+          grayRow[x] = overWhite((src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100, src[x * 8 + 6]);
         }
       }
       break;
@@ -580,6 +587,17 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       pngFile.read(ctx.palette, palBytes);
       // Skip any remaining palette data
       if (chunkLen > palBytes) pngFile.seekCur(chunkLen - palBytes);
+      pngFile.seekCur(4);  // CRC
+    } else if (memcmp(chunkType, "tRNS", 4) == 0 && colorType == PNG_COLOR_PALETTE) {
+      // Palette alpha: blend those entries over white once, up front.
+      const uint32_t entries = chunkLen < 256 ? chunkLen : 256;
+      uint8_t alpha[256];
+      const int readBytes = pngFile.read(alpha, entries);
+      const uint32_t got = readBytes > 0 ? static_cast<uint32_t>(readBytes) : 0;
+      for (uint32_t i = 0; i < got && static_cast<int>(i) < ctx.paletteSize; i++) {
+        for (int c = 0; c < 3; c++) ctx.palette[i * 3 + c] = overWhite(ctx.palette[i * 3 + c], alpha[i]);
+      }
+      if (chunkLen > got) pngFile.seekCur(chunkLen - got);
       pngFile.seekCur(4);  // CRC
     } else if (memcmp(chunkType, "IDAT", 4) == 0) {
       ctx.chunkBytesRemaining = chunkLen;

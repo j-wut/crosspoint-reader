@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
@@ -32,17 +33,24 @@ constexpr int16_t BAR_HEIGHT = 44;
 const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
 const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
 
-// Option picker for one image, drawn over the Gallery list.
+// Option picker for one image, drawn over the Gallery list. Back cancels.
 class GalleryImageActivity final : public Activity {
  public:
-  GalleryImageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string name)
-      : Activity("GalleryImage", renderer, mappedInput), name(std::move(name)) {}
+  GalleryImageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* title, std::string name,
+                       std::vector<const char*> labels)
+      : Activity("GalleryImage", renderer, mappedInput),
+        title(title),
+        name(std::move(name)),
+        labels(std::move(labels)) {}
 
   void onEnter() override {
     Activity::onEnter();
-    labels = {tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN), tr(STR_SET_POWER_OFF_SCREEN),
-              tr(STR_DELETE)};
-    popup.show(tr(STR_APP_GALLERY), name.c_str(), labels.data(), ACTION_COUNT, 0,
+    {
+      // Keep the screen under the popup so the next popup or screen starts clean.
+      RenderLock lock(*this);
+      background = renderer.storeBwBuffer();
+    }
+    popup.show(title, name.c_str(), labels.data(), static_cast<int>(labels.size()), 0,
                [this](const int action) { chosen = action; });
     requestUpdate();
   }
@@ -60,11 +68,21 @@ class GalleryImageActivity final : public Activity {
     finish();
   }
 
+  void onExit() override {
+    if (background) {
+      RenderLock lock(*this);
+      renderer.restoreBwBuffer(false);
+    }
+    Activity::onExit();
+  }
+
   void render(RenderLock&&) override { popup.processRender(renderer, mappedInput); }
 
  private:
+  bool background = false;
+  const char* title;
   std::string name;
-  std::array<const char*, ACTION_COUNT> labels{};
+  std::vector<const char*> labels;
   OptionPopup popup;
   int chosen = -1;
 };
@@ -191,7 +209,10 @@ void GalleryActivity::activate(const int item) {
 }
 
 void GalleryActivity::openImage(const int index) {
-  auto menu = makeUniqueNoThrow<GalleryImageActivity>(renderer, mappedInput, names[index]);
+  auto menu = makeUniqueNoThrow<GalleryImageActivity>(
+      renderer, mappedInput, tr(STR_APP_GALLERY), names[index],
+      std::vector<const char*>{tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN),
+                               tr(STR_SET_POWER_OFF_SCREEN), tr(STR_DELETE)});
   if (!menu) {
     LOG_ERR("GAL", "OOM: image menu");
     return;
@@ -199,7 +220,28 @@ void GalleryActivity::openImage(const int index) {
   startActivityForResult(std::move(menu), [this, index](const ActivityResult& result) {
     if (result.isCancelled) return;
     const auto* menuResult = std::get_if<MenuResult>(&result.data);
-    if (menuResult) runAction(index, menuResult->action);
+    if (!menuResult) return;
+    const int action = menuResult->action;
+    const bool setsSleep = action == SET_SLEEP || action == SET_READING || action == SET_POWER_OFF;
+    if (setsSleep && wallpaper::opgHasAlpha(images[index])) {
+      askKeepAlpha(index, action);
+    } else {
+      runAction(index, action, true);
+    }
+  });
+}
+
+void GalleryActivity::askKeepAlpha(const int index, const int action) {
+  auto ask = makeUniqueNoThrow<GalleryImageActivity>(renderer, mappedInput, tr(STR_KEEP_TRANSPARENCY), names[index],
+                                                     std::vector<const char*>{tr(STR_YES), tr(STR_NO)});
+  if (!ask) {
+    LOG_ERR("GAL", "OOM: transparency choice");
+    return;
+  }
+  startActivityForResult(std::move(ask), [this, index, action](const ActivityResult& result) {
+    if (result.isCancelled) return;
+    const auto* choice = std::get_if<MenuResult>(&result.data);
+    if (choice) runAction(index, action, choice->action == 0);
   });
 }
 
@@ -285,7 +327,7 @@ void GalleryActivity::loop() {
   });
 }
 
-void GalleryActivity::runAction(const int image, const int action) {
+void GalleryActivity::runAction(const int image, const int action, const bool keepAlpha) {
   if (image < 0 || image >= static_cast<int>(images.size())) return;
   const std::string path = images[image];
   switch (action) {
@@ -305,7 +347,7 @@ void GalleryActivity::runAction(const int image, const int action) {
       std::string bmp;
       // Check now that the sleep screen will be able to draw it.
       const bool ok = (wallpaper::isOpg(path) || wallpaper::screenBmp(path, bmp)) &&
-                      wallpaper::setWallpaper(path, wallpaper::POWER_OFF);
+                      wallpaper::setWallpaper(path, wallpaper::POWER_OFF, keepAlpha);
       LOG_INF("GAL", "power-off image %s: %s", path.c_str(), ok ? "ok" : "failed");
       GUI.drawPopup(renderer, ok ? tr(STR_DONE) : tr(STR_SET_SLEEP_SCREEN_FAILED));
       delay(1000);
@@ -317,7 +359,7 @@ void GalleryActivity::runAction(const int image, const int action) {
       const bool reading = action == SET_READING;
       bool ok = wallpaper::setAs(path, reading ? wallpaper::READING_PATH : wallpaper::SLEEP_PATH);
       // The source path lets the sleep screen keep an .opg's transparency.
-      ok = ok && wallpaper::setWallpaper(path, reading ? wallpaper::READING : wallpaper::SLEEP);
+      ok = ok && wallpaper::setWallpaper(path, reading ? wallpaper::READING : wallpaper::SLEEP, keepAlpha);
       if (ok && !reading && SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM) {
         SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
         SETTINGS.saveToFile();

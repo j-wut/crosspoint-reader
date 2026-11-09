@@ -64,8 +64,13 @@ enum Kind : uint8_t { SLEEP = 0, READING = 1, POWER_OFF = 2 };
 
 // Stored image path for the screen ("" = none).
 const char* storedPath(Kind kind);
-// Store (or with "" clear) the image for the screen. Saves settings.
-bool setWallpaper(const std::string& path, Kind kind);
+// Store (or with "" clear) the image for the screen and whether it keeps
+// its transparency. Saves settings.
+bool setWallpaper(const std::string& path, Kind kind, bool keepAlpha = true);
+// Whether the screen's image keeps its transparency.
+bool keepsAlpha(Kind kind);
+// True when the file is an .opg image with an alpha channel.
+bool opgHasAlpha(const std::string& path);
 
 // Gallery log: while capturing, every log line is kept in memory; flushLog
 // appends them to LOG_PATH on the card (renamed to .old past 64 KB).
@@ -81,7 +86,8 @@ struct DrawResult {
 // Draw an .opg image into the frame buffer like the stock firmware: shrunk to
 // fit when larger than the screen, centred. The file says whether it has an
 // alpha channel: transparent pixels keep what is already on screen, and
-// images without alpha clear the screen to white first.
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path);
+// images without alpha clear the screen to white first. With keepAlpha
+// false, transparent pixels are white.
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, bool keepAlpha = true);
 
 }  // namespace wallpaper

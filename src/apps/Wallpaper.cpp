@@ -548,22 +548,45 @@ char* storedField(const Kind kind) {
       return SETTINGS.sleepWallpaperPath;
   }
 }
+
+uint8_t& alphaField(const Kind kind) {
+  switch (kind) {
+    case READING:
+      return SETTINGS.readerSleepWallpaperAlpha;
+    case POWER_OFF:
+      return SETTINGS.powerOffWallpaperAlpha;
+    default:
+      return SETTINGS.sleepWallpaperAlpha;
+  }
+}
 }  // namespace
 
 const char* storedPath(const Kind kind) { return storedField(kind); }
 
-bool setWallpaper(const std::string& path, const Kind kind) {
+bool keepsAlpha(const Kind kind) { return alphaField(kind) != 0; }
+
+bool opgHasAlpha(const std::string& path) {
+  if (!isOpg(path)) return false;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", path, in)) return false;
+  OpgPage page;
+  return parseOpg(in, path, page) && page.hasAlpha();
+}
+
+bool setWallpaper(const std::string& path, const Kind kind, const bool keepAlpha) {
   char* field = storedField(kind);
+  uint8_t& alpha = alphaField(kind);
   const size_t size = sizeof(SETTINGS.sleepWallpaperPath);
   if (path.size() >= size) {
     LOG_ERR("WALL", "wallpaper path too long (%u): %s", static_cast<unsigned>(path.size()), path.c_str());
     return false;
   }
-  if (path == field) return true;
+  if (path == field && alpha == keepAlpha) return true;
   strncpy(field, path.c_str(), size - 1);
   field[size - 1] = '\0';
+  alpha = keepAlpha ? 1 : 0;
   const bool ok = SETTINGS.saveToFile();
-  LOG_INF("WALL", "wallpaper set kind=%u path='%s' saved=%d", kind, path.c_str(), ok);
+  LOG_INF("WALL", "wallpaper set kind=%u path='%s' keepAlpha=%d saved=%d", kind, path.c_str(), keepAlpha, ok);
   return ok;
 }
 
@@ -626,7 +649,7 @@ void stopLogCapture() {
   std::string().swap(logLines);
 }
 
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path) {
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool keepAlpha) {
   DrawResult result;
   HalFile in;
   if (!Storage.openFileForRead("WALL", path, in)) {
@@ -655,9 +678,10 @@ DrawResult drawOpg(GfxRenderer& renderer, const std::string& path) {
   }
   const int x0 = (screenW - dstW) / 2;
   const int y0 = (screenH - dstH) / 2;
-  result.hasAlpha = page.hasAlpha();
-  LOG_INF("WALL", "drawing opg %s %ux%u -> %dx%d at %d,%d ga=%d channel bits %u pixel bits %u", path.c_str(),
-          page.width, page.height, dstW, dstH, x0, y0, result.hasAlpha, page.channelBits, page.pixelBits);
+  const bool fileAlpha = page.hasAlpha();
+  result.hasAlpha = fileAlpha && keepAlpha;
+  LOG_INF("WALL", "drawing opg %s %ux%u -> %dx%d at %d,%d ga=%d keep=%d channel bits %u pixel bits %u", path.c_str(),
+          page.width, page.height, dstW, dstH, x0, y0, fileAlpha, keepAlpha, page.channelBits, page.pixelBits);
 
   if (!result.hasAlpha) renderer.clearScreen(0xFF);
   const uint8_t maxLevel = static_cast<uint8_t>((1u << page.channelBits) - 1);
@@ -674,7 +698,8 @@ DrawResult drawOpg(GfxRenderer& renderer, const std::string& path) {
     for (int x = 0; x < dstW; ++x) {
       const uint32_t sx = static_cast<uint32_t>(static_cast<int64_t>(x) * page.width / dstW);
       const uint32_t bit = sx * page.pixelBits;
-      if (result.hasAlpha && readBits(src.get(), bit + page.channelBits, page.channelBits) * 2 <= maxLevel) continue;
+      // Transparent: keep the screen, or the white cleared above.
+      if (fileAlpha && readBits(src.get(), bit + page.channelBits, page.channelBits) * 2 <= maxLevel) continue;
       const bool black = readBits(src.get(), bit, page.channelBits) * 2 <= maxLevel;
       renderer.drawPixel(x0 + x, y0 + y, black);
     }
