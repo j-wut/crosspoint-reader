@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
+#include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <mbedtls/sha256.h>
@@ -31,6 +32,8 @@
 #include "WifiCredentialStore.h"
 #include "apps/Wallpaper.h"
 #include "util/TaskWatchdog.h"
+
+void addToLogRingBuffer(const char* message);  // Logging.cpp
 
 namespace tilescloud {
 namespace {
@@ -357,6 +360,47 @@ const char* sdWriteTest() {
   return "ok";
 }
 
+// While alive, copies ESP-IDF error and warning lines (such as the SD card
+// driver's) into the device log ring, which survives the restart.
+class IdfLogCapture {
+ public:
+  IdfLogCapture() {
+    for (size_t i = 0; i < TAG_COUNT; ++i) {
+      levels[i] = esp_log_level_get(TAGS[i]);
+      if (levels[i] < ESP_LOG_WARN) esp_log_level_set(TAGS[i], ESP_LOG_WARN);
+    }
+    previous = esp_log_set_vprintf(capture);
+  }
+  ~IdfLogCapture() {
+    esp_log_set_vprintf(previous);
+    for (size_t i = 0; i < TAG_COUNT; ++i) esp_log_level_set(TAGS[i], levels[i]);
+  }
+
+ private:
+  static constexpr const char* TAGS[] = {"sdmmc_req", "sdmmc_cmd", "sdmmc_common", "sdmmc_sd", "sdmmc_periph"};
+  static constexpr size_t TAG_COUNT = sizeof(TAGS) / sizeof(TAGS[0]);
+  esp_log_level_t levels[TAG_COUNT] = {};
+  static inline vprintf_like_t previous = nullptr;
+  static int capture(const char* format, va_list args) {
+    va_list copy;
+    va_copy(copy, args);
+    char line[200];
+    const int len = vsnprintf(line, sizeof(line), format, copy);
+    va_end(copy);
+    const char* text = line;
+    if (text[0] == '\033') {
+      const char* end = strchr(text, 'm');
+      text = end ? end + 1 : text;
+    }
+    if (len > 0 && (text[0] == 'E' || text[0] == 'W')) {
+      char entry[224];
+      snprintf(entry, sizeof(entry), "[%lu] [IDF] %s", millis(), text);
+      addToLogRingBuffer(entry);
+    }
+    return previous ? previous(format, args) : len;
+  }
+};
+
 // Result of stockDownload(), kept for the screen and the log.
 struct StockDownload {
   bool ok = false;
@@ -372,6 +416,7 @@ struct StockDownload {
 // The stock firmware's download routine, step for step (see handlePushList).
 StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
   constexpr size_t BUF_SIZE = 32 * 1024;
+  const IdfLogCapture idfLog;
   StockDownload d;
   const unsigned long started = millis();
   if (!Storage.ready()) {
@@ -460,7 +505,7 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     if (d.written >= nextMark) {
       LOG_INF("TILES", "download %u bytes, heap %u", static_cast<unsigned>(d.written),
               static_cast<unsigned>(ESP.getFreeHeap()));
-      nextMark += 32 * 1024;
+      nextMark += 128 * 1024;  // the ring keeps only 16 lines
     }
     vTaskDelay(1);
   }
