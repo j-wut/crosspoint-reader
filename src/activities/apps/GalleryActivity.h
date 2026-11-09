@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "apps/Wallpaper.h"
 #include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
@@ -28,8 +29,9 @@ class GalleryActivity final : public Activity, private UiAppHost {
 
   struct Cell {
     int item = -1;
-    std::string thumb;  // cached preview BMP, when made
-    bool thumbTried = false;
+    wallpaper::Thumb thumb;  // empty when the preview failed
+    std::string cachePath;
+    bool needsSave = false;  // made from the image; cache file not written yet
   };
 
   static void screenFn(UiScreen& screen, void* user);
@@ -39,7 +41,8 @@ class GalleryActivity final : public Activity, private UiAppHost {
   int itemCount() const;
   void reload();
   void loadPage(int newPage);
-  bool makeMissingThumb();
+  void makePreviews();
+  bool saveOnePreview();
   void activate(int item);
   void openImage(int index);
   void runAction(int image, int action);
@@ -56,5 +59,6 @@ class GalleryActivity final : public Activity, private UiAppHost {
   int thumbW = 0;      // preview size, set by the render task
   int thumbH = 0;
   bool thumbSizeChanged = false;
+  bool previewsReady = false;  // the page is shown only once all its previews are made
   int pending = -1;
 };

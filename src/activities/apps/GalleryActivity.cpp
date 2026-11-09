@@ -1,6 +1,5 @@
 #include "GalleryActivity.h"
 
-#include <Bitmap.h>
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -16,7 +15,6 @@
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
 #include "activities/util/ConfirmationActivity.h"
-#include "apps/Wallpaper.h"
 #include "components/OptionPopup.h"
 #include "components/UITheme.h"
 
@@ -94,6 +92,7 @@ void GalleryActivity::reload() {
 int GalleryActivity::itemCount() const { return static_cast<int>(images.size()); }
 
 void GalleryActivity::loadPage(const int newPage) {
+  RenderLock lock(*this);
   const int count = itemCount();
   const int pages = std::max(1, (count + PER_PAGE - 1) / PER_PAGE);
   page = std::clamp(newPage, 0, pages - 1);
@@ -101,23 +100,52 @@ void GalleryActivity::loadPage(const int newPage) {
   for (int slot = 0; slot < PER_PAGE; ++slot) {
     const int item = page * PER_PAGE + slot;
     if (item >= count) break;
-    cells[cellCount++] = Cell{item, {}, false};
+    cells[cellCount++] = Cell{item, {}, {}, false};
   }
+  for (int slot = cellCount; slot < PER_PAGE; ++slot) cells[slot] = Cell{};
+  previewsReady = cellCount == 0;
   selected = std::min(selected, std::max(0, cellCount - 1));
 }
 
-// Makes one missing preview per call so the page fills in image by image.
-bool GalleryActivity::makeMissingThumb() {
-  if (thumbW <= 0 || thumbH <= 0) return false;
+// Makes every preview on the page before it is shown: from the cache file
+// when there is one, else straight from the image into memory.
+void GalleryActivity::makePreviews() {
+  RenderLock lock(*this);
+  const unsigned long start = millis();
+  int fromCache = 0;
+  int made = 0;
   for (int i = 0; i < cellCount; ++i) {
     Cell& cell = cells[i];
-    if (cell.thumbTried) continue;
-    cell.thumbTried = true;
-    RenderLock lock(*this);
-    if (!wallpaper::thumbBmp(images[cell.item], thumbW, thumbH, cell.thumb)) {
-      cell.thumb.clear();
-      LOG_ERR("GAL", "no preview for %s", images[cell.item].c_str());
+    const std::string& path = images[cell.item];
+    const unsigned long t0 = millis();
+    cell.cachePath = wallpaper::thumbCachePath(path, thumbW, thumbH);
+    const unsigned long t1 = millis();
+    if (wallpaper::loadThumb(cell.cachePath, cell.thumb)) {
+      ++fromCache;
+      LOG_INF("GAL", "preview %s: cache %lu ms (key %lu ms)", path.c_str(), millis() - t1, t1 - t0);
+    } else if (wallpaper::makeThumb(path, thumbW, thumbH, cell.thumb)) {
+      ++made;
+      cell.needsSave = !cell.cachePath.empty();
+      LOG_INF("GAL", "preview %s: made %lu ms (key %lu ms)", path.c_str(), millis() - t1, t1 - t0);
+    } else {
+      cell.thumb = {};
+      LOG_ERR("GAL", "no preview for %s (%lu ms)", path.c_str(), millis() - t0);
     }
+  }
+  previewsReady = true;
+  LOG_INF("GAL", "page %d: %d previews (%d cached, %d made) in %lu ms, free heap %u", page + 1, cellCount, fromCache,
+          made, millis() - start, static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
+// Writes one missing cache file per call, after the page is on screen.
+bool GalleryActivity::saveOnePreview() {
+  for (int i = 0; i < cellCount; ++i) {
+    Cell& cell = cells[i];
+    if (!cell.needsSave) continue;
+    cell.needsSave = false;
+    const unsigned long t0 = millis();
+    const bool ok = wallpaper::saveThumb(cell.thumb, cell.cachePath);
+    LOG_INF("GAL", "cache write %s: %s %lu ms", images[cell.item].c_str(), ok ? "ok" : "failed", millis() - t0);
     return true;
   }
   return false;
@@ -159,15 +187,16 @@ void GalleryActivity::openImage(const int index) {
 
 void GalleryActivity::loop() {
   if (thumbSizeChanged) {
+    // The first draw measures the preview size; previews for another size are dropped.
     thumbSizeChanged = false;
-    for (int i = 0; i < cellCount; ++i) cells[i] = Cell{cells[i].item, {}, false};
+    loadPage(page);
+  }
+  if (!previewsReady && thumbW > 0) {
+    makePreviews();
     requestUpdate();
     return;
   }
-  if (makeMissingThumb()) {
-    requestUpdate();
-    return;
-  }
+  if (previewsReady) saveOnePreview();
 
   pending = -1;
   const auto touch = routeTouch(mappedInput);
@@ -267,6 +296,7 @@ void GalleryActivity::runAction(const int image, const int action) {
         if (result.isCancelled) return;
         if (!Storage.remove(path.c_str())) LOG_ERR("GAL", "Delete failed: %s", path.c_str());
         reload();
+        loadPage(page);
         requestUpdate();
       });
       return;
@@ -368,25 +398,15 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
   }
 
   screen.target().fill(box, PAPER);
-  bool drawn = false;
-  if (!cell.thumb.empty() && !thumbSizeChanged) {
-    HalFile file;
-    if (Storage.openFileForRead("GAL", cell.thumb, file)) {
-      Bitmap bitmap(file);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        drawn = renderer.drawBitmap(bitmap, box.x + BORDER + (innerW - bitmap.getWidth()) / 2,
-                                    box.y + BORDER + (innerH - bitmap.getHeight()) / 2, innerW, innerH);
-      }
-      file.close();
-    }
-  }
-  if (!drawn) {
+  if (cell.thumb && !thumbSizeChanged) {
+    wallpaper::drawThumb(renderer, cell.thumb, box.x + BORDER, box.y + BORDER, innerW, innerH);
+  } else {
     // Preview not made yet, or it failed.
     auto label = theme.smallText;
     label.align = fui::TextAlign::Center;
     screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - nameH) / 2),
                                    static_cast<int16_t>(boxW - 16), nameH},
-                         cell.thumbTried ? "?" : "...", label);
+                         previewsReady ? "?" : "...", label);
   }
   screen.target().stroke(box, INK, BORDER, 0);
   if (slot == selected && !BoardConfig::hasTouch()) {
@@ -405,5 +425,12 @@ void GalleryActivity::render(RenderLock&&) {
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!previewsReady) {
+    // This draw only measured the preview size; the loop makes the previews
+    // and the page is shown once, complete.
+    return;
+  }
+  const unsigned long start = millis();
   renderer.displayBuffer();
+  LOG_INF("GAL", "page %d shown, refresh %lu ms", page + 1, millis() - start);
 }

@@ -8,11 +8,13 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <PngToBmpConverter.h>
+#include <Print.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 
 #include "CrossPointSettings.h"
 
@@ -268,48 +270,97 @@ bool screenBmp(const std::string& path, std::string& bmpPath) {
   return ok;
 }
 
-// Box-filters the screen BMP down to the thumb size, then dithers it to 1 bit
-// (a 4x4 ordered pattern) so the grid draws in plain black and white.
-bool thumbBmp(const std::string& path, const int maxWidth, const int maxHeight, std::string& thumbPath) {
-  std::string bmpPath;
-  if (maxWidth <= 0 || maxHeight <= 0 || !screenBmp(path, bmpPath)) return false;
-  HalFile in;
-  if (!Storage.openFileForRead("WALL", bmpPath, in)) return false;
-  const std::string key = bmpPath + '|' + std::to_string(in.size()) + '|' + std::to_string(in.modificationTime()) +
-                          '|' + std::to_string(maxWidth) + 'x' + std::to_string(maxHeight) + "|t1";
-  thumbPath = "/.crosspoint/wpt_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
-  if (Storage.exists(thumbPath.c_str())) return true;
+namespace {
+constexpr uint32_t THUMB_HEADER = 14 + 40 + 8;  // 1-bit BMP with a 2-entry palette
 
-  Bitmap src(in);
-  const BmpReaderError err = src.parseHeaders();
-  if (err != BmpReaderError::Ok) {
-    LOG_ERR("WALL", "thumb: bad BMP %s: %s", bmpPath.c_str(), Bitmap::errorToString(err));
-    return false;
+// Collects a converter's BMP output in memory.
+class MemoryBmp final : public Print {
+ public:
+  size_t write(const uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* buf, const size_t len) override {
+    if (failed || !reserve(size + len)) {
+      failed = true;
+      return 0;
+    }
+    memcpy(data.get() + size, buf, len);
+    size += len;
+    return len;
   }
-  const int srcW = src.getWidth();
-  const int srcH = src.getHeight();
+  std::unique_ptr<uint8_t[]> data;
+  size_t size = 0;
+  bool failed = false;
+
+ private:
+  bool reserve(const size_t need) {
+    if (need <= capacity) return true;
+    const size_t next = std::max<size_t>(need, capacity == 0 ? 4096 : capacity * 2);
+    auto grown = makeUniqueNoThrow<uint8_t[]>(next);
+    if (!grown) return false;
+    if (size > 0) memcpy(grown.get(), data.get(), size);
+    data = std::move(grown);
+    capacity = next;
+    return true;
+  }
+  size_t capacity = 0;
+};
+
+struct ThumbLayout {
+  int width = 0;
+  int height = 0;
+  bool topDown = false;
+  bool zeroIsBlack = true;
+  uint32_t rowBytes = 0;
+  uint32_t dataOffset = 0;
+};
+
+// Checks that the buffer is a whole 1-bit BMP and reads its layout.
+bool thumbLayout(const Thumb& thumb, ThumbLayout& layout) {
+  const uint8_t* p = thumb.data.get();
+  if (!p || thumb.size < THUMB_HEADER || p[0] != 'B' || p[1] != 'M' || (p[28] | p[29] << 8) != 1) return false;
+  layout.dataOffset = le32(p + 10);
+  layout.width = static_cast<int32_t>(le32(p + 18));
+  const auto height = static_cast<int32_t>(le32(p + 22));
+  layout.topDown = height < 0;
+  layout.height = height < 0 ? -height : height;
+  if (layout.width <= 0 || layout.height <= 0 || layout.width > 4096 || layout.height > 4096) return false;
+  layout.rowBytes = (static_cast<uint32_t>(layout.width) + 31) / 32 * 4;
+  const uint32_t paletteAt = 14 + le32(p + 14);
+  if (paletteAt + 8 > thumb.size) return false;
+  const auto luma = [p](const uint32_t at) { return p[at] + p[at + 1] + p[at + 2]; };
+  layout.zeroIsBlack = luma(paletteAt) <= luma(paletteAt + 4);
+  return static_cast<uint64_t>(layout.dataOffset) + static_cast<uint64_t>(layout.rowBytes) * layout.height <=
+         thumb.size;
+}
+
+// One source row as 8-bit gray (0 = black), srcW values.
+using RowFn = std::function<bool(int sy, uint8_t* gray)>;
+
+// Box-filters the source down to fit maxWidth x maxHeight, then dithers it to
+// 1 bit (a 4x4 ordered pattern) into a top-down BMP in memory. Rows are read
+// in file order (bottom first for bottom-up files) so the card only seeks
+// forward.
+bool boxThumb(const int srcW, const int srcH, const bool bottomFirst, const int maxWidth, const int maxHeight,
+              const RowFn& readRow, Thumb& out) {
   const float scale = std::min({1.0f, static_cast<float>(maxWidth) / srcW, static_cast<float>(maxHeight) / srcH});
   const int dstW = std::max(1, static_cast<int>(srcW * scale));
   const int dstH = std::max(1, static_cast<int>(srcH * scale));
   const uint32_t outRowBytes = (static_cast<uint32_t>(dstW) + 31) / 32 * 4;
+  const size_t size = THUMB_HEADER + static_cast<size_t>(outRowBytes) * dstH;
 
-  auto raw = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(src.getRowBytes()));
+  auto data = makeUniqueNoThrow<uint8_t[]>(size);
   auto gray = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(srcW));
   auto sums = makeUniqueNoThrow<uint32_t[]>(static_cast<size_t>(dstW));
   auto counts = makeUniqueNoThrow<uint16_t[]>(static_cast<size_t>(dstW));
-  auto row = makeUniqueNoThrow<uint8_t[]>(outRowBytes);
-  if (!raw || !gray || !sums || !counts || !row) {
+  if (!data || !gray || !sums || !counts) {
     LOG_ERR("WALL", "OOM: thumb %dx%d", dstW, dstH);
     return false;
   }
-  memset(counts.get(), 0, sizeof(uint16_t) * dstW);
-  for (int x = 0; x < srcW; ++x) ++counts[static_cast<int64_t>(x) * dstW / srcW];
-
-  uint8_t header[14 + 40 + 8] = {};
+  memset(data.get(), 0, size);
+  uint8_t* header = data.get();
   header[0] = 'B';
   header[1] = 'M';
-  putLE32(header + 2, sizeof(header) + outRowBytes * dstH);
-  putLE32(header + 10, sizeof(header));
+  putLE32(header + 2, size);
+  putLE32(header + 10, THUMB_HEADER);
   putLE32(header + 14, 40);
   putLE32(header + 18, dstW);
   putLE32(header + 22, static_cast<uint32_t>(-dstH));  // top-down rows
@@ -319,35 +370,164 @@ bool thumbBmp(const std::string& path, const int maxWidth, const int maxHeight, 
   putLE32(header + 46, 2);
   header[58] = header[59] = header[60] = 0xFF;  // palette: 0 black, 1 white
 
-  const std::string tmp = thumbPath + ".tmp";
-  HalFile out;
-  if (!Storage.openFileForWrite("WALL", tmp, out)) return false;
-  bool ok = out.write(header, sizeof(header)) == sizeof(header);
+  memset(counts.get(), 0, sizeof(uint16_t) * dstW);
+  for (int x = 0; x < srcW; ++x) ++counts[static_cast<int64_t>(x) * dstW / srcW];
+
   static constexpr uint8_t BAYER[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
-  int sy = 0;
-  for (int dy = 0; ok && dy < dstH; ++dy) {
-    memset(sums.get(), 0, sizeof(uint32_t) * dstW);
-    int rows = 0;
-    for (; sy < srcH && static_cast<int64_t>(sy) * dstH / srcH == dy; ++sy, ++rows) {
-      if (src.readRowGray(sy, gray.get(), raw.get()) != BmpReaderError::Ok) {
-        ok = false;
-        break;
-      }
-      for (int x = 0; x < srcW; ++x) sums[static_cast<int64_t>(x) * dstW / srcW] += gray[x];
-    }
-    if (!ok || rows == 0) break;
-    memset(row.get(), 0, outRowBytes);
+  int dy = -1;
+  uint32_t rows = 0;
+  const auto flush = [&] {
+    if (dy < 0 || rows == 0) return;
+    uint8_t* row = data.get() + THUMB_HEADER + static_cast<size_t>(dy) * outRowBytes;
     for (int x = 0; x < dstW; ++x) {
       const uint32_t level = sums[x] / (static_cast<uint32_t>(counts[x]) * rows);
       if (level * 16 > BAYER[dy & 3][x & 3] * 255u + 127u) row[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
     }
-    ok = out.write(row.get(), outRowBytes) == outRowBytes;
+  };
+  for (int i = 0; i < srcH; ++i) {
+    const int sy = bottomFirst ? srcH - 1 - i : i;
+    const int rowDy = static_cast<int>(static_cast<int64_t>(sy) * dstH / srcH);
+    if (rowDy != dy) {
+      flush();
+      memset(sums.get(), 0, sizeof(uint32_t) * dstW);
+      rows = 0;
+      dy = rowDy;
+    }
+    if (!readRow(sy, gray.get())) return false;
+    for (int x = 0; x < srcW; ++x) sums[static_cast<int64_t>(x) * dstW / srcW] += gray[x];
+    ++rows;
   }
+  flush();
+  out.data = std::move(data);
+  out.size = size;
+  return true;
+}
+}  // namespace
+
+std::string thumbCachePath(const std::string& path, const int maxWidth, const int maxHeight) {
+  HalFile src;
+  if (!Storage.openFileForRead("WALL", path, src)) return {};
+  const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  // Same-sized files share a byte count, so the key also needs the modification time.
+  const std::string key = path + '|' + std::to_string(src.size()) + '|' + std::to_string(src.modificationTime()) + '|' +
+                          std::to_string(maxWidth) + 'x' + std::to_string(maxHeight) + (crop ? "|c" : "|f") + "|t2";
+  return "/.crosspoint/wpt_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
+}
+
+bool loadThumb(const std::string& cachePath, Thumb& out) {
+  if (cachePath.empty() || !Storage.exists(cachePath.c_str())) return false;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", cachePath, in)) return false;
+  const size_t size = in.size();
+  Thumb thumb;
+  thumb.data = makeUniqueNoThrow<uint8_t[]>(size);
+  if (!thumb.data || in.read(thumb.data.get(), size) != static_cast<int>(size)) return false;
+  thumb.size = size;
+  ThumbLayout layout;
+  if (!thumbLayout(thumb, layout)) {
+    LOG_ERR("WALL", "bad cached preview %s", cachePath.c_str());
+    return false;
+  }
+  out = std::move(thumb);
+  return true;
+}
+
+bool makeThumb(const std::string& path, const int maxWidth, const int maxHeight, Thumb& out) {
+  if (maxWidth <= 0 || maxHeight <= 0) return false;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", path, in)) return false;
+
+  if (FsHelpers::hasPngExtension(path) || FsHelpers::hasJpgExtension(path)) {
+    const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+    MemoryBmp bmp;
+    const bool ok = FsHelpers::hasPngExtension(path)
+                        ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, bmp, maxWidth, maxHeight, crop)
+                        : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(in, bmp, maxWidth, maxHeight, crop);
+    Thumb thumb;
+    thumb.data = std::move(bmp.data);
+    thumb.size = bmp.size;
+    ThumbLayout layout;
+    if (!ok || bmp.failed || !thumbLayout(thumb, layout)) return false;
+    out = std::move(thumb);
+    return true;
+  }
+
+  if (isOpg(path)) {
+    OpgPage page;
+    if (!parseOpg(in, path, page)) return false;
+    // Rows are contiguous, so they are read in blocks of about 4 KB.
+    const uint32_t blockRows = std::max<uint32_t>(1, 4096 / page.stride);
+    auto block = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(blockRows) * page.stride);
+    if (!block || !in.seek(page.data)) return false;
+    const uint8_t maxLevel = static_cast<uint8_t>((1u << page.channelBits) - 1);
+    uint32_t loaded = 0;
+    uint32_t next = 0;
+    return boxThumb(
+        static_cast<int>(page.width), static_cast<int>(page.height), false, maxWidth, maxHeight,
+        [&](int, uint8_t* gray) {
+          if (next == loaded) {
+            const int n = in.read(block.get(), static_cast<size_t>(blockRows) * page.stride);
+            if (n < static_cast<int>(page.stride)) return false;
+            loaded = static_cast<uint32_t>(n) / page.stride;
+            next = 0;
+          }
+          const uint8_t* src = block.get() + static_cast<size_t>(next++) * page.stride;
+          for (uint32_t x = 0; x < page.width; ++x) {
+            const uint32_t bit = x * page.pixelBits;
+            uint8_t level = readBits(src, bit, page.channelBits);
+            if (page.hasAlpha() && readBits(src, bit + page.channelBits, page.channelBits) * 2 <= maxLevel) {
+              level = maxLevel;  // transparent shows as white
+            }
+            gray[x] = static_cast<uint8_t>(level * 255 / maxLevel);
+          }
+          return true;
+        },
+        out);
+  }
+
+  Bitmap bitmap(in);
+  const BmpReaderError err = bitmap.parseHeaders();
+  if (err != BmpReaderError::Ok) {
+    LOG_ERR("WALL", "thumb: bad BMP %s: %s", path.c_str(), Bitmap::errorToString(err));
+    return false;
+  }
+  auto raw = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(bitmap.getRowBytes()));
+  if (!raw) return false;
+  return boxThumb(
+      bitmap.getWidth(), bitmap.getHeight(), !bitmap.isTopDown(), maxWidth, maxHeight,
+      [&](const int sy, uint8_t* gray) { return bitmap.readRowGray(sy, gray, raw.get()) == BmpReaderError::Ok; }, out);
+}
+
+bool saveThumb(const Thumb& thumb, const std::string& cachePath) {
+  if (!thumb || cachePath.empty()) return false;
+  const std::string tmp = cachePath + ".tmp";
+  HalFile out;
+  if (!Storage.openFileForWrite("WALL", tmp, out)) return false;
+  bool ok = out.write(thumb.data.get(), thumb.size) == thumb.size;
   ok = out.close() && ok;
-  ok = ok && Storage.replaceFile(tmp.c_str(), thumbPath.c_str());
+  ok = ok && Storage.replaceFile(tmp.c_str(), cachePath.c_str());
   if (!ok) Storage.remove(tmp.c_str());
-  LOG_INF("WALL", "thumb %s %dx%d -> %dx%d %s", path.c_str(), srcW, srcH, dstW, dstH, ok ? "ok" : "failed");
   return ok;
+}
+
+void drawThumb(GfxRenderer& renderer, const Thumb& thumb, const int x, const int y, const int width, const int height) {
+  ThumbLayout layout;
+  if (!thumbLayout(thumb, layout)) return;
+  // Centred; a cropped preview larger than the box is cut at its edges.
+  const int left = x + (width - layout.width) / 2;
+  const int top = y + (height - layout.height) / 2;
+  const int x0 = std::max(0, x - left);
+  const int x1 = std::min(layout.width, x + width - left);
+  const int y0 = std::max(0, y - top);
+  const int y1 = std::min(layout.height, y + height - top);
+  for (int row = y0; row < y1; ++row) {
+    const int fileRow = layout.topDown ? row : layout.height - 1 - row;
+    const uint8_t* bits = thumb.data.get() + layout.dataOffset + static_cast<size_t>(fileRow) * layout.rowBytes;
+    for (int col = x0; col < x1; ++col) {
+      const bool one = bits[col >> 3] & (0x80 >> (col & 7));
+      if (one != layout.zeroIsBlack) renderer.drawPixel(left + col, top + row, true);
+    }
+  }
 }
 
 bool setAs(const std::string& path, const char* destination) {
