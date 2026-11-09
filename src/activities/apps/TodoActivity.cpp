@@ -250,7 +250,7 @@ void TodoActivity::buildScreen(UiScreen& screen) {
       button.styles.normal.border = fui::Paint::solid(fui::Color::Black);
       button.styles.normal.borderWidth = 1;
       button.radius = theme.controlRadius;
-      if (nav.selected == slot) button.state = fui::StateSelected;
+      if (!BoardConfig::hasTouch() && nav.selected == slot) button.state = fui::StateSelected;
       const int16_t x = static_cast<int16_t>(slot == 0 ? band.x : band.x + band.width - half);
       screen.button(button, fui::Rect{x, band.y, half, band.height});
     }
@@ -299,6 +299,8 @@ void TodoActivity::buildScreen(UiScreen& screen) {
   configureSwipeDelete(screen, props);
 #endif
   syncListViewport(screen, props, headerSlots());
+  // Touch screens show no selection.
+  if (BoardConfig::hasTouch()) props.selectedIndex = -1;
   screen.list(props);
 
   // Without the header, the empty-list message sits under the Add row.

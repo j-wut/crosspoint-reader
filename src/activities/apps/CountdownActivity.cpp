@@ -231,7 +231,7 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
     button.styles.normal.border = fui::Paint::solid(fui::Color::Black);
     button.styles.normal.borderWidth = 1;
     button.radius = theme.controlRadius;
-    if (nav.selected == 0) button.state = fui::StateSelected;
+    if (!BoardConfig::hasTouch() && nav.selected == 0) button.state = fui::StateSelected;
     screen.button(button, band);
   }
 
@@ -268,5 +268,7 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
   configureSwipeDelete(screen, props);
 #endif
   syncListViewport(screen, props, headerSlots());
+  // Touch screens show no selection.
+  if (BoardConfig::hasTouch()) props.selectedIndex = -1;
   screen.list(props);
 }
