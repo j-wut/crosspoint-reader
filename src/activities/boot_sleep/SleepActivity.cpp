@@ -648,7 +648,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
   return true;
 }
 
-bool drawSleepPopupPreservingFrame(GfxRenderer& renderer) {
+bool drawSleepPopupPreservingFrame(GfxRenderer& renderer, const char* text) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int frameThickness = metrics.popupFrameThickness;
   const int popupY = static_cast<int>(renderer.getScreenHeight() * metrics.popupTopOffsetRatio);
@@ -668,7 +668,7 @@ bool drawSleepPopupPreservingFrame(GfxRenderer& renderer) {
     return false;
   }
 
-  GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+  GUI.drawPopup(renderer, text);
   if (!renderer.copyBufferToRegion(0, bandTop, renderer.getScreenWidth(), bandHeight, savedBand.get(), bandBytes)) {
     LOG_ERR("SLP", "Failed to restore sleep popup background");
     return false;
@@ -720,7 +720,7 @@ void SleepActivity::onEnter() {
     if (APP_STATE.lastSleepFromReader) {
       ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
     }
-    drawSleepPopupPreservingFrame(renderer);
+    drawSleepPopupPreservingFrame(renderer, sleepPopupText());
     if (APP_STATE.lastSleepFromReader) {
       renderer.setOrientation(GfxRenderer::Orientation::Portrait);
     }
@@ -734,10 +734,10 @@ void SleepActivity::onEnter() {
   // Show popup with reader orientation only when going to sleep from reader
   if (APP_STATE.lastSleepFromReader) {
     ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
-    GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+    GUI.drawPopup(renderer, sleepPopupText());
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   } else {
-    GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+    GUI.drawPopup(renderer, sleepPopupText());
   }
 
   // A reading wallpaper set in the Gallery wins while a book is open, as on the stock firmware.
@@ -1161,7 +1161,7 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
           SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader, powerOff);
   if (!wallpaper::isOpg(path)) {
     if (kind != wallpaper::POWER_OFF) return false;  // the normal flow draws the Gallery's BMP copy
-    GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+    GUI.drawPopup(renderer, sleepPopupText());
     if (renderCustomSleepBmp(path)) return true;
     LOG_ERR("SLP", "power-off image failed: %s", path.c_str());
     return false;
