@@ -976,11 +976,9 @@ void addMdnsService() {
 void probe() {
   if (!BoardConfig::isPicco()) return;
 
+  // The check runs even when the card log cannot be opened; log writes then do nothing.
   booxdiag::LogFile log = openLog();
-  if (!log) {
-    LOG_ERR("TILES", "cannot open %s", LOG_PATH);
-    return;
-  }
+  if (!log) LOG_ERR("TILES", "cannot open %s; checking without the card log", LOG_PATH);
   log.printf("\n=== %s, uptime %lu s, heap %u ===\n", CROSSPOINT_VERSION, millis() / 1000,
              static_cast<unsigned>(ESP.getFreeHeap()));
   log.printf("mDNS name %s, MAC %s\n", mdnsHostname("").c_str(), macText().c_str());
@@ -1073,7 +1071,7 @@ SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items) {
 void poll() {
   if (!BoardConfig::isPicco() || g_authorization.empty()) return;
   booxdiag::LogFile log = openLog();
-  if (!log) return;
+  if (!log) LOG_ERR("TILES", "cannot open %s; checking without the card log", LOG_PATH);
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;
   g_status.lastHttp = authedGet(log, PUSH_LIST_URL, "poll", &body);
