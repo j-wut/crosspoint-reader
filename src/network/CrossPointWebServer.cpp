@@ -1148,6 +1148,16 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Reset watchdog - this is the critical 1% crash point
     resetTaskWatchdogIfSubscribed();
 
+    // An earlier upload that never finished still holds its file: drop it so
+    // this attempt starts clean.
+    if (state.file) {
+      state.file.close();
+      const String partial = uploadWritePath(state);
+      const bool removed = Storage.remove(partial.c_str());
+      tilescloud::logLine("earlier upload left open at %u bytes; removed %s: %d", static_cast<unsigned>(state.size),
+                          partial.c_str(), removed);
+    }
+
     state.fileName = upload.filename;
     state.size = 0;
     state.success = false;
@@ -1383,7 +1393,9 @@ void CrossPointWebServer::handleUploadPost(UploadState& state) const {
   tilescloud::logLine("upload reply: success=%d error=%s raw body=%u bytes", state.success, state.error.c_str(),
                       static_cast<unsigned>(server->arg("plain").length()));
   if (state.success) {
-    server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
+    // The stock Picco firmware answers a BOOX Tiles app upload with "OK".
+    const bool tilesUpload = server->hasArg("fileType") && !server->hasArg("path");
+    server->send(200, "text/plain", tilesUpload ? String("OK") : "File uploaded successfully: " + state.fileName);
   } else {
     const String error = state.error.isEmpty() ? "Unknown error during upload" : state.error;
     server->send(400, "text/plain", error);
