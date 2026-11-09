@@ -1,11 +1,18 @@
 #include "PowerOffPopupActivity.h"
 
 #include <GfxRenderer.h>
+#include <FreeInkUIGfxRenderer.h>
+#include <HalPowerManager.h>
 #include <I18n.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
+#include "CrossPointSettings.h"
+#include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 
 namespace {
@@ -13,7 +20,6 @@ namespace {
 constexpr int kCardWidth = 88;
 constexpr int kCardHeight = 176;
 constexpr int kCardTop = 40;
-constexpr int kCardRightGap = 1;
 constexpr int kCardBorder = 2;
 constexpr int kIconSize = 40;
 constexpr int kIconTop = 44;
@@ -45,9 +51,27 @@ struct CardRect {
   }
 };
 
-// Top-right corner of the current orientation, like the stock layout.
+// Top-right, centered under the header's battery percent and icon. Mirrors
+// the battery layout in BaseTheme::applyHeaderStatus and the FreeInkUI header.
 CardRect cardRect(const GfxRenderer& renderer) {
-  return {renderer.getScreenWidth() - kCardRightGap - kCardWidth, kCardTop};
+  namespace fui = freeink::ui;
+  fui::HeaderProps props;
+  props.status.edgeInset = static_cast<int16_t>(BaseTheme::headerStatusInset());
+  const fui::Rect band = BaseTheme::headerBand(
+      renderer, fui::Rect{0, 0, static_cast<int16_t>(renderer.getScreenWidth()), 0}, props);
+  const int batteryRight = band.x + band.width - props.status.edgeInset;
+
+  // +2: the battery glyph's nub extends past its width.
+  int batteryWidth = UITheme::getInstance().getMetrics().batteryWidth + 2;
+  if (SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS) {
+    char percentText[8];
+    const uint16_t percentage = powerManager.getBatteryPercentage();
+    snprintf(percentText, sizeof(percentText), "%u%%", static_cast<unsigned>(percentage));
+    batteryWidth += BaseTheme::batteryPercentSpacing + renderer.getTextWidth(SMALL_FONT_ID, percentText);
+  }
+  const int centerX = batteryRight - batteryWidth / 2;
+  const int x = std::min(centerX - kCardWidth / 2, renderer.getScreenWidth() - kCardWidth);
+  return {x, kCardTop};
 }
 }  // namespace
 
