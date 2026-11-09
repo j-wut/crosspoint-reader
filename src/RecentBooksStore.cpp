@@ -4,6 +4,17 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <cstring>
+
+#include "util/DebugLog.h"
+
+namespace {
+// Debug log files can be opened as text, but they are not books.
+bool isDebugLog(const std::string& path) {
+  const size_t len = strlen(debuglog::LOG_DIR);
+  return path.size() > len && path.compare(0, len, debuglog::LOG_DIR) == 0 && path[len] == '/';
+}
+}  // namespace
 
 void RecentBooksStore::toJson(JsonDocument& doc) const {
   JsonArray arr = doc["books"].to<JsonArray>();
@@ -29,6 +40,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
     book.title = obj["title"] | "";
     book.author = obj["author"] | "";
     book.coverBmpPath = obj["coverBmpPath"] | "";
+    if (isDebugLog(book.path)) continue;
     recentBooks.push_back(book);
   }
 
@@ -38,6 +50,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
 
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& coverBmpPath) {
+  if (isDebugLog(path)) return;
   // Drop stale entries first so a new add can't evict a valid book in their stead.
   pruneMissing();
 
