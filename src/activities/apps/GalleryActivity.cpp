@@ -345,7 +345,7 @@ void GalleryActivity::draw(UiScreen& screen) {
 
   // Pager along the bottom: previous, "page / pages", next.
   const int pages = std::max(1, (itemCount() + PER_PAGE - 1) / PER_PAGE);
-  const auto pagerY = static_cast<int16_t>(body.bottom() - BAR_HEIGHT);
+  const auto pagerY = static_cast<int16_t>(body.bottom() - BAR_HEIGHT - metrics.verticalSpacing);
   if (pages > 1) {
     char pagerText[16];
     snprintf(pagerText, sizeof(pagerText), "%d / %d", page + 1, pages);
