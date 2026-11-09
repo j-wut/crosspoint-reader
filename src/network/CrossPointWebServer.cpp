@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "FirmwareFlasher.h"
@@ -602,6 +603,35 @@ void CrossPointWebServer::abortWsUpload(const char* tag) {
   wsLastProgressSent = 0;
 }
 
+static String uploadWritePath(const CrossPointWebServer::UploadState& state);
+
+namespace {
+// Remove "<name>.part" (uploads) and "<name>.tmp" (cloud downloads) left in
+// the transfer folders by a transfer that was cut off.
+void removeStaleTransferFiles() {
+  for (const char* dirPath : {"/", wallpaper::DIR, SdCardFontRegistry::FONTS_DIR_VISIBLE}) {
+    HalFile dir = Storage.open(dirPath);
+    if (!dir || !dir.isDirectory()) continue;
+    std::vector<String> stale;
+    char name[256];
+    for (HalFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
+      if (file.isDirectory()) continue;
+      file.getName(name, sizeof(name));
+      const String entry = name;
+      if (entry.endsWith(".part") || entry.endsWith(".tmp")) stale.push_back(entry);
+    }
+    dir.close();
+    for (const String& entry : stale) {
+      String path = dirPath;
+      if (!path.endsWith("/")) path += "/";
+      path += entry;
+      const bool removed = Storage.remove(path.c_str());
+      tilescloud::logLine("removed stale transfer file %s: %d", path.c_str(), removed);
+    }
+  }
+}
+}  // namespace
+
 void CrossPointWebServer::stop() {
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
@@ -628,6 +658,18 @@ void CrossPointWebServer::stop() {
   }
 
   closeDiscoverySocket();
+
+  // An upload cut off by leaving File Transfer: close and drop its partial file.
+  if (upload.file) {
+    upload.file.close();
+    const String partial = uploadWritePath(upload);
+    const bool removed = Storage.remove(partial.c_str());
+    tilescloud::logLine("upload cut off at %u bytes; removed %s: %d", static_cast<unsigned>(upload.size),
+                        partial.c_str(), removed);
+  }
+  upload.buffer.reset();
+  upload.bufferPos = 0;
+  removeStaleTransferFiles();
 
   // Brief delay to allow any in-flight handleClient() calls to complete
   delay(20);
@@ -1170,8 +1212,10 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         return;
       }
       existing.close();
-      state.staged = true;
     }
+    // Write to "<file>.part" and rename it at the end, so a cut-off upload
+    // never leaves a partial file under the real name.
+    state.staged = true;
 
     // The buffer spans upload callbacks; keep it off the task stack and release it at the end.
     state.buffer = makeUniqueNoThrow<uint8_t[]>(UploadState::UPLOAD_BUFFER_SIZE);
