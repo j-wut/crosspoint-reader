@@ -195,6 +195,9 @@ bool isHiddenOrSidecar(const std::string_view name) {
   return false;
 }
 
+// Debug log folder at the card root (src/util/DebugLog.h); its .txt files are not books.
+constexpr std::string_view LOG_FOLDER = "logs";
+
 std::string stemOf(const std::string& name) {
   const size_t dot = name.find_last_of('.');
   return (dot == std::string::npos || dot == 0) ? name : name.substr(0, dot);
@@ -485,6 +488,7 @@ void walk(WalkState& st, const std::string& path, const int depth) {
 
     if (st.nameBuf[0] == '\0' || isHiddenOrSidecar(st.nameBuf)) continue;
     const std::string name(st.nameBuf);
+    if (isDir && depth == 0 && name == LOG_FOLDER) continue;
 
     if (isDir) {
       const size_t resumePosition = dir.position();
@@ -1060,6 +1064,11 @@ const char* libraryIndexPath() { return INDEX_PATH; }
 bool isLibraryBookFile(const std::string_view path) {
   // Match the walk's exclusions in every path component. A lone "." names the folder itself.
   size_t start = 0;
+  while (start < path.size() && path[start] == '/') ++start;
+  if (path.substr(start, LOG_FOLDER.size()) == LOG_FOLDER && path.size() > start + LOG_FOLDER.size() &&
+      path[start + LOG_FOLDER.size()] == '/') {
+    return false;
+  }
   while (start < path.size()) {
     const size_t slash = path.find('/', start);
     const std::string_view name = path.substr(start, slash - start);
