@@ -84,6 +84,31 @@ constexpr unsigned long RECOVERY_COMBO_HOLD_MS = 2000;
 // while the button is held; swallow the one release that ends that wake gesture.
 static bool wakePowerReleasePending = false;
 
+// Power-button sleep/wake trace on the SD card, for checking Wake From Sleep
+// on a device without a serial console. Restarted once it passes 16 KB.
+static constexpr const char* WAKE_LOG_FILE = "/wake-log.txt";
+static void appendWakeLog(const char* fmt, ...) {
+  char line[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+  LOG_INF("WAKE", "%s", line);
+  char entry[288];
+  const int len = snprintf(entry, sizeof(entry), "[%lld] %s\n", static_cast<long long>(time(nullptr)), line);
+  if (len <= 0) return;
+  HalFile file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
+  if (!file) return;
+  if (file.size() > 16 * 1024) {
+    file.close();
+    Storage.remove(WAKE_LOG_FILE);
+    file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
+    if (!file) return;
+  }
+  file.write(reinterpret_cast<const uint8_t*>(entry), std::min(static_cast<size_t>(len), sizeof(entry) - 1));
+  file.close();
+}
+
 // Fonts
 EpdFont notosans14RegularFont(&notosans_14_regular);
 EpdFont notosans14BoldFont(&notosans_14_bold);
@@ -597,6 +622,9 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   const bool wakeOnHeldButton = false;
 #endif
 
+  appendWakeLog("sleep: timeout=%d powerOff=%d usb=%d heldWake=%d wakePress=%u shortPwrBtn=%u uptimeMs=%lu",
+                fromTimeout ? 1 : 0, powerOff ? 1 : 0, gpio.isUsbConnected() ? 1 : 0, wakeOnHeldButton ? 1 : 0,
+                SETTINGS.wakePress, SETTINGS.shortPwrBtn, millis());
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
@@ -663,6 +691,9 @@ void setupDisplayAndFonts(bool seamless = false) {
 
 void setup() {
   BoardConfig::holdPowerRails();
+  // On X3/X4 the button powers the board until this latch, so a wake press
+  // must last at least this long (plus the ROM and bootloader time before it).
+  const unsigned long powerLatchedMs = millis();
 
 #ifdef ENABLE_SERIAL_LOG
 #ifdef CROSSPOINT_WAIT_FOR_USB_SERIAL
@@ -712,8 +743,10 @@ void setup() {
   // click-to-wake is a setting, and an X4 battery power-off cuts all power, so
   // only SD state survives to the next boot.
   // The Metalio boots after the button is released, so it skips the check.
+  const unsigned long wakeCheckStartMs = millis();
   const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || BoardConfig::isMetalioEInk4() ||
                                 gpio.verifyPowerButtonWakeup();
+  const unsigned long wakeCheckEndMs = millis();
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
@@ -798,12 +831,19 @@ void setup() {
                               : slideSwitchOwnsLight()
                                   ? gpio.isToggleSwitchOn()
                                   : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  // With Short Power Button Press = Sleep, a single click wakes on any
-  // device; otherwise the button must still be held (ghost-wake debounce).
-  // Picco: plugging in USB pulses the wake line; power on, as stock does.
+  // With Wake From Sleep = Short Press, or Short Power Button Press = Sleep, a
+  // single click wakes on any device; otherwise the button must still be held
+  // (ghost-wake debounce). Picco: plugging in USB pulses the wake line; power
+  // on, as stock does.
   const bool wakeRejected = wakeupReason == HalGPIO::WakeupReason::PowerButton && !wakeHoldVerified &&
+                            SETTINGS.wakePress != CrossPointSettings::WAKE_SHORT_PRESS &&
                             SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
                             !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected());
+  if (isSleepWake) {
+    appendWakeLog("wake: latchMs=%lu checkMs=%lu-%lu held=%d wakePress=%u shortPwrBtn=%u usb=%d -> %s", powerLatchedMs,
+                  wakeCheckStartMs, wakeCheckEndMs, wakeHoldVerified ? 1 : 0, SETTINGS.wakePress, SETTINGS.shortPwrBtn,
+                  gpio.isUsbConnected() ? 1 : 0, wakeRejected ? "back to sleep" : "wake");
+  }
   // A rejected wake goes straight back to sleep, so it must not light up.
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn && !wakeRejected);
 
