@@ -19,6 +19,8 @@ constexpr int kIconSize = 40;
 constexpr int kIconTop = 44;
 constexpr int kLabelTop = kIconTop + kIconSize + 8;
 constexpr int kLabelSide = 8;
+// The stock root draws a 1 px black dot every 3 px over the whole screen.
+constexpr int kDotPitch = 3;
 
 // Stock icon_power_off, 40x40, 1 bpp, MSB first, 0 = ink.
 constexpr uint8_t kPowerIcon[kIconSize * kIconSize / 8] = {
@@ -75,6 +77,14 @@ void PowerOffPopupActivity::loop() {
 
 void PowerOffPopupActivity::render(RenderLock&&) {
   // Drawn over the retained frame of the screen underneath.
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  for (int y = 0; y < screenHeight; y += kDotPitch) {
+    for (int x = 0; x < screenWidth; x += kDotPitch) {
+      renderer.drawPixel(x, y, true);
+    }
+  }
+
   const CardRect card = cardRect(renderer);
   renderer.fillRect(card.x, card.y, kCardWidth, kCardHeight, false);
   renderer.drawRect(card.x, card.y, kCardWidth, kCardHeight, kCardBorder, true);

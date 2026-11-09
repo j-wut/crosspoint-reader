@@ -222,6 +222,9 @@ inline std::vector<ShortPowerButtonOption> shortPowerButtonOptions() {
     options.push_back({StrId::STR_KOSYNC, CrossPointSettings::PWR_SYNC});
     options.push_back({StrId::STR_READER_MENU, CrossPointSettings::PWR_READER_MENU});
   }
+  if (BoardConfig::isPicco()) {
+    options.push_back({StrId::STR_POWER_OFF, CrossPointSettings::PWR_SHUTDOWN});
+  }
   return options;
 }
 

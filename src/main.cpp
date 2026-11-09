@@ -1300,6 +1300,12 @@ void loop() {
   }
 #endif
 
+  if (BoardConfig::isPicco() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_SHUTDOWN &&
+      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
+      gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
+    activityManager.showPowerOffPopup();
+  }
+
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::ToggleFrontlight) {
     toggleFrontlight();
