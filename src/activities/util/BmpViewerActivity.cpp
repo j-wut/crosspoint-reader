@@ -1,6 +1,7 @@
 #include "BmpViewerActivity.h"
 
 #include <Bitmap.h>
+#include <BoardConfig.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
 #include <FsHelpers.h>
@@ -15,6 +16,7 @@
 #include "CrossPointSettings.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "apps/Wallpaper.h"
+#include "components/HeaderBackTapTarget.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -162,6 +164,8 @@ bool BmpViewerActivity::renderImage() {
 
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
+  overlayShown = false;
+  HeaderBackTapTarget::clear();
 
   if (siblingImages.empty() && !filePath.empty()) {
     loadSiblingImages();
@@ -465,6 +469,26 @@ void BmpViewerActivity::doSetSleepCover() {
   onEnter();
 }
 
+void BmpViewerActivity::drawOverlay() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int barHeight = metrics.topPadding + metrics.headerHeight;
+  renderer.fillRect(0, 0, width, barHeight, false);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, "");
+
+  const std::string name = filePath.substr(filePath.find_last_of('/') + 1);
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int footHeight = lineHeight + 2 * metrics.verticalSpacing;
+  const int footY = height - footHeight;
+  renderer.fillRect(0, footY, width, footHeight, false);
+  renderer.drawLine(0, footY, width - 1, footY, 2, true);
+  const std::string shown = renderer.truncatedText(UI_10_FONT_ID, name.c_str(), width - 2 * metrics.contentSidePadding);
+  renderer.drawCenteredText(UI_10_FONT_ID, footY + (footHeight - lineHeight) / 2, shown.c_str());
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  overlayShown = true;
+}
+
 void BmpViewerActivity::loop() {
   // Keep CPU awake/polling so 1st click works
   Activity::loop();
@@ -486,7 +510,24 @@ void BmpViewerActivity::loop() {
   };
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.goToFileBrowser(filePath);
+    if (returnToCaller) {
+      finish();
+    } else {
+      activityManager.goToFileBrowser(filePath);
+    }
+    return;
+  }
+
+  // Like the stock Picco viewer: a tap shows a top bar with a back arrow and
+  // the file name along the bottom; another tap hides them.
+  int tapX = 0;
+  int tapY = 0;
+  if (BoardConfig::hasTouch() && mappedInput.wasScreenTapped(tapX, tapY)) {
+    if (overlayShown) {
+      onEnter();
+    } else {
+      drawOverlay();
+    }
     return;
   }
 

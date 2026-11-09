@@ -14,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "activities/util/BmpViewerActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/OptionPopup.h"
 #include "components/UITheme.h"
@@ -262,8 +263,14 @@ void GalleryActivity::runAction(const int image, const int action) {
   const std::string path = images[image];
   switch (action) {
     case VIEW: {
-      GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-      activityManager.goToReader(path);
+      // Opened on top of the Gallery, so Back returns to this page.
+      auto viewer = makeUniqueNoThrow<BmpViewerActivity>(renderer, mappedInput, path);
+      if (!viewer) {
+        LOG_ERR("GAL", "OOM: image viewer");
+        return;
+      }
+      viewer->setReturnToCaller();
+      startActivityForResult(std::move(viewer), [this](const ActivityResult&) { requestUpdate(); });
       return;
     }
     case SET_POWER_OFF: {

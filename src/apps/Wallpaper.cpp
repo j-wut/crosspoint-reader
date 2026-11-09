@@ -578,7 +578,10 @@ void keepLine(const char* line) {
 }
 }  // namespace
 
+static int captureUsers = 0;  // the Gallery and the viewer it opens may both capture
+
 void startLogCapture() {
+  if (captureUsers++ > 0) return;
   {
     std::lock_guard<std::mutex> lock(logMutex);
     logLines.clear();
@@ -612,6 +615,11 @@ void flushLog() {
 }
 
 void stopLogCapture() {
+  if (captureUsers == 0) return;
+  if (--captureUsers > 0) {
+    flushLog();
+    return;
+  }
   setLogSink(nullptr);
   flushLog();
   std::lock_guard<std::mutex> lock(logMutex);
