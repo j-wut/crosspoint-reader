@@ -4,9 +4,11 @@
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
 #include <ESPmDNS.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
+#include <SDCardManager.h>
 #include <SecureHttpClient.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -360,46 +362,110 @@ const char* sdWriteTest() {
   return "ok";
 }
 
-// While alive, copies ESP-IDF error and warning lines (such as the SD card
-// driver's) into the device log ring, which survives the restart.
-class IdfLogCapture {
+// While alive, keeps every log line written during a cloud download (ours,
+// and ESP-IDF's from Wi-Fi, HTTP, the SD card driver and the heap) in a
+// PSRAM buffer, so the whole story can be written to the card log
+// afterwards, even when the card had to be remounted. ESP-IDF errors and
+// warnings also go to the device log ring, which survives a restart.
+class DiagCapture {
  public:
-  IdfLogCapture() {
-    for (size_t i = 0; i < TAG_COUNT; ++i) {
-      levels[i] = esp_log_level_get(TAGS[i]);
-      if (levels[i] < ESP_LOG_WARN) esp_log_level_set(TAGS[i], ESP_LOG_WARN);
-    }
+  DiagCapture() {
+    // Allocated once and never freed: another task may still be inside
+    // sink() or capture() just after the destructor unhooks them.
+    if (!buffer) buffer = static_cast<char*>(heap_caps_malloc(CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    used = 0;
+    dropped = 0;
+    previousLevel = esp_log_level_get("*");
+    esp_log_level_set("*", ESP_LOG_INFO);
+    for (const char* tag : DEBUG_TAGS) esp_log_level_set(tag, ESP_LOG_DEBUG);
     previous = esp_log_set_vprintf(capture);
+    setLogSink(sink);
   }
-  ~IdfLogCapture() {
+  ~DiagCapture() {
+    setLogSink(nullptr);
     esp_log_set_vprintf(previous);
-    for (size_t i = 0; i < TAG_COUNT; ++i) esp_log_level_set(TAGS[i], levels[i]);
+    esp_log_level_set("*", previousLevel);
+  }
+  // The lines kept by the last capture.
+  static void dump(Print& out) {
+    if (!buffer) {
+      out.println("  (no PSRAM for the download log)");
+      return;
+    }
+    out.printf("  download log (%u bytes, %u bytes dropped):\n", static_cast<unsigned>(used),
+               static_cast<unsigned>(dropped));
+    out.write(reinterpret_cast<const uint8_t*>(buffer), used);
+    out.println();
   }
 
  private:
-  static constexpr const char* TAGS[] = {"sdmmc_req", "sdmmc_cmd", "sdmmc_common", "sdmmc_sd", "sdmmc_periph"};
-  static constexpr size_t TAG_COUNT = sizeof(TAGS) / sizeof(TAGS[0]);
-  esp_log_level_t levels[TAG_COUNT] = {};
+  static constexpr size_t CAPACITY = 64 * 1024;
+  // SD card driver tags, logged in full.
+  static constexpr const char* DEBUG_TAGS[] = {"sdmmc_req", "sdmmc_cmd", "sdmmc_common", "sdmmc_sd",
+                                               "sdmmc_periph", "sdmmc_io", "sdmmc_init"};
+  static inline char* buffer = nullptr;
+  static inline size_t used = 0;
+  static inline size_t dropped = 0;
+  static inline portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
   static inline vprintf_like_t previous = nullptr;
+  esp_log_level_t previousLevel = ESP_LOG_ERROR;
+
+  static void append(const char* text, size_t len) {
+    if (!buffer) return;
+    portENTER_CRITICAL_SAFE(&lock);
+    if (used + len <= CAPACITY) {
+      memcpy(buffer + used, text, len);
+      used += len;
+    } else {
+      dropped += len;
+    }
+    portEXIT_CRITICAL_SAFE(&lock);
+  }
+  static void sink(const char* line) { append(line, strlen(line)); }
   static int capture(const char* format, va_list args) {
     va_list copy;
     va_copy(copy, args);
-    char line[200];
+    char line[224];
     const int len = vsnprintf(line, sizeof(line), format, copy);
     va_end(copy);
-    const char* text = line;
-    if (text[0] == '\033') {
-      const char* end = strchr(text, 'm');
-      text = end ? end + 1 : text;
-    }
-    if (len > 0 && (text[0] == 'E' || text[0] == 'W')) {
-      char entry[224];
-      snprintf(entry, sizeof(entry), "[%lu] [IDF] %s", millis(), text);
-      addToLogRingBuffer(entry);
+    if (len > 0) {
+      const char* text = line;
+      if (text[0] == '\033') {
+        const char* end = strchr(text, 'm');
+        text = end ? end + 1 : text;
+      }
+      char entry[240];
+      const int n = snprintf(entry, sizeof(entry), "[%lu] [IDF] %s", millis(), text);
+      if (n > 0) append(entry, std::min(static_cast<size_t>(n), sizeof(entry) - 1));
+      if (text[0] == 'E' || text[0] == 'W') addToLogRingBuffer(entry);
     }
     return previous ? previous(format, args) : len;
   }
 };
+
+// One line with the state of everything a download depends on.
+void logSystemState(const char* when) {
+  LOG_INF("TILES", "%s: heap %u max %u, DMA %u max %u, PSRAM %u, heap ok %d, RSSI %d, wifi %d, battery %u%%, stack %u",
+          when, static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+          static_cast<unsigned>(ESP.getFreePsram()), heap_caps_check_integrity_all(true) ? 1 : 0,
+          static_cast<int>(WiFi.RSSI()), static_cast<int>(WiFi.status()),
+          static_cast<unsigned>(powerManager.getBatteryPercentage()),
+          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+}
+
+// Card state below the file system: a raw read of sector 0, then a file
+// system read and a write test.
+void logCardState(const char* when) {
+  static uint8_t sector[512];
+  FsBlockDeviceInterface* dev = SdMan.rawBlockDevice();
+  const bool raw = dev && dev->readSector(0, sector);
+  const bool mbr = raw && sector[510] == 0x55 && sector[511] == 0xAA;
+  LOG_INF("TILES", "%s: card ready %d, raw sector 0 read %d (signature %d), log exists %d, write test %s", when,
+          Storage.ready() ? 1 : 0, raw ? 1 : 0, mbr ? 1 : 0, Storage.exists(LOG_PATH) ? 1 : 0, sdWriteTest());
+}
 
 // Result of stockDownload(), kept for the screen and the log.
 struct StockDownload {
@@ -416,7 +482,6 @@ struct StockDownload {
 // The stock firmware's download routine, step for step (see handlePushList).
 StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
   constexpr size_t BUF_SIZE = 32 * 1024;
-  const IdfLogCapture idfLog;
   StockDownload d;
   const unsigned long started = millis();
   if (!Storage.ready()) {
@@ -487,7 +552,12 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
       d.netOk = esp_http_client_is_complete_data_received(client) || d.contentLength <= 0;
       break;
     }
+    const unsigned long writeStart = millis();
     const size_t wrote = file.write(buf, n);
+    const unsigned long writeMs = millis() - writeStart;
+    if (writeMs > 300) {
+      LOG_INF("TILES", "slow SD write: %d bytes at %u took %lu ms", n, static_cast<unsigned>(d.written), writeMs);
+    }
     if (wrote != static_cast<size_t>(n)) {
       LOG_ERR("TILES", "SD write %u of %d bytes at %u, heap %u, max block %u", static_cast<unsigned>(wrote), n,
               static_cast<unsigned>(d.written), static_cast<unsigned>(ESP.getFreeHeap()),
@@ -612,19 +682,31 @@ void handlePushList(HalFile& out, const std::string& body) {
                static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
                static_cast<unsigned>(ESP.getFreePsram()));
     out.close();
-    const StockDownload d = stockDownload(url, dest, item["size"] | 0u);
-    step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
-         static_cast<unsigned>((item["size"] | 0u) / 1024));
-    step("net %s HTTP %d len %d got %u %lus", d.netOk ? "ok" : "FAIL", d.status, d.contentLength,
-         static_cast<unsigned>(d.written), d.ms / 1000);
-    step("SD %s", d.sdResult);
-    if (!d.ok) {
-      LOG_ERR("TILES", "after failure: SD write test %s, log exists %d", sdWriteTest(), Storage.exists(LOG_PATH));
+    StockDownload d;
+    {
+      DiagCapture capture;
+      logSystemState("before download");
+      logCardState("before download");
+      d = stockDownload(url, dest, item["size"] | 0u);
+      step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
+           static_cast<unsigned>((item["size"] | 0u) / 1024));
+      step("net %s HTTP %d len %d got %u %lus", d.netOk ? "ok" : "FAIL", d.status, d.contentLength,
+           static_cast<unsigned>(d.written), d.ms / 1000);
+      step("SD %s", d.sdResult);
+      logSystemState("after download");
+      logCardState("after download");
+      if (!d.ok && strcmp(sdWriteTest(), "ok") != 0) {
+        // Like the stock firmware's remount after an SD I/O error, so the
+        // log can still be written.
+        Storage.prepareForDeepSleep();
+        LOG_ERR("TILES", "card not answering; remount %d", Storage.begin() ? 1 : 0);
+        logCardState("after remount");
+      }
+      out = openLog();
+      if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
     }
+    DiagCapture::dump(out);
     const bool gotBook = d.ok;
-
-    out = openLog();
-    if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
     for (int i = 0; i < g_status.attemptCount; ++i) out.printf("  %s\n", g_status.attempts[i]);
     out.printf("  %lu ms, sha256 %s, SD free now %llu\n", d.ms, d.sha256,
                static_cast<unsigned long long>(Storage.freeBytes()));
