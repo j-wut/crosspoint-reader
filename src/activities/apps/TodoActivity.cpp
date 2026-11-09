@@ -88,7 +88,7 @@ const char* TodoActivity::headerTitle() const { return tr(STR_APP_TODO); }
 int TodoActivity::listCount() const { return 1 + syncRows() + static_cast<int>(items.size()) + (hasDone() ? 1 : 0); }
 
 int TodoActivity::itemAt(const int row) const {
-  const int index = row - 1;
+  const int index = row - 1 - syncRows();
   return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
 }
 
@@ -106,7 +106,7 @@ void TodoActivity::activateIndex(const int index) {
     addItem();
     return;
   }
-  if (syncRows() > 0 && index == listCount() - 1) {
+  if (syncRows() > 0 && index == 1) {
     startSync();
     return;
   }
@@ -182,20 +182,6 @@ void TodoActivity::buildScreen(UiScreen& screen) {
       static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  // The empty-list hint gets its own band above the rows (as in Countdown),
-  // so it never overlaps them.
-  if (items.empty()) {
-    auto hint = screen.theme().smallText;
-    hint.align = fui::TextAlign::Center;
-    hint.maxLines = 3;
-    const fui::Rect body = screen.body();
-    const fui::Rect band = screen.takeTop(static_cast<int16_t>(screen.target().lineHeight(hint.font) * 3),
-                                          static_cast<int16_t>(metrics.verticalSpacing));
-    screen.target().text(
-        fui::Rect{static_cast<int16_t>(body.x + 20), band.y, static_cast<int16_t>(body.width - 40), band.height},
-        tr(STR_TODO_EMPTY_HINT), hint);
-  }
-
   rows.clear();
   rows.reserve(listCount());
   fui::ListItem add;
@@ -203,12 +189,19 @@ void TodoActivity::buildScreen(UiScreen& screen) {
   add.bold = true;
   add.actionValue = 0;
   rows.push_back(add);
+  if (syncRows() > 0) {
+    fui::ListItem syncRow;
+    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
+    syncRow.value = sync.statusText();
+    syncRow.actionValue = 1;
+    rows.push_back(syncRow);
+  }
   for (size_t i = 0; i < items.size(); ++i) {
     fui::ListItem row;
     row.label = items[i].text.c_str();
     row.toggle = true;
     row.toggleChecked = items[i].done;
-    row.actionValue = static_cast<int16_t>(i + 1);
+    row.actionValue = static_cast<int16_t>(i + 1 + syncRows());
     rows.push_back(row);
   }
   if (hasDone()) {
@@ -216,13 +209,6 @@ void TodoActivity::buildScreen(UiScreen& screen) {
     clear.label = tr(STR_TODO_CLEAR_DONE);
     clear.actionValue = static_cast<int16_t>(rows.size());
     rows.push_back(clear);
-  }
-  if (syncRows() > 0) {
-    fui::ListItem syncRow;
-    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
-    syncRow.value = sync.statusText();
-    syncRow.actionValue = static_cast<int16_t>(rows.size());
-    rows.push_back(syncRow);
   }
 
   fui::ListProps props;
@@ -236,5 +222,20 @@ void TodoActivity::buildScreen(UiScreen& screen) {
   configureSwipeDelete(screen, props);
 #endif
   syncListViewport(screen, props);
+  const fui::Rect body = screen.body();
   screen.list(props);
+
+  // The empty-list hint goes right under the rows (Add and, on the Picco,
+  // Sync), so it never overlaps them.
+  if (items.empty()) {
+    auto hint = screen.theme().smallText;
+    hint.align = fui::TextAlign::Center;
+    hint.maxLines = 3;
+    const int16_t rowsBottom = static_cast<int16_t>(
+        body.y + static_cast<int>(rows.size()) * (props.rowHeight + std::max<int16_t>(props.rowGap, 0)));
+    screen.target().text(
+        fui::Rect{static_cast<int16_t>(body.x + 20), static_cast<int16_t>(rowsBottom + metrics.verticalSpacing),
+                  static_cast<int16_t>(body.width - 40), 90},
+        tr(STR_TODO_EMPTY_HINT), hint);
+  }
 }

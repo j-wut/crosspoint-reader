@@ -30,8 +30,8 @@ class TodoActivity final : public UiListActivity {
   bool ownsWifi = false;
   CloudSyncJob<applists::TodoItem> sync;
   bool editedDuringSync = false;
-  // Rows: 0 adds an item, then the items, a row that clears done items, and
-  // last the sync row (Picco).
+  // Rows: 0 adds an item, then the sync row (Picco), the items, and a last
+  // row that clears done items.
   int syncRows() const;
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
