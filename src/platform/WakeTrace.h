@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Sleep/wake trace written to /wake-log.txt on the SD card, so a wake that
+// Sleep/wake trace written to the wake-up debug log (/logs), so a wake that
 // shows the boot splash can be traced on a device without a serial console.
 
 // Where enterDeepSleep() had got to. Kept in RTC memory, which survives deep
