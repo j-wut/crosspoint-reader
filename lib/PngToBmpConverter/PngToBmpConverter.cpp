@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -654,6 +655,9 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     }
   }
 
+  // Source rows and columns averaged per output pixel when shrinking.
+  constexpr int MAX_SAMPLES_PER_AXIS = 2;
+
   // Scaling accumulators
   std::unique_ptr<uint32_t[]> rowAccum;
   std::unique_ptr<uint32_t[]> rowCount;
@@ -682,8 +686,16 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       break;
     }
 
-    // Batch-convert entire scanline to grayscale (one branch, tight loop)
-    convertScanlineToGray(ctx, grayRow);
+    // Every scanline must be inflated and unfiltered, since each row depends
+    // on the one before it. When shrinking, only the first rows and columns
+    // of each output pixel's area are converted and averaged.
+    const bool sampleRow =
+        !needsScaling ||
+        y < ((static_cast<uint64_t>(currentOutY) * scaleY_fp) >> 16) + MAX_SAMPLES_PER_AXIS;
+    if (sampleRow) {
+      // Batch-convert entire scanline to grayscale (one branch, tight loop)
+      convertScanlineToGray(ctx, grayRow);
+    }
 
     if (!needsScaling) {
       // Direct output (no scaling)
@@ -725,10 +737,11 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       bmpOut.write(rowBuffer, bytesPerRow);
       yieldDuringDecode(rowsSinceYield);
     } else {
-      // Area-averaging scaling (same as JpegToBmpConverter)
-      for (int outX = 0; outX < outWidth; outX++) {
+      // Area-averaging scaling over a sampled subset of each area
+      for (int outX = 0; sampleRow && outX < outWidth; outX++) {
         const int srcXStart = (static_cast<uint32_t>(outX) * scaleX_fp) >> 16;
-        const int srcXEnd = (static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16;
+        const int srcXEnd = std::min<int>((static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16,
+                                          srcXStart + MAX_SAMPLES_PER_AXIS);
 
         int sum = 0;
         int count = 0;

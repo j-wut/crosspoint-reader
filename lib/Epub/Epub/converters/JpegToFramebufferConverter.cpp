@@ -104,6 +104,11 @@ int32_t jpegSeek(JPEGFILE* pFile, int32_t pos) {
 constexpr size_t JPEG_DECODER_APPROX_SIZE = 20 * 1024;
 constexpr size_t MIN_FREE_HEAP_FOR_JPEG = JPEG_DECODER_APPROX_SIZE + 16 * 1024;
 
+// JPEGDEC decodes large baseline sources at 1/2..1/8 size, so the time cap
+// applies to the decoded grid. Any source whose 1/8 grid fits is accepted
+// here; decodeToFramebuffer checks the grid it actually decodes.
+constexpr int64_t MAX_SCALED_SOURCE_PIXELS = 64 * 8388608LL;
+
 // Choose JPEGDEC's built-in scale factor for coarse downscaling.
 // Returns the scale denominator (1, 2, 4, or 8) and sets jpegScaleOption.
 int chooseJpegScale(float targetScale, int& jpegScaleOption) {
@@ -388,7 +393,7 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
 
   const int width = jpeg->getWidth();
   const int height = jpeg->getHeight();
-  if (!validateAndStoreDimensions(width, height, out, "JPEG")) return false;
+  if (!validateAndStoreDimensions(width, height, out, "JPEG", MAX_SCALED_SOURCE_PIXELS)) return false;
   LOG_DBG("JPG", "Image dimensions: %dx%d", width, height);
 
   return true;
@@ -431,7 +436,10 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   }
 
   ImageDimensions sourceDimensions;
-  if (!validateAndStoreDimensions(jpeg->getWidth(), jpeg->getHeight(), sourceDimensions, "JPEG")) return false;
+  if (!validateAndStoreDimensions(jpeg->getWidth(), jpeg->getHeight(), sourceDimensions, "JPEG",
+                                  MAX_SCALED_SOURCE_PIXELS)) {
+    return false;
+  }
   const int srcWidth = sourceDimensions.width;
   const int srcHeight = sourceDimensions.height;
   const float cropX = std::clamp(config.sourceCropX, 0.0f, 0.99f);
@@ -485,6 +493,11 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   ctx.scaledSrcWidth = (srcWidth + jpegScaleDenom - 1) / jpegScaleDenom;
   ctx.scaledSrcHeight = (srcHeight + jpegScaleDenom - 1) / jpegScaleDenom;
+  if (static_cast<int64_t>(ctx.scaledSrcWidth) * ctx.scaledSrcHeight > MAX_SOURCE_PIXELS) {
+    LOG_ERR("JPG", "JPEG too large (%dx%d at 1/%d), max supported: %lld pixels", srcWidth, srcHeight, jpegScaleDenom,
+            static_cast<long long>(MAX_SOURCE_PIXELS));
+    return false;
+  }
   ctx.cropLeft = static_cast<int>(ctx.scaledSrcWidth * cropX / 2);
   ctx.cropTop = static_cast<int>(ctx.scaledSrcHeight * cropY / 2);
   ctx.scaledSrcWidth -= 2 * ctx.cropLeft;
