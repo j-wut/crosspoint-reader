@@ -152,21 +152,27 @@ LogFile openLog() {
   LogFile log;
   if (booxsd::stockMounted()) {
     fs::FS& fs = booxsd::fs();
-    bool fresh = true;
     if (fs.exists(LOG_PATH)) {
-      fs::File existing = fs.open(LOG_PATH, FILE_READ);
-      fresh = !existing || existing.size() > LOG_MAX_BYTES;
+      size_t size = 0;
+      if (fs::File existing = fs.open(LOG_PATH, FILE_READ)) size = existing.size();
+      if (size > LOG_MAX_BYTES) {
+        if (fs.exists(LOG_OLD_PATH)) fs.remove(LOG_OLD_PATH);
+        fs.rename(LOG_PATH, LOG_OLD_PATH);
+      }
     }
     log.useVfs_ = true;
-    log.vfs_ = fs.open(LOG_PATH, fresh ? FILE_WRITE : FILE_APPEND);
+    log.vfs_ = fs.open(LOG_PATH, FILE_APPEND);
     return log;
   }
-  bool fresh = true;
   if (Storage.exists(LOG_PATH)) {
-    HalFile existing = Storage.open(LOG_PATH);
-    fresh = !existing || existing.size() > LOG_MAX_BYTES;
+    size_t size = 0;
+    if (HalFile existing = Storage.open(LOG_PATH)) size = existing.size();
+    if (size > LOG_MAX_BYTES) {
+      if (Storage.exists(LOG_OLD_PATH)) Storage.remove(LOG_OLD_PATH);
+      Storage.rename(LOG_PATH, LOG_OLD_PATH);
+    }
   }
-  log.hal_ = Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
+  log.hal_ = Storage.open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND);
   return log;
 }
 

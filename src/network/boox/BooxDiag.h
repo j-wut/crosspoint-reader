@@ -44,8 +44,10 @@ class LogFile final : public Print {
 };
 
 constexpr const char* LOG_PATH = "/tiles-cloud-log.txt";
-// Start a new log instead of growing past this.
+// Past this size the log is renamed to LOG_OLD_PATH (replacing the older
+// copy) and a new one is started.
 constexpr size_t LOG_MAX_BYTES = 256 * 1024;
+constexpr const char* LOG_OLD_PATH = "/tiles-cloud-log.old.txt";
 
 LogFile openLog();
 
