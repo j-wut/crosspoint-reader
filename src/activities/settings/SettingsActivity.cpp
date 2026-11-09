@@ -135,7 +135,7 @@ StrId groupFor(const SettingInfo& setting, const SettingsSection section) {
 
   const auto ptr = setting.valuePtr;
   if (ptr == &S::sleepScreen || ptr == &S::sleepScreenCoverMode || ptr == &S::sleepScreenCoverFilter ||
-      ptr == &S::quickResumeSleepScreen || ptr == &S::sleepTimeoutMinutes) {
+      ptr == &S::quickResumeSleepScreen || ptr == &S::sleepTimeoutMinutes || ptr == &S::wakePress) {
     return StrId::STR_SETTINGS_GROUP_SLEEP;
   }
   if (setting.nameId == StrId::STR_DICTIONARY) return StrId::STR_SETTINGS_GROUP_TEXT;

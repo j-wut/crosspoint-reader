@@ -480,6 +480,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   bleturner::Config ble;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Wake From Sleep: 0 = the power button must still be held when the device
+  // checks it at boot (filters ghost wakes), 1 = any press wakes.
+  enum WAKE_PRESS { WAKE_LONG_PRESS = 0, WAKE_SHORT_PRESS = 1 };
+  uint8_t wakePress = WAKE_LONG_PRESS;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
