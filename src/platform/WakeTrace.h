@@ -27,7 +27,7 @@ void wakeTraceCapture();
 // Records how far sleep entry got. Safe to call while the SD card is down.
 void wakeTraceStage(SleepStage stage);
 
-// Appends one formatted line to the log file (and the serial log).
+// Appends one formatted line to the wake-up debug log (and the serial log).
 void appendWakeLog(const char* fmt, ...);
 
 // Writes the boot line, plus the previous boot's last logs when this boot did

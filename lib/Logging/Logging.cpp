@@ -37,6 +37,10 @@ static void (*logSink)(const char*) = nullptr;
 
 void setLogSink(void (*sink)(const char* line)) { logSink = sink; }
 
+static void (*logRouter)(const char*, const char*) = nullptr;
+
+void setLogRouter(void (*router)(const char* origin, const char* line)) { logRouter = router; }
+
 // Since logging can take a large amount of flash, we want to make the format string as short as possible.
 // This logPrintf prepend the timestamp, level and origin to the user-provided message, so that the user only needs to
 // provide the format string for the message itself.
@@ -77,6 +81,7 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
 #endif
   addToLogRingBuffer(buf);
   if (logSink) logSink(buf);
+  if (logRouter) logRouter(origin, buf);
 }
 
 std::string getLastLogs() {

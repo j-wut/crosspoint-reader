@@ -69,6 +69,8 @@ std::string getLastLogs();
 void clearLastLogs();
 // Also hand every log line to sink (nullptr turns it off).
 void setLogSink(void (*sink)(const char* line));
+// Also hand every log line, with its origin, to router (nullptr turns it off).
+void setLogRouter(void (*router)(const char* origin, const char* line));
 // Validates the RTC log state (magic word + logHead range). Returns true if
 // corruption was detected (magic mismatch or logHead out of range), meaning
 // logMessages is untrusted garbage. Callers should call clearLastLogs() when

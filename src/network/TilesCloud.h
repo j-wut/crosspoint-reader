@@ -18,8 +18,8 @@ std::string mdnsHostname(const char* fallback);
 void addMdnsService();
 
 // Diagnostic: write the saved binding's layout (never secret values) and the
-// answers of the BOOX push list and a few read-only endpoints to
-// /tiles-cloud-log.txt, and try to download pushed items. Needs Wi-Fi with
+// answers of the BOOX push list and a few read-only endpoints to the BOOX
+// Cloud debug log, and try to download pushed items. Needs Wi-Fi with
 // internet access. Picco only; does nothing elsewhere.
 void probe();
 
@@ -46,7 +46,7 @@ const Status& status();
 // the stock firmware does when its Todo or Countdown app opens: join the last
 // Wi-Fi network if needed, GET /todo or /countdownDay with the saved token,
 // then turn Wi-Fi off again if this call turned it on. Blocks for the
-// requests. Each step goes to /tiles-cloud-log.txt. Picco only.
+// requests. Each step goes to the Todo or Countdown debug log. Picco only.
 enum class SyncResult : uint8_t { Skipped, NoBinding, NoWifi, Failed, Ok };
 SyncResult syncTodos(std::vector<applists::TodoItem>& items);
 SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items);
@@ -57,15 +57,5 @@ SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items);
 // token, deviceId, secretHex, tokenLastAt). False while the server has no
 // token for this device yet. Needs Wi-Fi. Picco only.
 bool finishBinding();
-
-// At boot: note the reset reason and, when given, the previous session's
-// device log (Picco only).
-void logBoot(int resetReason, const std::string& previousLogs);
-
-// Append the device's recent log lines to the same log, under `why` (Picco only).
-void logRecentDeviceLog(const char* why);
-
-// Append one printf-style line to the same log (Picco only).
-void logLine(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 }  // namespace tilescloud

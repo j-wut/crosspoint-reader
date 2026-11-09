@@ -97,7 +97,7 @@ constexpr StrId GROUP_ORDER[] = {
     StrId::STR_SETTINGS_GROUP_SCREEN,   StrId::STR_SETTINGS_GROUP_TEXT,      StrId::STR_SETTINGS_GROUP_LAYOUT,
     StrId::STR_SETTINGS_GROUP_STORAGE,  StrId::STR_SETTINGS_GROUP_BUTTONS,   StrId::STR_SETTINGS_GROUP_PAGE_TURNING,
     StrId::STR_SETTINGS_GROUP_TOUCH,    StrId::STR_SETTINGS_GROUP_SHORTCUTS, StrId::STR_SETTINGS_GROUP_WIRELESS,
-    StrId::STR_SETTINGS_GROUP_SERVICES,
+    StrId::STR_SETTINGS_GROUP_SERVICES, StrId::STR_SETTINGS_GROUP_DEVELOP,
 };
 
 // Sub-heading for a row; STR_NONE_OPT = no heading (Library).
@@ -139,6 +139,7 @@ StrId groupFor(const SettingInfo& setting, const SettingsSection section) {
     return StrId::STR_SETTINGS_GROUP_SLEEP;
   }
   if (setting.nameId == StrId::STR_DICTIONARY) return StrId::STR_SETTINGS_GROUP_TEXT;
+  if (ptr == &S::debugLogging) return StrId::STR_SETTINGS_GROUP_DEVELOP;
   if (ptr == &S::sideButtonLayout || ptr == &S::frontButtonFollowOrientation ||
       ptr == &S::sideButtonFollowOrientation) {
     return StrId::STR_SETTINGS_GROUP_BUTTONS;

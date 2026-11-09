@@ -72,6 +72,7 @@
 #include "html/js/pdfjs_worker_minJs.generated.h"
 #include "html/js/plugin_hostJs.generated.h"
 #include "util/BookCacheUtils.h"
+#include "util/DebugLog.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
 #include "util/PluginHttp.h"
@@ -602,7 +603,7 @@ void removeStaleTransferFiles() {
       if (!path.endsWith("/")) path += "/";
       path += entry;
       const bool removed = Storage.remove(path.c_str());
-      tilescloud::logLine("removed stale transfer file %s: %d", path.c_str(), removed);
+      debuglog::line(debuglog::Feature::FileTransfer, "removed stale transfer file %s: %d", path.c_str(), removed);
     }
   }
 }
@@ -640,8 +641,8 @@ void CrossPointWebServer::stop() {
     upload.file.close();
     const String partial = uploadWritePath(upload);
     const bool removed = Storage.remove(partial.c_str());
-    tilescloud::logLine("upload cut off at %u bytes; removed %s: %d", static_cast<unsigned>(upload.size),
-                        partial.c_str(), removed);
+    debuglog::line(debuglog::Feature::FileTransfer, "upload cut off at %u bytes; removed %s: %d",
+                   static_cast<unsigned>(upload.size), partial.c_str(), removed);
   }
   upload.buffer.reset();
   upload.bufferPos = 0;
@@ -803,7 +804,7 @@ void CrossPointWebServer::handleNotFound() const {
     return;
   }
 
-  tilescloud::logLine("-> 404 %s", server->uri().c_str());
+  debuglog::line(debuglog::Feature::FileTransfer, "-> 404 %s", server->uri().c_str());
   String message = "404 Not Found\n\n";
   message += "URI: " + server->uri() + "\n";
   server->send(404, "text/plain", message);
@@ -1122,8 +1123,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       state.file.close();
       const String partial = uploadWritePath(state);
       const bool removed = Storage.remove(partial.c_str());
-      tilescloud::logLine("earlier upload left open at %u bytes; removed %s: %d", static_cast<unsigned>(state.size),
-                          partial.c_str(), removed);
+      debuglog::line(debuglog::Feature::FileTransfer, "earlier upload left open at %u bytes; removed %s: %d",
+                     static_cast<unsigned>(state.size), partial.c_str(), removed);
     }
 
     state.fileName = upload.filename;
@@ -1138,11 +1139,11 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     writeCount = 0;
     state.buffer.reset();
 
-    tilescloud::logLine("upload start: field=%s file=%s type=%s", upload.name.c_str(), upload.filename.c_str(),
-                        upload.type.c_str());
+    debuglog::line(debuglog::Feature::FileTransfer, "upload start: field=%s file=%s type=%s", upload.name.c_str(),
+                   upload.filename.c_str(), upload.type.c_str());
     if (!FsHelpers::isSafePathComponent(state.fileName)) {
       state.error = "Invalid file name";
-      tilescloud::logLine("upload rejected: unsafe file name");
+      debuglog::line(debuglog::Feature::FileTransfer, "upload rejected: unsafe file name");
       LOG_DBG("WEB", "[UPLOAD] Rejected unsafe filename: %s", state.fileName.c_str());
       return;
     }
@@ -1205,7 +1206,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       return;
     }
     resetTaskWatchdogIfSubscribed();
-    tilescloud::logLine("upload writing %s", uploadWritePath(state).c_str());
+    debuglog::line(debuglog::Feature::FileTransfer, "upload writing %s", uploadWritePath(state).c_str());
 
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", uploadWritePath(state).c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -1239,7 +1240,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
 
       state.size += upload.currentSize;
       if (state.size == upload.currentSize || state.size / 65536 != (state.size - upload.currentSize) / 65536) {
-        tilescloud::logLine("upload progress: %u bytes", static_cast<unsigned>(state.size));
+        debuglog::line(debuglog::Feature::FileTransfer, "upload progress: %u bytes", static_cast<unsigned>(state.size));
       }
 
       // Log progress every 100KB
@@ -1260,8 +1261,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         removeUploadedFile(state);
       }
       state.error = "Upload aborted";
-      tilescloud::logLine("upload end: client disconnected after %u bytes, partial file removed",
-                          static_cast<unsigned>(state.size));
+      debuglog::line(debuglog::Feature::FileTransfer,
+                     "upload end: client disconnected after %u bytes, partial file removed",
+                     static_cast<unsigned>(state.size));
       return;
     }
     if (state.file) {
@@ -1310,8 +1312,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         if (state.path == SdCardFontRegistry::FONTS_DIR_VISIBLE) sdFontSystem.markRegistryDirty();
       }
     }
-    tilescloud::logLine("upload end: %s/%s %u bytes, error=%s", state.path.c_str(), state.fileName.c_str(),
-                        static_cast<unsigned>(state.size), state.error.c_str());
+    debuglog::line(debuglog::Feature::FileTransfer, "upload end: %s/%s %u bytes, error=%s", state.path.c_str(),
+                   state.fileName.c_str(), static_cast<unsigned>(state.size), state.error.c_str());
     state.buffer.reset();
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     state.bufferPos = 0;  // Discard buffered data
@@ -1322,7 +1324,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     }
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
-    tilescloud::logLine("upload aborted: %s, %u bytes", state.fileName.c_str(), static_cast<unsigned>(state.size));
+    debuglog::line(debuglog::Feature::FileTransfer, "upload aborted: %s, %u bytes", state.fileName.c_str(),
+                   static_cast<unsigned>(state.size));
   }
 }
 
@@ -1351,8 +1354,8 @@ void CrossPointWebServer::handleFirmwareFlash() {
 }
 
 void CrossPointWebServer::handleUploadPost(UploadState& state) const {
-  tilescloud::logLine("upload reply: success=%d error=%s raw body=%u bytes", state.success, state.error.c_str(),
-                      static_cast<unsigned>(server->arg("plain").length()));
+  debuglog::line(debuglog::Feature::FileTransfer, "upload reply: success=%d error=%s raw body=%u bytes", state.success,
+                 state.error.c_str(), static_cast<unsigned>(server->arg("plain").length()));
   if (state.success) {
     server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {

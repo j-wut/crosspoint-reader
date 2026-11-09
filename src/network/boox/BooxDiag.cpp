@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "BooxSd.h"
+#include "util/DebugLog.h"
 
 void addToLogRingBuffer(const char* message);  // Logging.cpp
 
@@ -77,6 +78,8 @@ int capture(const char* format, va_list args) {
 }  // namespace
 
 Capture::Capture() {
+  if (!debuglog::enabled()) return;
+  active_ = true;
   if (!buffer) buffer = static_cast<char*>(heap_caps_malloc(CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   used = 0;
   dropped = 0;
@@ -89,6 +92,7 @@ Capture::Capture() {
 }
 
 Capture::~Capture() {
+  if (!active_) return;
   g_logDisplayRefresh = false;
   setLogSink(nullptr);
   esp_log_set_vprintf(previous);
@@ -96,6 +100,7 @@ Capture::~Capture() {
 }
 
 void Capture::dumpAndReset(Print& out) {
+  if (!debuglog::enabled()) return;
   if (!buffer) {
     out.println("  (no PSRAM for the transfer log)");
     return;
@@ -116,64 +121,6 @@ void Capture::dumpAndReset(Print& out) {
   used = extra;
   dropped = 0;
   portEXIT_CRITICAL_SAFE(&lock);
-}
-
-size_t LogFile::write(const uint8_t c) { return write(&c, 1); }
-
-size_t LogFile::write(const uint8_t* buf, const size_t len) {
-  if (useVfs_) return vfs_ ? vfs_.write(buf, len) : 0;
-  return hal_ ? hal_.write(buf, len) : 0;
-}
-
-void LogFile::flush() {
-  if (useVfs_) {
-    if (vfs_) vfs_.flush();
-  } else if (hal_) {
-    hal_.flush();
-  }
-}
-
-void LogFile::close() {
-  if (useVfs_) {
-    if (vfs_) vfs_.close();
-  } else if (hal_) {
-    hal_.close();
-  }
-}
-
-size_t LogFile::size() {
-  if (useVfs_) return vfs_ ? vfs_.size() : 0;
-  return hal_ ? hal_.size() : 0;
-}
-
-LogFile::operator bool() const { return useVfs_ ? static_cast<bool>(vfs_) : static_cast<bool>(hal_); }
-
-LogFile openLog() {
-  LogFile log;
-  if (booxsd::stockMounted()) {
-    fs::FS& fs = booxsd::fs();
-    if (fs.exists(LOG_PATH)) {
-      size_t size = 0;
-      if (fs::File existing = fs.open(LOG_PATH, FILE_READ)) size = existing.size();
-      if (size > LOG_MAX_BYTES) {
-        if (fs.exists(LOG_OLD_PATH)) fs.remove(LOG_OLD_PATH);
-        fs.rename(LOG_PATH, LOG_OLD_PATH);
-      }
-    }
-    log.useVfs_ = true;
-    log.vfs_ = fs.open(LOG_PATH, FILE_APPEND);
-    return log;
-  }
-  if (Storage.exists(LOG_PATH)) {
-    size_t size = 0;
-    if (HalFile existing = Storage.open(LOG_PATH)) size = existing.size();
-    if (size > LOG_MAX_BYTES) {
-      if (Storage.exists(LOG_OLD_PATH)) Storage.remove(LOG_OLD_PATH);
-      Storage.rename(LOG_PATH, LOG_OLD_PATH);
-    }
-  }
-  log.hal_ = Storage.open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND);
-  return log;
 }
 
 void logSystemState(const char* when) {

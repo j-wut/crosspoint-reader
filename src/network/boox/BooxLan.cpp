@@ -18,6 +18,7 @@
 #include "BooxDiag.h"
 #include "BooxSd.h"
 #include "network/TilesCloud.h"
+#include "util/DebugLog.h"
 
 namespace booxlan {
 namespace {
@@ -529,7 +530,7 @@ esp_err_t handleUpload(httpd_req_t* req) {
   booxdiag::logPowerState("upload end");
   booxsd::logState("upload end");
   // Keep the whole story on the card.
-  if (booxdiag::LogFile log = booxdiag::openLog()) {
+  if (debuglog::File log = debuglog::open(debuglog::booxLan(booxsd::backend() == booxsd::Backend::SdFat))) {
     log.printf("\n[%lu s] BOOX LAN upload: %s\n", millis() / 1000, up.error ? up.error : "ok");
     booxdiag::Capture::dumpAndReset(log);
     log.close();
