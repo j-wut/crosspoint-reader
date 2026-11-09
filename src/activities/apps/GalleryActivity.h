@@ -26,8 +26,6 @@ class GalleryActivity final : public Activity, private UiAppHost {
   static constexpr int ROWS = 2;
   static constexpr int PER_PAGE = COLUMNS * ROWS;
 
-  // One grid slot: an image, or after the images "Random sleep image" and,
-  // when one is set, "Turn off reading sleep screen".
   struct Cell {
     int item = -1;
     std::string thumb;  // cached preview BMP, when made
@@ -57,6 +55,5 @@ class GalleryActivity final : public Activity, private UiAppHost {
   int thumbW = 0;    // preview size, set by the render task
   int thumbH = 0;
   bool thumbSizeChanged = false;
-  bool hasReading = false;
   int pending = -1;
 };

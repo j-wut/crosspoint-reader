@@ -88,11 +88,10 @@ void GalleryActivity::reload() {
   names.clear();
   names.reserve(images.size());
   for (const auto& path : images) names.push_back(path.substr(path.find_last_of('/') + 1));
-  hasReading = Storage.exists(wallpaper::READING_PATH);
-  LOG_INF("GAL", "%u images, reading image %d", static_cast<unsigned>(images.size()), hasReading);
+  LOG_INF("GAL", "%u images", static_cast<unsigned>(images.size()));
 }
 
-int GalleryActivity::itemCount() const { return static_cast<int>(images.size()) + 1 + (hasReading ? 1 : 0); }
+int GalleryActivity::itemCount() const { return static_cast<int>(images.size()); }
 
 void GalleryActivity::loadPage(const int newPage) {
   const int count = itemCount();
@@ -110,10 +109,9 @@ void GalleryActivity::loadPage(const int newPage) {
 // Makes one missing preview per call so the page fills in image by image.
 bool GalleryActivity::makeMissingThumb() {
   if (thumbW <= 0 || thumbH <= 0) return false;
-  const int imageCount = static_cast<int>(images.size());
   for (int i = 0; i < cellCount; ++i) {
     Cell& cell = cells[i];
-    if (cell.thumbTried || cell.item >= imageCount) continue;
+    if (cell.thumbTried) continue;
     cell.thumbTried = true;
     RenderLock lock(*this);
     if (!wallpaper::thumbBmp(images[cell.item], thumbW, thumbH, cell.thumb)) {
@@ -135,6 +133,7 @@ void GalleryActivity::screenFn(UiScreen& screen, void* user) { static_cast<Galle
 
 void GalleryActivity::select(const int item) {
   const int count = itemCount();
+  if (count == 0) return;
   const int flat = (item % count + count) % count;
   selected = flat % PER_PAGE;
   if (flat / PER_PAGE != page) loadPage(flat / PER_PAGE);
@@ -142,27 +141,7 @@ void GalleryActivity::select(const int item) {
 }
 
 void GalleryActivity::activate(const int item) {
-  const int count = static_cast<int>(images.size());
-  if (item < 0) return;
-  if (item < count) {
-    openImage(item);
-    return;
-  }
-  if (item == count) {
-    // Random: drop the chosen sleep image so the sleep screen picks from /sleep.
-    if (Storage.exists(wallpaper::SLEEP_PATH)) Storage.remove(wallpaper::SLEEP_PATH);
-    wallpaper::setWallpaper("", wallpaper::SLEEP);
-    SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
-    SETTINGS.saveToFile();
-  } else {
-    Storage.remove(wallpaper::READING_PATH);
-    wallpaper::setWallpaper("", wallpaper::READING);
-  }
-  GUI.drawPopup(renderer, tr(STR_DONE));
-  delay(700);
-  reload();
-  loadPage(page);
-  requestUpdate();
+  if (item >= 0 && item < itemCount()) openImage(item);
 }
 
 void GalleryActivity::openImage(const int index) {
@@ -345,7 +324,6 @@ void GalleryActivity::draw(UiScreen& screen) {
 void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect rect) {
   const auto& theme = screen.theme();
   const Cell& cell = cells[slot];
-  const bool isImage = cell.item < static_cast<int>(images.size());
   auto name = theme.smallText;
   name.align = fui::TextAlign::Center;
   name.maxLines = 1;
@@ -374,7 +352,7 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
 
   screen.target().fill(box, PAPER);
   bool drawn = false;
-  if (isImage && !cell.thumb.empty() && !thumbSizeChanged) {
+  if (!cell.thumb.empty() && !thumbSizeChanged) {
     HalFile file;
     if (Storage.openFileForRead("GAL", cell.thumb, file)) {
       Bitmap bitmap(file);
@@ -386,27 +364,19 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
     }
   }
   if (!drawn) {
-    // Action tiles, and images whose preview is not ready (or failed).
+    // Preview not made yet, or it failed.
     auto label = theme.smallText;
-    label.bold = !isImage;
     label.align = fui::TextAlign::Center;
-    label.maxLines = 4;
-    const char* text =
-        isImage ? (cell.thumbTried ? "?" : "...")
-                : (cell.item == static_cast<int>(images.size()) ? tr(STR_GALLERY_RANDOM) : tr(STR_GALLERY_READING_OFF));
-    const auto textH = static_cast<int16_t>(nameH * (isImage ? 1 : 4));
-    screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - textH) / 2),
-                                   static_cast<int16_t>(boxW - 16), textH},
-                         text, label);
+    screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - nameH) / 2),
+                                   static_cast<int16_t>(boxW - 16), nameH},
+                         cell.thumbTried ? "?" : "...", label);
   }
   screen.target().stroke(box, INK, BORDER, 0);
   if (slot == selected && !BoardConfig::hasTouch()) {
     screen.target().stroke(box.inset(fui::Insets{-5, -5, -5, -5}), INK, 3, 6);
   }
-  if (isImage) {
-    screen.target().text(fui::Rect{rect.x, static_cast<int16_t>(box.bottom() + theme.spaceSm), rect.width, nameH},
-                         names[cell.item].c_str(), name);
-  }
+  screen.target().text(fui::Rect{rect.x, static_cast<int16_t>(box.bottom() + theme.spaceSm), rect.width, nameH},
+                       names[cell.item].c_str(), name);
   screen.frame().hit(rect, CELL, static_cast<int16_t>(slot), fui::InputTouch);
 }
 
