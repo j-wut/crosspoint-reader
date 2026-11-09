@@ -648,6 +648,55 @@ void handlePushList(booxdiag::LogFile& out, const std::string& body) {
 // this old (seconds since tokenLastAt), or when the server rejects it.
 constexpr uint32_t TOKEN_FRESH_SECONDS = 14399;
 
+// A user_cred string, or "" when missing.
+std::string readNvsString(const char* key) {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return {};
+  size_t len = 0;
+  std::string out;
+  if (nvs_get_str(handle, key, nullptr, &len) == ESP_OK && len > 1) {
+    out.resize(len);
+    if (nvs_get_str(handle, key, out.data(), &len) == ESP_OK) {
+      out.resize(len - 1);
+    } else {
+      out.clear();
+    }
+  }
+  nvs_close(handle);
+  return out;
+}
+
+// Seconds since 1970 when the clock is set, else 0 (stock skips the stamp).
+uint32_t clockOrZero() {
+  const auto clock = static_cast<uint32_t>(time(nullptr));
+  return clock > 1000000000u ? clock : 0;
+}
+
+// Save a token from /users/deviceToken right away. The server disables the
+// previous token as soon as it issues a new one, and stock drops the binding
+// when its saved token gets a 401, so NVS must never keep the old one.
+void saveNewToken(Print& log, const std::string& token) {
+  std::string userInfo;
+  readUserInfo(userInfo, log);
+  JsonDocument doc;
+  const bool patchInfo = !userInfo.empty() && !deserializeJson(doc, userInfo) && doc.is<JsonObject>();
+  if (patchInfo) {
+    doc["accessToken"] = token;
+    userInfo.clear();
+    serializeJson(doc, userInfo);
+  }
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    if (patchInfo) err = nvs_set_str(handle, NVS_USER_INFO, userInfo.c_str());
+    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
+    if (err == ESP_OK) err = nvs_set_u32(handle, "tokenLastAt", clockOrZero());
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  log.printf("auth: new token saved at once (userInfo updated %d): %s\n", patchInfo, esp_err_to_name(err));
+}
+
 // The saved token and when it was issued (0 when unknown).
 std::string savedToken(Print& log, uint32_t& issuedAt) {
   issuedAt = 0;
@@ -656,11 +705,14 @@ std::string savedToken(Print& log, uint32_t& issuedAt) {
     nvs_get_u32(handle, "tokenLastAt", &issuedAt);
     nvs_close(handle);
   }
+  // Stock reads the "token" key (after userInfo), so prefer it.
+  std::string token = readNvsString("token");
+  if (!token.empty()) return token;
   std::string userInfo;
   if (!readUserInfo(userInfo, log)) return {};
   JsonDocument doc;
   if (deserializeJson(doc, userInfo)) return {};
-  std::string token = findString(doc.as<JsonVariantConst>(), "accessToken");
+  token = findString(doc.as<JsonVariantConst>(), "accessToken");
   if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
   return token;
 }
@@ -672,6 +724,8 @@ std::string savedToken(Print& log, uint32_t& issuedAt) {
 bool refreshToken(Print& log) {
   const std::string token = requestDeviceToken(log);
   if (token.empty()) return false;
+  saveNewToken(log, token);
+  g_authorization = token;
   std::string body;
   const std::string url = std::string(API_BASE) + "/users/me";
   const int status = logGet(log, url.c_str(), token, "me", &body, 16 * 1024);
@@ -691,9 +745,7 @@ bool refreshToken(Print& log) {
   const std::string deviceId = findString(info.as<JsonVariantConst>(), "id");
   const char* devId = info["device"]["id"] | deviceId.c_str();
   const char* secret = info["device"]["secretHex"] | "";
-  // Stock only stamps tokenLastAt when the clock is set (after 2001).
-  const auto clock = static_cast<uint32_t>(time(nullptr));
-  const uint32_t now = clock > 1000000000u ? clock : 0;
+  const uint32_t now = clockOrZero();
 
   // Same keys, types and order as the stock credential store (UCS). Stock
   // also tries "tokenRefreshPending", which NVS rejects (key over 15 chars).
@@ -726,6 +778,16 @@ bool ensureAuthorization(Print& log, const bool force = false) {
   const bool clockSet = now > 1000000000u;
   log.printf("auth: saved token %u chars, issued %u, now %u, force %d\n", static_cast<unsigned>(saved.size()),
              static_cast<unsigned>(issuedAt), static_cast<unsigned>(now), force);
+  // Once per boot, test the saved token before any refresh: stock uses it
+  // as is and drops the binding if the server answers 401.
+  static bool savedTokenChecked = false;
+  if (!savedTokenChecked && !saved.empty()) {
+    savedTokenChecked = true;
+    const std::string url = std::string(API_BASE) + "/push/list?limit=1&offset=0";
+    const int status = logGet(log, url.c_str(), saved, "saved token check");
+    log.printf("auth: saved token check: HTTP %d (%s for stock)\n", status,
+               status == 200 ? "valid" : (status == 401 ? "REJECTED, stock would drop the binding" : "unclear"));
+  }
   if (!force && !saved.empty() && clockSet && issuedAt != 0 && now >= issuedAt &&
       now - issuedAt <= TOKEN_FRESH_SECONDS) {
     log.println("auth: saved token still fresh");
@@ -734,9 +796,11 @@ bool ensureAuthorization(Print& log, const bool force = false) {
     return true;
   }
   if (refreshToken(log)) return true;
-  log.println("auth: no new token from /users/deviceToken");
-  if (force || saved.empty()) return false;
-  g_authorization = saved;
+  log.println("auth: no full refresh (no token or no account)");
+  // A token that arrived without the account was already saved; use it.
+  const std::string latest = savedToken(log, issuedAt);
+  if (latest.empty() || (force && latest == saved)) return false;
+  g_authorization = latest;
   g_status.bound = true;
   return true;
 }
