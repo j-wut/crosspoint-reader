@@ -324,6 +324,42 @@ static bool decodeScanline(PngDecodeContext& ctx) {
   return true;
 }
 
+// Grayscale value of one pixel of the current scanline, using the same
+// weights as convertScanlineToGray. Used when only some columns are sampled.
+static uint8_t grayPixel(const PngDecodeContext& ctx, const uint32_t x) {
+  const uint8_t* src = ctx.currentRow;
+  switch (ctx.colorType) {
+    case PNG_COLOR_GRAYSCALE:
+      if (ctx.bitDepth == 8) return src[x];
+      if (ctx.bitDepth == 16) return src[x * 2];
+      {
+        const int ppb = 8 / ctx.bitDepth;
+        const uint8_t mask = (1 << ctx.bitDepth) - 1;
+        const int shift = (ppb - 1 - (x % ppb)) * ctx.bitDepth;
+        return (src[x / ppb] >> shift & mask) * 255 / mask;
+      }
+    case PNG_COLOR_RGB:
+      if (ctx.bitDepth == 8) return (src[x * 3] * 25 + src[x * 3 + 1] * 50 + src[x * 3 + 2] * 25) / 100;
+      return (src[x * 6] * 25 + src[x * 6 + 2] * 50 + src[x * 6 + 4] * 25) / 100;
+    case PNG_COLOR_PALETTE: {
+      const int ppb = 8 / ctx.bitDepth;
+      const uint8_t mask = (1 << ctx.bitDepth) - 1;
+      const int shift = (ppb - 1 - (x % ppb)) * ctx.bitDepth;
+      uint8_t idx = (src[x / ppb] >> shift) & mask;
+      if (idx >= ctx.paletteSize) idx = 0;
+      const uint8_t* pal = ctx.palette;
+      return (pal[idx * 3] * 25 + pal[idx * 3 + 1] * 50 + pal[idx * 3 + 2] * 25) / 100;
+    }
+    case PNG_COLOR_GRAYSCALE_ALPHA:
+      return ctx.bitDepth == 8 ? src[x * 2] : src[x * 4];
+    case PNG_COLOR_RGBA:
+      if (ctx.bitDepth == 8) return (src[x * 4] * 25 + src[x * 4 + 1] * 50 + src[x * 4 + 2] * 25) / 100;
+      return (src[x * 8] * 25 + src[x * 8 + 2] * 50 + src[x * 8 + 4] * 25) / 100;
+    default:
+      return 128;
+  }
+}
+
 // Batch-convert an entire scanline to grayscale.
 // Branches once on colorType/bitDepth, then runs a tight loop for the whole row.
 static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow) {
@@ -687,12 +723,12 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     }
 
     // Every scanline must be inflated and unfiltered, since each row depends
-    // on the one before it. When shrinking, only the first rows and columns
-    // of each output pixel's area are converted and averaged.
+    // on the one before it. When scaling, only the first rows and columns of
+    // each output pixel's area are converted and averaged.
     const bool sampleRow =
         !needsScaling ||
         y < ((static_cast<uint64_t>(currentOutY) * scaleY_fp) >> 16) + MAX_SAMPLES_PER_AXIS;
-    if (sampleRow) {
+    if (!needsScaling) {
       // Batch-convert entire scanline to grayscale (one branch, tight loop)
       convertScanlineToGray(ctx, grayRow);
     }
@@ -746,12 +782,12 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
         int sum = 0;
         int count = 0;
         for (int srcX = srcXStart; srcX < srcXEnd && srcX < static_cast<int>(width); srcX++) {
-          sum += grayRow[srcX];
+          sum += grayPixel(ctx, srcX);
           count++;
         }
 
         if (count == 0 && srcXStart < static_cast<int>(width)) {
-          sum = grayRow[srcXStart];
+          sum = grayPixel(ctx, srcXStart);
           count = 1;
         }
 
