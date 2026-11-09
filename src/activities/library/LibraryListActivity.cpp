@@ -17,10 +17,13 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "activities/ActivityManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
+#include "components/CatalogScreens.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
+#include "components/icons/appIcons.h"
 #include "components/icons/headerIcons.h"
 #include "components/icons/listIcons.h"
 #include "components/icons/search32.h"
@@ -73,8 +76,9 @@ const char* tabLabelFor(const int tab) {
 
 }  // namespace
 
-LibraryListActivity::LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : UiTabListActivity("Library", renderer, mappedInput, true) {
+LibraryListActivity::LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                         const bool fromBookshelf)
+    : UiTabListActivity("Library", renderer, mappedInput, true), fromBookshelf(fromBookshelf) {
   // Three short tab labels: a full-slot pill would stretch across a third of
   // the screen, so cap it at the label plus padding (slots stay put).
   tabPillMaxPad = 16;
@@ -90,6 +94,7 @@ void LibraryListActivity::onEnter() {
   UiTabListActivity::onEnter();
   app.on(ACTION_SEARCH, &LibraryListActivity::searchActionTrampoline, this);
   app.on(ACTION_REBUILD, &LibraryListActivity::rebuildActionTrampoline, this);
+  app.on(ACTION_TILES, &LibraryListActivity::tilesActionTrampoline, this);
   app.on(ACTION_BACK, &LibraryListActivity::backActionTrampoline, this);
 
   // Recent is backed by the resident store. Prune before opening the index so
@@ -702,6 +707,8 @@ void LibraryListActivity::rebuildActionTrampoline(const fui::ActionEvent&, void*
   static_cast<LibraryListActivity*>(user)->promptRebuildIndex();
 }
 
+void LibraryListActivity::tilesActionTrampoline(const fui::ActionEvent&, void*) { activityManager.goToBookshelf(); }
+
 // Title and author for one entry, read straight from the index. Only ever
 // called for rows about to be drawn, so at most a screenful of strings exists
 // at once.
@@ -983,6 +990,9 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
                                                          frameRect.width, static_cast<int16_t>(metrics.headerHeight)},
                                                header);
   fui::header(screen.frame(), band, header);
+  if (fromBookshelf && !degraded && mappedInput.hasTouch()) {
+    headerThirdTrailingButton(screen, band, header, fui::bitmapFromIcon(icon_app_apps_32), ACTION_TILES);
+  }
 }
 
 void LibraryListActivity::buildScreen(UiScreen& screen) {

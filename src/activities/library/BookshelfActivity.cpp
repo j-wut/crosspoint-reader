@@ -8,6 +8,7 @@
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <LibraryIndexFile.h>
+#include <LibraryText.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <Xtc.h>
@@ -20,7 +21,11 @@
 #include "RecentBooksStore.h"
 #include "activities/ActivityManager.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
+#include "components/CatalogScreens.h"
 #include "components/UITheme.h"
+#include "components/icons/listIcons.h"
+#include "components/icons/search32.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookProgress.h"
 
@@ -30,6 +35,14 @@ namespace {
 constexpr fui::ActionId CELL = 1;
 constexpr fui::ActionId LIST = 2;
 constexpr fui::ActionId PAGE = 3;  // value -1 / +1
+constexpr fui::ActionId SEARCH = 4;
+constexpr fui::ActionId REFRESH = 5;
+// Pending codes for the non-cell actions; cells use their slot index.
+constexpr int PENDING_LIST = 1000;
+constexpr int PENDING_PREV = 1001;
+constexpr int PENDING_NEXT = 1002;
+constexpr int PENDING_SEARCH = 1003;
+constexpr int PENDING_REFRESH = 1004;
 constexpr int16_t GAP = 14;
 constexpr int16_t PROGRESS_HEIGHT = 6;
 constexpr int16_t BAR_HEIGHT = 44;
@@ -81,6 +94,8 @@ void BookshelfActivity::onEnter() {
   app.on(CELL, &BookshelfActivity::onAction, this);
   app.on(LIST, &BookshelfActivity::onAction, this);
   app.on(PAGE, &BookshelfActivity::onAction, this);
+  app.on(SEARCH, &BookshelfActivity::onAction, this);
+  app.on(REFRESH, &BookshelfActivity::onAction, this);
   app.setScreen(&BookshelfActivity::screenFn, this);
   loadPage(0);
   requestUpdate();
@@ -94,13 +109,15 @@ void BookshelfActivity::loadPage(const int newPage) {
     cellCount = 0;
     return;
   }
-  bookCount = index.bookCount();
+  const bool filteredShelf = !query.empty() && matches;
+  bookCount = filteredShelf ? matchCount : index.bookCount();
   const int pages = std::max(1, (bookCount + PER_PAGE - 1) / PER_PAGE);
   page = std::clamp(newPage, 0, pages - 1);
   cellCount = 0;
   for (int slot = 0; slot < PER_PAGE; ++slot) {
-    const int row = page * PER_PAGE + slot;
-    if (row >= bookCount) break;
+    const int shelfRow = page * PER_PAGE + slot;
+    if (shelfRow >= bookCount) break;
+    const int row = filteredShelf ? matches[shelfRow] : shelfRow;
     const uint16_t ordinal = index.ordinalForRow(library::SortOrder::RecentDesc, static_cast<uint16_t>(row));
     library::ClixRecord record{};
     Cell& cell = cells[cellCount];
@@ -117,6 +134,71 @@ void BookshelfActivity::loadPage(const int newPage) {
   }
   selected = std::min(selected, std::max(0, cellCount - 1));
   refreshThumbs();
+}
+
+// Same match rule as the Library list's search: the folded title, then the
+// author. Keeps one index row number per match (2 bytes per book at most).
+void BookshelfActivity::applyFilter() {
+  matches.reset();
+  matchCount = 0;
+  if (query.empty()) return;
+  library::LibraryIndexFile index;
+  if (!index.open(library::libraryIndexPath())) {
+    LOG_ERR("SHELF", "cannot open library index");
+    return;
+  }
+  const int total = static_cast<int>(index.bookCount());
+  auto found = makeUniqueNoThrow<uint16_t[]>(static_cast<size_t>(std::max(total, 1)));
+  if (!found) {
+    LOG_ERR("SHELF", "cannot allocate %u-byte search result buffer", static_cast<unsigned>(total * sizeof(uint16_t)));
+    return;
+  }
+  const std::string needle = library::fold(query);
+  std::string author;
+  for (int row = 0; row < total; ++row) {
+    const uint16_t ordinal = index.ordinalForRow(library::SortOrder::RecentDesc, static_cast<uint16_t>(row));
+    library::ClixRecord record{};
+    if (ordinal == 0xFFFF || !index.readRecord(ordinal, record)) continue;
+    bool hit = library::matchesQuery(std::string_view(record.fold, record.foldLen), needle);
+    if (!hit) {
+      author.clear();
+      hit = index.readAuthor(record, author) && library::matchesQuery(library::fold(author), needle);
+    }
+    if (hit) found[matchCount++] = static_cast<uint16_t>(row);
+  }
+  matches = std::move(found);
+}
+
+void BookshelfActivity::openSearch() {
+  auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_LIBRARY_SEARCH), query, 48,
+                                                           InputType::Text);
+  if (!keyboard) {
+    LOG_ERR("SHELF", "OOM: search keyboard");
+    return;
+  }
+  startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+    if (!result.isCancelled) {
+      query = std::get<KeyboardResult>(result.data).text;
+      applyFilter();
+      selected = 0;
+      listFocused = false;
+      loadPage(0);
+    }
+    resetUi();
+    requestUpdate();
+  });
+}
+
+// Manual index rebuild, as the Library list's refresh button does.
+void BookshelfActivity::refreshIndex() {
+  {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, tr(STR_LIBRARY_REBUILDING));
+    rebuildIndex();
+  }
+  applyFilter();
+  loadPage(page);
+  requestUpdate(true);
 }
 
 void BookshelfActivity::refreshThumbs() {
@@ -157,9 +239,13 @@ bool BookshelfActivity::generateMissingThumb() {
 void BookshelfActivity::onAction(const fui::ActionEvent& event, void* user) {
   auto& self = *static_cast<BookshelfActivity*>(user);
   if (event.action == LIST) {
-    self.pending = 1000;
+    self.pending = PENDING_LIST;
   } else if (event.action == PAGE) {
-    self.pending = event.value > 0 ? 1002 : 1001;
+    self.pending = event.value > 0 ? PENDING_NEXT : PENDING_PREV;
+  } else if (event.action == SEARCH) {
+    self.pending = PENDING_SEARCH;
+  } else if (event.action == REFRESH) {
+    self.pending = PENDING_REFRESH;
   } else {
     self.pending = event.value;
   }
@@ -239,11 +325,15 @@ void BookshelfActivity::loop() {
   pendingLong = false;
   const auto touch = routeTouch(mappedInput, true);
   if ((touch.snap.touchReleased || pendingLong) && pending >= 0) {
-    if (pending == 1000) {
-      activityManager.goToLibrary();
-    } else if (pending == 1001 || pending == 1002) {
-      loadPage(page + (pending == 1002 ? 1 : -1));
+    if (pending == PENDING_LIST) {
+      activityManager.goToLibrary(true);
+    } else if (pending == PENDING_PREV || pending == PENDING_NEXT) {
+      loadPage(page + (pending == PENDING_NEXT ? 1 : -1));
       requestUpdate();
+    } else if (pending == PENDING_SEARCH) {
+      openSearch();
+    } else if (pending == PENDING_REFRESH) {
+      refreshIndex();
     } else if (pendingLong) {
       promptDelete(pending);
     } else {
@@ -264,6 +354,16 @@ void BookshelfActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (!query.empty()) {
+      // Back clears the search first, as in the Library list.
+      query.clear();
+      applyFilter();
+      selected = 0;
+      listFocused = false;
+      loadPage(0);
+      requestUpdate();
+      return;
+    }
     activityManager.goHome(HomeMenuItem::LIBRARY);
     return;
   }
@@ -274,7 +374,7 @@ void BookshelfActivity::loop() {
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (listFocused || bookCount == 0) {
-      activityManager.goToLibrary();
+      activityManager.goToLibrary(true);
     } else {
       openCell(selected);
     }
@@ -286,6 +386,12 @@ void BookshelfActivity::loop() {
 
 void BookshelfActivity::draw(UiScreen& screen) {
   coverCache.prepare();
+  // While searching, the header shows the query in place of the title.
+  const std::string searchTitle = query.empty() ? std::string() : "“" + query + "”";
+  catalogScreenHeader(screen, renderer, query.empty() ? tr(STR_BOOKSHELF) : searchTitle.c_str(),
+                      fui::bitmapFromIcon(icon_search_32), SEARCH, fui::bitmapFromIcon(icon_refresh_cw_32), REFRESH,
+                      fui::bitmapFromIcon(icon_list_32), LIST,
+                      (listFocused || bookCount == 0) && !BoardConfig::hasTouch());
   const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
@@ -298,29 +404,16 @@ void BookshelfActivity::draw(UiScreen& screen) {
   const int16_t smallH = screen.target().lineHeight(theme.smallText.font);
   const int16_t bodyH = screen.target().lineHeight(theme.bodyText.font);
 
-  // Top bar: book count and the List button.
+  // Top bar: book count.
   char countText[24];
   snprintf(countText, sizeof(countText), tr(STR_BOOKSHELF_COUNT), bookCount);
   screen.target().text(fui::Rect{body.x, static_cast<int16_t>(body.y + (BAR_HEIGHT - smallH) / 2), body.width, smallH},
                        countText, theme.smallText);
-  auto listText = theme.bodyText;
-  listText.align = fui::TextAlign::Center;
-  const auto listW = static_cast<int16_t>(
-      screen.target().measureText(listText.font, tr(STR_BOOKSHELF_LIST), listText).width + theme.spaceLg * 2);
-  const fui::Rect listButton{static_cast<int16_t>(body.right() - listW), static_cast<int16_t>(body.y + 4), listW,
-                             static_cast<int16_t>(BAR_HEIGHT - 8)};
-  const bool listSelected = (listFocused || bookCount == 0) && !BoardConfig::hasTouch();
-  if (listSelected) {
-    screen.target().fill(listButton, INK, theme.controlRadius);
-    listText.inverted = true;
-  } else {
-    screen.target().stroke(listButton, INK, 2, theme.controlRadius);
-  }
-  screen.target().text(
-      fui::Rect{listButton.x, static_cast<int16_t>(listButton.y + (listButton.height - bodyH) / 2), listW, bodyH},
-      tr(STR_BOOKSHELF_LIST), listText);
-  screen.frame().hit(listButton, LIST, 0, fui::InputTouch);
 
+  if (bookCount == 0 && !query.empty()) {
+    screen.centeredText(tr(STR_LIBRARY_NO_RESULTS));
+    return;
+  }
   if (bookCount == 0) {
     auto title = theme.titleText;
     title.bold = true;
@@ -340,7 +433,8 @@ void BookshelfActivity::draw(UiScreen& screen) {
   // Pager along the bottom: previous, "page / pages", next.
   const int pages = std::max(1, (bookCount + PER_PAGE - 1) / PER_PAGE);
   const int16_t pagerH = BAR_HEIGHT;
-  const auto pagerY = static_cast<int16_t>(body.bottom() - pagerH);
+  // Lifted by the same gap the Gallery leaves under its pager.
+  const auto pagerY = static_cast<int16_t>(body.bottom() - pagerH - metrics.verticalSpacing);
   if (pages > 1) {
     char pagerText[16];
     snprintf(pagerText, sizeof(pagerText), "%d / %d", page + 1, pages);
@@ -352,7 +446,7 @@ void BookshelfActivity::draw(UiScreen& screen) {
     const fui::Rect prev{body.x, pagerY, arrowW, pagerH};
     const fui::Rect next{static_cast<int16_t>(body.right() - arrowW), pagerY, arrowW, pagerH};
     auto arrow = theme.titleText;
-    arrow.bold = true;
+    arrow.bold = false;
     arrow.align = fui::TextAlign::Center;
     const int16_t arrowH = screen.target().lineHeight(arrow.font);
     if (page > 0) {
@@ -430,9 +524,6 @@ void BookshelfActivity::drawCell(UiScreen& screen, const int slot, const fui::Re
 
 void BookshelfActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
-                 tr(STR_BOOKSHELF));
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

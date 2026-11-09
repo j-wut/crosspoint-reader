@@ -31,7 +31,9 @@
 // indexed book so an allocation failure remains recoverable on the C3.
 class LibraryListActivity final : public UiTabListActivity {
  public:
-  LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  // fromBookshelf: opened from the Tiles Bookshelf; the list then offers a
+  // Tiles button back to it.
+  LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromBookshelf = false);
 
   void onEnter() override;
   void onExit() override;
@@ -67,6 +69,7 @@ class LibraryListActivity final : public UiTabListActivity {
   static constexpr freeink::ui::ActionId ACTION_SEARCH = ACTION_TAB_USER;
   static constexpr freeink::ui::ActionId ACTION_REBUILD = ACTION_SEARCH + 1;
   static constexpr freeink::ui::ActionId ACTION_BACK = ACTION_REBUILD + 1;
+  static constexpr freeink::ui::ActionId ACTION_TILES = ACTION_BACK + 1;
 
   // Walk the card and write a fresh index. Blocking, with a popup: at ~70 books
   // it is well under a second, and it only runs when the index is missing or the
@@ -101,6 +104,7 @@ class LibraryListActivity final : public UiTabListActivity {
   void handleBackAction();
   static void searchActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
   static void rebuildActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+  static void tilesActionTrampoline(const freeink::ui::ActionEvent&, void* user);
   static void backActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 
   // Data
@@ -149,6 +153,7 @@ class LibraryListActivity final : public UiTabListActivity {
   // Set when the walk finished but the sort did not, so the screen can say the
   // order is discovery order rather than silently showing a wrong one.
   bool degraded = false;
+  bool fromBookshelf = false;
 
   // Rows surviving the current query, as positions in the active sort order.
   // Empty query means no filtering and this owns no allocation, so the ordinary

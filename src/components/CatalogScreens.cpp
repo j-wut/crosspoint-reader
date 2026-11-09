@@ -15,7 +15,9 @@
 namespace fui = freeink::ui;
 
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
-                         const fui::BitmapRef& trailingIcon, const fui::ActionId trailingAction) {
+                         const fui::BitmapRef& trailingIcon, const fui::ActionId trailingAction,
+                         const fui::BitmapRef& adjacentIcon, const fui::ActionId adjacentAction,
+                         const fui::BitmapRef& thirdIcon, const fui::ActionId thirdAction, const bool thirdFocused) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto& theme = screen.theme();
   fui::HeaderProps header;
@@ -48,6 +50,10 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
     header.trailingIcon = trailingIcon;
     header.trailingAction = trailingAction;
   }
+  if (adjacentIcon && adjacentAction != fui::NO_ACTION) {
+    header.trailingAdjacentIcon = adjacentIcon;
+    header.trailingAdjacentAction = adjacentAction;
+  }
   header.titleText = theme.titleText;
   header.titleText.align = theme.headerTitleAlign;
   header.styles = theme.popup;
@@ -59,9 +65,32 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
   header.sidePadding = theme.headerSidePadding;
   header.minTouchSize = theme.minTouchSize;
   fui::header(screen.frame(), band, header);
+  if (thirdIcon && thirdAction != fui::NO_ACTION) {
+    headerThirdTrailingButton(screen, band, header, thirdIcon, thirdAction, thirdFocused);
+  }
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing), 0,
                   static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+}
+
+void headerThirdTrailingButton(UiAppHost::UiScreen& screen, const fui::Rect band, const fui::HeaderProps& header,
+                               const fui::BitmapRef& icon, const fui::ActionId action, const bool focused) {
+  // Same geometry as the header's own icon-only trailing buttons: squares
+  // anchored 12 px from the right edge, 4 px apart.
+  const auto size = header.trailingSize > 0 ? header.trailingSize : static_cast<int16_t>(band.height - 8);
+  const fui::Rect rect{static_cast<int16_t>(band.right() - 12 - 3 * size - 8),
+                       static_cast<int16_t>(band.y + 4 + header.actionOffsetY), size, size};
+  screen.target().fill(
+      fui::Rect{static_cast<int16_t>(rect.x - 4), rect.y, static_cast<int16_t>(rect.width + 4), rect.height},
+      fui::Paint::solid(fui::Color::White));
+  fui::ButtonProps button;
+  button.icon = icon;
+  button.action = action;
+  button.styles = header.trailingStyles;
+  button.radius = header.trailingRadius;
+  button.minTouchSize = header.minTouchSize;
+  fui::button(screen.frame(), rect, button);
+  if (focused) screen.target().stroke(rect, fui::Paint::solid(fui::Color::Black), 2, 6);
 }
 
 void catalogCenteredBlock(UiAppHost::UiScreen& screen, const std::initializer_list<CatalogLine> lines) {
