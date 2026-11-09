@@ -448,11 +448,14 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     return false;
   }
 
-  // Safety limits
-  constexpr int MAX_IMAGE_WIDTH = 2048;
-  constexpr int MAX_IMAGE_HEIGHT = 3072;
+  // Safety limits. Rows are streamed and scaled output buffers are sized by
+  // the target, so a scaled conversion can take larger sources; the row
+  // byte check below still bounds memory.
+  const bool scaledOutput = targetWidth > 0 && targetHeight > 0;
+  const uint32_t maxWidth = scaledOutput ? 8192 : 2048;
+  const uint32_t maxHeight = scaledOutput ? 8192 : 3072;
 
-  if (width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT || width == 0 || height == 0) {
+  if (width > maxWidth || height > maxHeight || width == 0 || height == 0) {
     LOG_ERR("PNG", "Image too large or zero (%ux%u)", width, height);
     return false;
   }
