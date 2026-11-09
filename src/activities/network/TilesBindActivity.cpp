@@ -116,7 +116,7 @@ void TilesBindActivity::render(RenderLock&&) {
   int y = top;
   if (!qrUrl.empty() && (p == Phase::Waiting || p == Phase::Linking)) {
     const int size = std::min(pageWidth - 2 * metrics.contentSidePadding, pageHeight / 2);
-    QrUtils::drawQrCode(renderer, Rect{(pageWidth - size) / 2, y, size, size}, qrUrl);
+    QrUtils::drawStockQrCode(renderer, Rect{(pageWidth - size) / 2, y, size, size}, qrUrl);
     y += size + metrics.verticalSpacing * 2;
     renderer.drawCenteredText(SMALL_FONT_ID, y, tr(STR_BIND_SCAN), true);
     y += lineHeight * 2;
