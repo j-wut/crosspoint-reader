@@ -1,6 +1,7 @@
 #include "Wallpaper.h"
 
 #include <FsHelpers.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
@@ -112,11 +113,22 @@ std::vector<std::string> list() {
 // built-in wallpapers use): the root table's field 10 is an (offset, size)
 // pair pointing at the page list, whose entries are (offset, size) pairs of
 // separately rooted page buffers. A page table holds f0 width, f1 height,
-// f2 row bytes, f3 (pixel offset, size) and f8 bits per pixel (1 or 2,
-// most significant bits first, 0 = black).
-bool opgToBmp(const std::string& opgPath, const std::string& bmpPath) {
-  HalFile in;
-  if (!Storage.openFileForRead("WALL", opgPath, in)) return false;
+// f2 row bytes, f3 (pixel offset, size), f7 bits per channel (1 = 1, 2 = 2,
+// 3 = 4) and f8 bits per pixel. When f8 is twice the channel bits, each pixel
+// is gray then alpha (stock "gray-alpha"). Bits run most significant first,
+// 0 = black / fully transparent.
+struct OpgPage {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride = 0;
+  uint32_t data = 0;
+  uint8_t channelBits = 0;
+  uint8_t pixelBits = 0;
+  bool hasAlpha() const { return pixelBits == 2 * channelBits; }
+};
+
+namespace {
+bool parseOpg(HalFile& in, const std::string& pathForLog, OpgPage& page) {
   const auto fileSize = static_cast<uint32_t>(in.size());
   uint8_t buf[8];
   if (fileSize < 16 || !readAt(in, 0, buf, 4)) return false;
@@ -127,30 +139,59 @@ bool opgToBmp(const std::string& opgPath, const std::string& bmpPath) {
   if (le32(buf + 4) < 8 || pagesOff + 8 > fileSize || !readAt(in, pagesOff, buf, 8)) return false;
   const uint32_t pageOff = le32(buf);
   if (pageOff + 4 > fileSize || !readAt(in, pageOff, buf, 4)) return false;
-  const uint32_t page = pageOff + le32(buf);
+  const uint32_t table = pageOff + le32(buf);
 
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t stride = 0;
-  if (!fieldU32(in, page, 0, fileSize, width) || !fieldU32(in, page, 1, fileSize, height) ||
-      !fieldU32(in, page, 2, fileSize, stride)) {
+  if (!fieldU32(in, table, 0, fileSize, page.width) || !fieldU32(in, table, 1, fileSize, page.height) ||
+      !fieldU32(in, table, 2, fileSize, page.stride)) {
     return false;
   }
-  const uint32_t dataPos = fieldPos(in, page, 3, fileSize);
-  const uint32_t bppPos = fieldPos(in, page, 8, fileSize);
-  uint8_t bpp = 0;
-  if (dataPos == 0 || bppPos == 0 || !readAt(in, dataPos, buf, 4) || !readAt(in, bppPos, &bpp, 1)) return false;
-  const uint32_t data = le32(buf);
-  if ((bpp != 1 && bpp != 2) || width == 0 || height == 0 || width > 4096 || height > 4096 ||
-      stride < (width * bpp + 7) / 8 || data + static_cast<uint64_t>(stride) * height > fileSize) {
-    LOG_ERR("WALL", "Unsupported opg %s: %ux%u bpp %u", opgPath.c_str(), width, height, bpp);
+  const uint32_t dataPos = fieldPos(in, table, 3, fileSize);
+  const uint32_t channelPos = fieldPos(in, table, 7, fileSize);
+  const uint32_t bppPos = fieldPos(in, table, 8, fileSize);
+  uint8_t code = 1;
+  if (dataPos == 0 || bppPos == 0 || !readAt(in, dataPos, buf, 4) || !readAt(in, bppPos, &page.pixelBits, 1) ||
+      (channelPos != 0 && !readAt(in, channelPos, &code, 1))) {
     return false;
   }
+  page.data = le32(buf);
+  page.channelBits = code == 3 ? 4 : code;
+  const bool bitsOk = (page.channelBits == 1 || page.channelBits == 2 || page.channelBits == 4) &&
+                      (page.pixelBits == page.channelBits || page.hasAlpha());
+  if (!bitsOk || page.width == 0 || page.height == 0 || page.width > 4096 || page.height > 4096 ||
+      page.stride < (page.width * page.pixelBits + 7) / 8 ||
+      page.data + static_cast<uint64_t>(page.stride) * page.height > fileSize) {
+    LOG_ERR("WALL", "Unsupported opg %s: %ux%u channel bits %u pixel bits %u", pathForLog.c_str(), page.width,
+            page.height, page.channelBits, page.pixelBits);
+    return false;
+  }
+  return true;
+}
+
+uint8_t readBits(const uint8_t* row, const uint32_t bit, const uint8_t count) {
+  uint8_t value = 0;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint32_t b = bit + i;
+    value = static_cast<uint8_t>(value << 1 | ((row[b >> 3] >> (7 - (b & 7))) & 1));
+  }
+  return value;
+}
+}  // namespace
+
+// Writes the gray channel as a 1-, 2- or 4-bit BMP (the viewer and the old
+// sleep modes read BMP). Transparent pixels become white.
+bool opgToBmp(const std::string& opgPath, const std::string& bmpPath) {
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", opgPath, in)) return false;
+  OpgPage page;
+  if (!parseOpg(in, opgPath, page)) return false;
+  const uint32_t width = page.width;
+  const uint32_t height = page.height;
+  const uint8_t bpp = page.channelBits;
 
   const uint32_t rowBytes = (width * bpp + 31) / 32 * 4;
   const uint32_t colors = 1u << bpp;
   const uint32_t headerSize = 14 + 40 + 4 * colors;
-  uint8_t header[14 + 40 + 16] = {};
+  uint8_t header[14 + 40 + 64] = {};
   header[0] = 'B';
   header[1] = 'M';
   putLE32(header + 2, headerSize + rowBytes * height);
@@ -168,16 +209,25 @@ bool opgToBmp(const std::string& opgPath, const std::string& bmpPath) {
     entry[0] = entry[1] = entry[2] = level;
   }
 
+  auto src = makeUniqueNoThrow<uint8_t[]>(page.stride);
   auto row = makeUniqueNoThrow<uint8_t[]>(rowBytes);
-  if (!row) return false;
-  memset(row.get(), 0, rowBytes);
+  if (!src || !row) return false;
   const std::string tmp = bmpPath + ".tmp";
   HalFile out;
   if (!Storage.openFileForWrite("WALL", tmp, out)) return false;
   bool ok = out.write(header, headerSize) == headerSize;
-  const uint32_t copyBytes = std::min(stride, rowBytes);
+  const uint8_t maxLevel = static_cast<uint8_t>(colors - 1);
   for (uint32_t y = height; ok && y-- > 0;) {
-    ok = readAt(in, data + y * stride, row.get(), copyBytes) && out.write(row.get(), rowBytes) == rowBytes;
+    ok = readAt(in, page.data + y * page.stride, src.get(), page.stride);
+    if (!ok) break;
+    memset(row.get(), 0, rowBytes);
+    for (uint32_t x = 0; x < width; ++x) {
+      uint8_t gray = readBits(src.get(), x * page.pixelBits, bpp);
+      if (page.hasAlpha() && readBits(src.get(), x * page.pixelBits + bpp, bpp) * 2 <= maxLevel) gray = maxLevel;
+      const uint32_t bit = x * bpp;
+      row[bit >> 3] |= static_cast<uint8_t>(gray << (8 - bpp - (bit & 7)));
+    }
+    ok = out.write(row.get(), rowBytes) == rowBytes;
   }
   ok = out.close() && ok;
   ok = ok && Storage.replaceFile(tmp.c_str(), bmpPath.c_str());
@@ -194,8 +244,8 @@ bool screenBmp(const std::string& path, std::string& bmpPath) {
   if (!Storage.openFileForRead("WALL", path, src)) return false;
   const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
   // Same-sized files share a byte count, so the key also needs the modification time.
-  const std::string key =
-      path + '|' + std::to_string(src.size()) + '|' + std::to_string(src.modificationTime()) + (crop ? "|c" : "|f");
+  const std::string key = path + '|' + std::to_string(src.size()) + '|' + std::to_string(src.modificationTime()) +
+                          (crop ? "|c" : "|f") + "|v2";
   bmpPath = "/.crosspoint/wp_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
   if (Storage.exists(bmpPath.c_str())) return true;
 
@@ -221,6 +271,93 @@ bool setAs(const std::string& path, const char* destination) {
   std::string bmp;
   if (!screenBmp(path, bmp)) return false;
   return bmp == destination || copyFile(bmp, destination);
+}
+
+namespace {
+char* storedField(const Kind kind) {
+  switch (kind) {
+    case READING:
+      return SETTINGS.readerSleepWallpaperPath;
+    case POWER_OFF:
+      return SETTINGS.powerOffWallpaperPath;
+    default:
+      return SETTINGS.sleepWallpaperPath;
+  }
+}
+}  // namespace
+
+const char* storedPath(const Kind kind) { return storedField(kind); }
+
+bool setWallpaper(const std::string& path, const Kind kind) {
+  char* field = storedField(kind);
+  const size_t size = sizeof(SETTINGS.sleepWallpaperPath);
+  if (path.size() >= size) {
+    LOG_ERR("WALL", "wallpaper path too long (%u): %s", static_cast<unsigned>(path.size()), path.c_str());
+    return false;
+  }
+  if (path == field) return true;
+  strncpy(field, path.c_str(), size - 1);
+  field[size - 1] = '\0';
+  const bool ok = SETTINGS.saveToFile();
+  LOG_INF("WALL", "wallpaper set kind=%u path='%s' saved=%d", kind, path.c_str(), ok);
+  return ok;
+}
+
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path) {
+  DrawResult result;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", path, in)) {
+    LOG_ERR("WALL", "wallpaper open failed: %s", path.c_str());
+    return result;
+  }
+  OpgPage page;
+  if (!parseOpg(in, path, page)) return result;
+  auto src = makeUniqueNoThrow<uint8_t[]>(page.stride);
+  if (!src) {
+    LOG_ERR("WALL", "OOM: opg row %u", page.stride);
+    return result;
+  }
+
+  // Stock sizing: shrink to fit (keeping the aspect ratio) only when larger
+  // than the screen, round the width down to a multiple of 8, centre.
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int dstW = static_cast<int>(page.width);
+  int dstH = static_cast<int>(page.height);
+  if (dstW > screenW || dstH > screenH) {
+    const float scale = std::min(static_cast<float>(screenW) / page.width, static_cast<float>(screenH) / page.height);
+    dstW = std::max(1, static_cast<int>(page.width * scale));
+    dstH = std::max(1, static_cast<int>(page.height * scale));
+    if (dstW >= 8) dstW = dstW / 8 * 8;
+  }
+  const int x0 = (screenW - dstW) / 2;
+  const int y0 = (screenH - dstH) / 2;
+  result.hasAlpha = page.hasAlpha();
+  LOG_INF("WALL", "drawing opg %s %ux%u -> %dx%d at %d,%d ga=%d channel bits %u pixel bits %u", path.c_str(),
+          page.width, page.height, dstW, dstH, x0, y0, result.hasAlpha, page.channelBits, page.pixelBits);
+
+  if (!result.hasAlpha) renderer.clearScreen(0xFF);
+  const uint8_t maxLevel = static_cast<uint8_t>((1u << page.channelBits) - 1);
+  int loadedRow = -1;
+  for (int y = 0; y < dstH; ++y) {
+    const int sy = static_cast<int>(static_cast<int64_t>(y) * page.height / dstH);
+    if (sy != loadedRow) {
+      if (!readAt(in, page.data + static_cast<uint32_t>(sy) * page.stride, src.get(), page.stride)) {
+        LOG_ERR("WALL", "opg read failed row %d: %s", sy, path.c_str());
+        return result;
+      }
+      loadedRow = sy;
+    }
+    for (int x = 0; x < dstW; ++x) {
+      const uint32_t sx = static_cast<uint32_t>(static_cast<int64_t>(x) * page.width / dstW);
+      const uint32_t bit = sx * page.pixelBits;
+      if (result.hasAlpha && readBits(src.get(), bit + page.channelBits, page.channelBits) * 2 <= maxLevel) continue;
+      const bool black = readBits(src.get(), bit, page.channelBits) * 2 <= maxLevel;
+      renderer.drawPixel(x0 + x, y0 + y, black);
+    }
+  }
+  result.ok = true;
+  return result;
 }
 
 }  // namespace wallpaper

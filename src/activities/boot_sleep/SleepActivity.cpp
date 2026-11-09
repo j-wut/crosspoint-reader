@@ -710,6 +710,7 @@ void SleepActivity::onEnter() {
   display.setInverted(false);
 
   const uint8_t sleepScreen = SETTINGS.sleepScreen;
+  if (renderGalleryWallpaper(frameWasInverted)) return;
   if (sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM ||
       sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT) {
     // Transparent mode retains the current framebuffer. Materialize any
@@ -1121,6 +1122,72 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
+}
+
+// Gallery image for this sleep: the power-off image at shutdown, the reading
+// image when sleeping from a book, else the sleep image in the Custom modes.
+// Each counts only while its Gallery copy (READING_PATH / SLEEP_PATH) is there.
+bool SleepActivity::galleryWallpaper(wallpaper::Kind& kind, std::string& path) const {
+  const uint8_t mode = SETTINGS.sleepScreen;
+  const bool fromReader = APP_STATE.lastSleepFromReader;
+  if (powerOff && wallpaper::storedPath(wallpaper::POWER_OFF)[0]) {
+    kind = wallpaper::POWER_OFF;
+  } else if (fromReader && wallpaper::storedPath(wallpaper::READING)[0] && Storage.exists(wallpaper::READING_PATH)) {
+    kind = wallpaper::READING;
+  } else if ((mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+              (mode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && !fromReader)) &&
+             wallpaper::storedPath(wallpaper::SLEEP)[0] && Storage.exists(wallpaper::SLEEP_PATH)) {
+    kind = wallpaper::SLEEP;
+  } else {
+    return false;
+  }
+  path = wallpaper::storedPath(kind);
+  return true;
+}
+
+// Like the stock firmware: an .opg with an alpha channel draws over the screen
+// that was showing, without the sleep popup; one without alpha fills the
+// screen. False leaves the frame untouched for the normal sleep screens.
+bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
+  wallpaper::Kind kind = wallpaper::SLEEP;
+  std::string path;
+  if (!galleryWallpaper(kind, path)) {
+    LOG_INF("SLP", "no gallery wallpaper: mode=%u fromReader=%d powerOff=%d sleep='%s' reading='%s' powerOff='%s'",
+            SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader, powerOff, wallpaper::storedPath(wallpaper::SLEEP),
+            wallpaper::storedPath(wallpaper::READING), wallpaper::storedPath(wallpaper::POWER_OFF));
+    return false;
+  }
+  LOG_INF("SLP", "gallery wallpaper kind=%u path=%s mode=%u fromReader=%d powerOff=%d", kind, path.c_str(),
+          SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader, powerOff);
+  if (!wallpaper::isOpg(path)) {
+    if (kind != wallpaper::POWER_OFF) return false;  // the normal flow draws the Gallery's BMP copy
+    GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+    if (renderCustomSleepBmp(path)) return true;
+    LOG_ERR("SLP", "power-off image failed: %s", path.c_str());
+    return false;
+  }
+  if (!Storage.exists(path.c_str())) {
+    LOG_ERR("SLP", "gallery wallpaper missing: %s", path.c_str());
+    return false;
+  }
+
+  // Keep the retained frame's visible polarity once the driver is back to normal.
+  if (frameWasInverted) renderer.invertScreen();
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  releaseSdFontCachesForDecode(renderer);
+  const wallpaper::DrawResult drawn = wallpaper::drawOpg(renderer, path);
+  if (!drawn.ok) {
+    LOG_ERR("SLP", "gallery wallpaper draw failed: %s", path.c_str());
+    if (frameWasInverted) renderer.invertScreen();
+    return false;
+  }
+  if (!drawn.hasAlpha &&
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+    renderer.invertScreen();
+  }
+  renderer.displayBuffer(kSleepClean);
+  LOG_INF("SLP", "gallery wallpaper shown kind=%u alpha=%d", kind, drawn.hasAlpha);
+  return true;
 }
 
 void SleepActivity::renderBlankSleepScreen() const {

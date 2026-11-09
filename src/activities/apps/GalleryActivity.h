@@ -5,9 +5,9 @@
 
 #include "activities/UiListActivity.h"
 
-// Wallpapers in /sleep (BMP, PNG, JPEG, BOOX .opg), like the stock Picco
-// Gallery: open one to view it or set it as the sleep screen or the reading
-// sleep screen. The BOOX Tiles app and the web page add images here.
+// Wallpapers in /images (BMP, PNG, JPEG, BOOX .opg), like the stock Picco
+// Gallery: open one to view it or set it as the sleep, reading sleep or
+// power-off screen. The BOOX Tiles app and the web page add images here.
 class GalleryActivity final : public UiListActivity {
  public:
   GalleryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

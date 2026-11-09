@@ -2,14 +2,16 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "apps/Wallpaper.h"
 
 class Bitmap;
 class HalFile;
 
 class SleepActivity final : public Activity {
  public:
-  explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromTimeout = false)
-      : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout) {}
+  explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromTimeout = false,
+                         bool powerOff = false)
+      : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout), powerOff(powerOff) {}
   void onEnter() override;
 
  private:
@@ -24,8 +26,11 @@ class SleepActivity final : public Activity {
   void renderLastScreenSleepScreen() const;
   void renderTransparentCustomSleepScreen() const;
   void renderBlankSleepScreen() const;
+  bool galleryWallpaper(wallpaper::Kind& kind, std::string& path) const;
+  bool renderGalleryWallpaper(bool frameWasInverted) const;
 
   bool fromTimeout = false;
+  bool powerOff = false;
   // Cover + Transparent: the cover under the overlay, and the same cover while its gray planes are redrawn.
   mutable const Bitmap* overlayCover = nullptr;
   mutable const Bitmap* overlayGrayCover = nullptr;

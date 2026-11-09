@@ -235,6 +235,13 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // is hidden from the on-device Settings screen (edited via OPDS UI).
   emit(SettingInfo::String(StrId::STR_OPDS_DOWNLOAD_FOLDER, &SETTINGS.opdsDownloadFolder[0],
                            sizeof(SETTINGS.opdsDownloadFolder), "opdsDownloadFolder"));
+  // Gallery sleep images: persisted, category-less (set from the Gallery).
+  emit(SettingInfo::String(StrId::STR_SLEEP_SCREEN, &SETTINGS.sleepWallpaperPath[0],
+                           sizeof(SETTINGS.sleepWallpaperPath), "sleepWallpaperPath"));
+  emit(SettingInfo::String(StrId::STR_SLEEP_SCREEN, &SETTINGS.readerSleepWallpaperPath[0],
+                           sizeof(SETTINGS.readerSleepWallpaperPath), "readerSleepWallpaperPath"));
+  emit(SettingInfo::String(StrId::STR_SLEEP_SCREEN, &SETTINGS.powerOffWallpaperPath[0],
+                           sizeof(SETTINGS.powerOffWallpaperPath), "powerOffWallpaperPath"));
   // OPDS download filename format: persisted + web-exposed, category-less so it
   // is hidden from the on-device Settings screen (cycled from the OPDS UI).
   emit(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,

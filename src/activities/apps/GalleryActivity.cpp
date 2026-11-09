@@ -20,7 +20,7 @@ namespace fui = freeink::ui;
 
 namespace {
 
-enum Action : int { VIEW, SET_SLEEP, SET_READING, DELETE, ACTION_COUNT };
+enum Action : int { VIEW, SET_SLEEP, SET_READING, SET_POWER_OFF, DELETE, ACTION_COUNT };
 
 // Option picker for one image, drawn over the Gallery list.
 class GalleryImageActivity final : public Activity {
@@ -30,7 +30,8 @@ class GalleryImageActivity final : public Activity {
 
   void onEnter() override {
     Activity::onEnter();
-    labels = {tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN), tr(STR_DELETE)};
+    labels = {tr(STR_OPEN), tr(STR_SET_SLEEP_SCREEN), tr(STR_SET_READING_SLEEP_SCREEN), tr(STR_SET_POWER_OFF_SCREEN),
+              tr(STR_DELETE)};
     popup.show(tr(STR_APP_GALLERY), name.c_str(), labels.data(), ACTION_COUNT, 0,
                [this](const int action) { chosen = action; });
     requestUpdate();
@@ -87,10 +88,12 @@ void GalleryActivity::activateIndex(const int index) {
   if (index == count) {
     // Random: drop the chosen sleep image so the sleep screen picks from /sleep.
     if (Storage.exists(wallpaper::SLEEP_PATH)) Storage.remove(wallpaper::SLEEP_PATH);
+    wallpaper::setWallpaper("", wallpaper::SLEEP);
     SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
     SETTINGS.saveToFile();
   } else {
     Storage.remove(wallpaper::READING_PATH);
+    wallpaper::setWallpaper("", wallpaper::READING);
   }
   GUI.drawPopup(renderer, tr(STR_DONE));
   delay(700);
@@ -124,11 +127,24 @@ void GalleryActivity::runAction(const int image, const int action) {
       activityManager.goToReader(wallpaper::isOpg(path) && wallpaper::screenBmp(path, bmp) ? bmp : path);
       return;
     }
+    case SET_POWER_OFF: {
+      GUI.drawPopup(renderer, tr(STR_SETTING_SLEEP_SCREEN));
+      std::string bmp;
+      // Check now that the sleep screen will be able to draw it.
+      const bool ok = (wallpaper::isOpg(path) || wallpaper::screenBmp(path, bmp)) &&
+                      wallpaper::setWallpaper(path, wallpaper::POWER_OFF);
+      LOG_INF("GAL", "power-off image %s: %s", path.c_str(), ok ? "ok" : "failed");
+      GUI.drawPopup(renderer, ok ? tr(STR_DONE) : tr(STR_SET_SLEEP_SCREEN_FAILED));
+      delay(1000);
+      break;
+    }
     case SET_SLEEP:
     case SET_READING: {
       GUI.drawPopup(renderer, tr(STR_SETTING_SLEEP_SCREEN));
       const bool reading = action == SET_READING;
-      const bool ok = wallpaper::setAs(path, reading ? wallpaper::READING_PATH : wallpaper::SLEEP_PATH);
+      bool ok = wallpaper::setAs(path, reading ? wallpaper::READING_PATH : wallpaper::SLEEP_PATH);
+      // The source path lets the sleep screen keep an .opg's transparency.
+      ok = ok && wallpaper::setWallpaper(path, reading ? wallpaper::READING : wallpaper::SLEEP);
       if (ok && !reading && SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM) {
         SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
         SETTINGS.saveToFile();

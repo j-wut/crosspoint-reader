@@ -574,7 +574,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
 
   APP_STATE.saveToFile();
 
-  activityManager.goToSleep(fromTimeout);
+  activityManager.goToSleep(fromTimeout, powerOff);
 
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();
