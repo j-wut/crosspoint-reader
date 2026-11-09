@@ -555,8 +555,18 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
       d.netOk = esp_http_client_is_complete_data_received(client) || d.contentLength <= 0;
       break;
     }
+    // Stock writes this PSRAM buffer through FATFS, and ESP-IDF's
+    // sdmmc_write_sectors() splits a write from memory the SD DMA cannot
+    // reach into one single-sector command per 512 bytes. Our block device
+    // sends 8-sector commands back to back, which is when the card stopped
+    // answering (0x107). Write one sector per call to send what stock sends.
     const unsigned long writeStart = millis();
-    const size_t wrote = file.write(buf, n);
+    size_t wrote = 0;
+    while (wrote < static_cast<size_t>(n)) {
+      const size_t part = std::min<size_t>(512, n - wrote);
+      if (file.write(buf + wrote, part) != part) break;
+      wrote += part;
+    }
     const unsigned long writeMs = millis() - writeStart;
     if (writeMs > 300) {
       LOG_INF("TILES", "slow SD write: %d bytes at %u took %lu ms", n, static_cast<unsigned>(d.written), writeMs);
