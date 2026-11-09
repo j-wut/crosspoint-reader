@@ -503,9 +503,9 @@ void BmpViewerActivity::drawOverlayContent() {
   for (const auto& [rect, label] : {std::pair{prevArrow, "<"}, std::pair{nextArrow, ">"}}) {
     if (rect.width == 0) continue;
     renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 2, 6, true);
-    const int textW = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+    const int textW = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::REGULAR);
     renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textW) / 2, rect.y + (rect.height - textH) / 2, label, true,
-                      EpdFontFamily::BOLD);
+                      EpdFontFamily::REGULAR);
   }
   if (currentImageIndex >= 0 && count > 0) {
     char position[24];

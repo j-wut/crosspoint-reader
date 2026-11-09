@@ -355,7 +355,7 @@ void GalleryActivity::draw(UiScreen& screen) {
                          pagerText, text);
     const int16_t arrowW = 72;
     auto arrow = theme.titleText;
-    arrow.bold = true;
+    arrow.bold = false;
     arrow.align = fui::TextAlign::Center;
     const int16_t arrowH = screen.target().lineHeight(arrow.font);
     const auto drawArrow = [&](const fui::Rect r, const char* label, const int16_t value) {
