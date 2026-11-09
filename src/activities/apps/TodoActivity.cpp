@@ -245,6 +245,11 @@ void TodoActivity::buildScreen(UiScreen& screen) {
       button.text = theme.bodyText;
       button.text.bold = slot == 0;
       button.text.align = fui::TextAlign::Center;
+      // Outlined, rounded button, as on the book details page.
+      button.styles = theme.button;
+      button.styles.normal.border = fui::Paint::solid(fui::Color::Black);
+      button.styles.normal.borderWidth = 1;
+      button.radius = theme.controlRadius;
       if (nav.selected == slot) button.state = fui::StateSelected;
       const int16_t x = static_cast<int16_t>(slot == 0 ? band.x : band.x + band.width - half);
       screen.button(button, fui::Rect{x, band.y, half, band.height});

@@ -226,6 +226,11 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
     button.inputMask = fui::InputTouch;
     button.text = theme.bodyText;
     button.text.align = fui::TextAlign::Center;
+    // Outlined, rounded button, as on the book details page.
+    button.styles = theme.button;
+    button.styles.normal.border = fui::Paint::solid(fui::Color::Black);
+    button.styles.normal.borderWidth = 1;
+    button.radius = theme.controlRadius;
     if (nav.selected == 0) button.state = fui::StateSelected;
     screen.button(button, band);
   }
