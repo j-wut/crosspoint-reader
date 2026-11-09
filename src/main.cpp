@@ -577,7 +577,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   const bool stateSaved = APP_STATE.saveToFile();
   wakeTraceStage(SleepStage::StateSaved);
 
-  activityManager.goToSleep(fromTimeout);
+  activityManager.goToSleep(fromTimeout, powerOff);
   wakeTraceStage(SleepStage::ScreenDrawn);
 
   if (isQuickResumeSleep) {

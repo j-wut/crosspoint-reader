@@ -96,7 +96,7 @@ class ActivityManager {
   void goToBrowser();
   void goToPlugins(bool showOpds);
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
-  void goToSleep(bool fromTimeout = false);
+  void goToSleep(bool fromTimeout = false, bool powerOff = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

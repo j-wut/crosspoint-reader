@@ -417,6 +417,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char sdFontFamilyName[32] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
+  // Gallery image picked for each sleep screen (empty = none), same keys and
+  // sizes as the stock Picco settings. Read for .opg transparency.
+  char sleepWallpaperPath[128] = "";
+  char readerSleepWallpaperPath[128] = "";
+  char powerOffWallpaperPath[128] = "";
   // Master switch for all SD-card plugin discovery/execution. New installs keep
   // this disabled; settings migration enables it when pre-existing plugin files
   // are found so a firmware update never silently disables an existing setup.
