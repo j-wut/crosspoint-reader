@@ -73,6 +73,9 @@ class ActivityManager {
   // The screen visit whose frame the render task painted last.
   std::atomic<uint32_t> paintedVisit{0};
 
+  // Set by the Power Off popup; main loop only.
+  bool powerOffRequested = false;
+
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput);
   ~ActivityManager();
@@ -101,6 +104,13 @@ class ActivityManager {
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE, bool cleanInitialRefresh = false);
+  // Power Off confirmation over the current screen; a confirm is read back
+  // by the main loop with consumePowerOffRequest().
+  void showPowerOffPopup();
+  void requestPowerOff() { powerOffRequested = true; }
+  // The popup owns Power presses while it is up.
+  bool isPowerOffPopupOpen() const;
+  bool consumePowerOffRequest();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);

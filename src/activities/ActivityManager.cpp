@@ -36,6 +36,7 @@
 #include "util/BmpViewerActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "util/PowerOffPopupActivity.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -377,6 +378,22 @@ void ActivityManager::goToSleep(bool fromTimeout, bool powerOff) {
   replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout, powerOff));
   if (pendingAction == PendingAction::Replace) pendingAction = PendingAction::ReplaceForSleep;
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
+}
+
+bool ActivityManager::isPowerOffPopupOpen() const {
+  return currentActivity && currentActivity->name == "PowerOffPopup";
+}
+
+void ActivityManager::showPowerOffPopup() {
+  if (pendingAction != PendingAction::None || isPowerOffPopupOpen()) return;
+  pushActivity(std::make_unique<PowerOffPopupActivity>(renderer, mappedInput));
+}
+
+bool ActivityManager::consumePowerOffRequest() {
+  // Wait until the popup is gone, so sleep sees the screen underneath.
+  if (!powerOffRequested || pendingAction != PendingAction::None) return false;
+  powerOffRequested = false;
+  return true;
 }
 
 void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }

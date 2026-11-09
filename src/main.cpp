@@ -521,6 +521,8 @@ PowerHold powerHoldAction() {
     case CrossPointSettings::LONG_PWR_FRONTLIGHT:
       // Not listed without a frontlight, where the menu shows Sleep.
       return Frontlight.present() ? PowerHold::Action : PowerHold::Sleep;
+    case CrossPointSettings::LONG_PWR_SHUTDOWN:
+      return BoardConfig::isPicco() ? PowerHold::Action : PowerHold::Sleep;
     default:
       return PowerHold::Action;
   }
@@ -1266,12 +1268,23 @@ void loop() {
     }
     LOG_DBG("MAIN", "Power button held %lums, hold action %u", gpio.getPowerButtonHeldTime(), SETTINGS.longPwrBtn);
     mappedInputManager.firePowerHold(powerHoldHomeAction());
+    if (SETTINGS.longPwrBtn == CrossPointSettings::LONG_PWR_SHUTDOWN) activityManager.showPowerOffPopup();
+  }
+
+  if (activityManager.consumePowerOffRequest()) {
+    LOG_DBG("MAIN", "Power Off popup confirmed, shutting down");
+    enterDeepSleep(false, true);
+    return;
   }
 
   // Short Sleep with a hold bound elsewhere sleeps on release instead of on
   // button-down. The X4 Pro double-click path above handles clicks up to
   // X4PRO_POWER_CLICK_MAX_HOLD_MS.
-  if (SETTINGS.shortPowerSleepsOnRelease() && millis() >= allowSleepAt &&
+  // A short Power press while the Power Off popup is up confirms it, so the
+  // configured short action must not also run.
+  const bool powerOffPopupOpen = activityManager.isPowerOffPopupOpen();
+
+  if (SETTINGS.shortPowerSleepsOnRelease() && !powerOffPopupOpen && millis() >= allowSleepAt &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
       (!x4ProDoubleClickPwrLight || gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) &&
       gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
@@ -1291,12 +1304,18 @@ void loop() {
   }
 #endif
 
+  if (BoardConfig::isPicco() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_SHUTDOWN &&
+      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
+      gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
+    activityManager.showPowerOffPopup();
+  }
+
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::ToggleFrontlight) {
     toggleFrontlight();
   }
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
-      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH && !powerOffPopupOpen &&
        mappedInputManager.wasReleased(MappedInputManager::Button::Power))) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {

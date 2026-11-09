@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 
+#include <I18n.h>
+
 #include "activities/Activity.h"
 #include "apps/Wallpaper.h"
 
@@ -28,6 +30,8 @@ class SleepActivity final : public Activity {
   void renderBlankSleepScreen() const;
   bool galleryWallpaper(wallpaper::Kind& kind, std::string& path) const;
   bool renderGalleryWallpaper(bool frameWasInverted) const;
+
+  const char* sleepPopupText() const { return powerOff ? tr(STR_SHUTTING_DOWN) : tr(STR_ENTERING_SLEEP); }
 
   bool fromTimeout = false;
   bool powerOff = false;
