@@ -23,6 +23,7 @@ constexpr unsigned long DELETE_HOLD_MS = 1000;
 
 void TodoActivity::onEnter() {
   applists::loadTodos(items);
+  LOG_INF("TODO", "opened: %u items", static_cast<unsigned>(items.size()));
   UiListActivity::onEnter();
   app.on(ACTION_HEADER, &TodoActivity::headerActionTrampoline, this);
 }
@@ -109,6 +110,8 @@ bool TodoActivity::handleCustomInput() {
   tilescloud::SyncResult result;
   if (!sync.take(synced, result)) return false;
   stopOwnWifi();
+  LOG_INF("TODO", "sync result %d: %u cloud items, edited meanwhile %d", static_cast<int>(result),
+          static_cast<unsigned>(synced.size()), editedDuringSync ? 1 : 0);
   // An edit made meanwhile wins; sync again to pick up the cloud list.
   if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
     items = std::move(synced);
@@ -133,7 +136,11 @@ bool TodoActivity::hasDone() const {
 
 void TodoActivity::save() {
   if (sync.running()) editedDuringSync = true;
-  if (!applists::saveTodos(items)) LOG_ERR("TODO", "Save failed");
+  if (!applists::saveTodos(items)) {
+    LOG_ERR("TODO", "Save failed");
+  } else {
+    LOG_INF("TODO", "saved %u items", static_cast<unsigned>(items.size()));
+  }
 }
 
 void TodoActivity::activateIndex(const int index) {
@@ -144,7 +151,9 @@ void TodoActivity::activateIndex(const int index) {
   const int item = itemAt(index);
   if (item >= 0) {
     items[item].done = !items[item].done;
+    LOG_INF("TODO", "item %d done=%d", item, items[item].done ? 1 : 0);
   } else {
+    LOG_INF("TODO", "clear done items");
     items.erase(std::remove_if(items.begin(), items.end(), [](const applists::TodoItem& t) { return t.done; }),
                 items.end());
     moveSelectionTo(0);
@@ -156,6 +165,7 @@ void TodoActivity::activateIndex(const int index) {
 void TodoActivity::deleteRow(const int row) {
   const int item = itemAt(row);
   if (item < 0) return;
+  LOG_INF("TODO", "delete item %d", item);
   items.erase(items.begin() + item);
   save();
   const int ringSize = listCount() + headerSlots();
@@ -209,6 +219,7 @@ void TodoActivity::addItem() {
     const auto& text = std::get<KeyboardResult>(result.data).text;
     if (text.empty()) return;
     items.push_back({text, false});
+    LOG_INF("TODO", "add item, %u chars", static_cast<unsigned>(text.size()));
     save();
     requestUpdate();
   });

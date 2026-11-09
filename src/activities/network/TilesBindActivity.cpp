@@ -12,6 +12,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/TilesCloud.h"
+#include "util/DebugLog.h"
 #include "util/QrUtils.h"
 #include "util/TaskWatchdog.h"
 
@@ -25,7 +26,8 @@ constexpr unsigned long BLE_LINGER_MS = 5000;
 
 void TilesBindActivity::onEnter() {
   Activity::onEnter();
-  tilescloud::logLine("=== bind screen opened, heap %u", static_cast<unsigned>(ESP.getFreeHeap()));
+  debuglog::line(debuglog::Feature::BooxBind, "=== bind screen opened, heap %u",
+                 static_cast<unsigned>(ESP.getFreeHeap()));
   requestUpdate();
 }
 
@@ -93,11 +95,11 @@ void TilesBindActivity::loop() {
   if (tilescloud::finishBinding()) {
     bound = true;
     boundAt = millis();
-    tilescloud::logLine("bind: done after %lu s", (millis() - linkStartedAt) / 1000);
+    debuglog::line(debuglog::Feature::BooxBind, "bind: done after %lu s", (millis() - linkStartedAt) / 1000);
     requestUpdate();
   } else if (millis() - linkStartedAt > LINK_TIMEOUT_MS) {
     timedOut = true;
-    tilescloud::logLine("bind: no token after %lu s", LINK_TIMEOUT_MS / 1000);
+    debuglog::line(debuglog::Feature::BooxBind, "bind: no token after %lu s", LINK_TIMEOUT_MS / 1000);
     tilesbind::stop();
     requestUpdate();
   }

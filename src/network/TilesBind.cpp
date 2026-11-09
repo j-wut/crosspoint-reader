@@ -18,6 +18,7 @@
 
 #include "TilesBle.h"
 #include "TilesCloud.h"
+#include "util/DebugLog.h"
 
 namespace tilesbind {
 namespace {
@@ -553,7 +554,7 @@ void onBleLog(const char* line) {
   // where. Others come from the BLE host task, which must not wait on the SD.
   if (strncmp(line, "stop:", 5) == 0) {
     flushLog();
-    tilescloud::logLine("[bind] %s", line);
+    debuglog::line(debuglog::Feature::BooxBind, "%s", line);
     return;
   }
   logf("%s", line);
@@ -648,7 +649,7 @@ void flushLog() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     lines.swap(g_logQueue);
   }
-  for (const auto& line : lines) tilescloud::logLine("[bind] %s", line.c_str());
+  for (const auto& line : lines) debuglog::line(debuglog::Feature::BooxBind, "%s", line.c_str());
 }
 
 }  // namespace tilesbind

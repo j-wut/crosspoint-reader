@@ -11,6 +11,8 @@
 #include <cstring>
 #include <string>
 
+#include "util/DebugLog.h"
+
 #if defined(ARDUINO_ARCH_ESP32)
 #include <BatteryMonitor.h>
 #include <PowerManager.h>
@@ -20,8 +22,6 @@
 #endif
 
 namespace {
-constexpr const char* WAKE_LOG_FILE = "/wake-log.txt";
-constexpr size_t WAKE_LOG_MAX_BYTES = 32 * 1024;
 constexpr uint32_t SLEEP_TRACE_MAGIC = 0x534C5054;  // 'SLPT'
 
 struct SleepTrace {
@@ -158,20 +158,7 @@ void appendWakeLog(const char* fmt, ...) {
   vsnprintf(line, sizeof(line), fmt, args);
   va_end(args);
   LOG_INF("WAKE", "%s", line);
-
-  char entry[352];
-  const int len = snprintf(entry, sizeof(entry), "[%lld] %s\n", static_cast<long long>(time(nullptr)), line);
-  if (len <= 0) return;
-  HalFile file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
-  if (!file) return;
-  if (file.size() > WAKE_LOG_MAX_BYTES) {
-    file.close();
-    Storage.remove(WAKE_LOG_FILE);
-    file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
-    if (!file) return;
-  }
-  file.write(reinterpret_cast<const uint8_t*>(entry), std::min(static_cast<size_t>(len), sizeof(entry) - 1));
-  file.close();
+  debuglog::line(debuglog::Feature::WakeUp, "%s", line);
 }
 
 void wakeTraceWriteBootReport(const char* wakeReason, const bool stateLoaded, const bool showBootScreen,
@@ -207,8 +194,14 @@ void wakeTraceWriteBootReport(const char* wakeReason, const bool stateLoaded, co
     appendWakeLog("boot: no previous run record (power was lost, or first boot of this build)");
   }
 
-  // The previous boot's last log lines, when this boot was not a plain wake.
-  if (strcmp(resume, "splash") == 0 && !capture.previousLogs.empty()) {
+  // The previous boot's last log lines, when this boot was not a plain wake
+  // from sleep or a power-on.
+#if defined(ARDUINO_ARCH_ESP32)
+  const bool plainStart = capture.resetReason == ESP_RST_DEEPSLEEP || capture.resetReason == ESP_RST_POWERON;
+#else
+  const bool plainStart = true;
+#endif
+  if ((strcmp(resume, "splash") == 0 || !plainStart) && !capture.previousLogs.empty()) {
     appendWakeLog("boot: previous run's last log lines:");
     size_t start = 0;
     while (start < capture.previousLogs.size()) {

@@ -97,6 +97,27 @@ TEST_F(LibraryBuilderTest, SkipsSystemFolderContents) {
   EXPECT_EQ(fake::directoryEntriesByPath["/System Volume Information/notes.txt"], 0u);
 }
 
+TEST(LibraryBookFileTest, RejectsDebugLogsAtTheCardRootOnly) {
+  EXPECT_FALSE(isLibraryBookFile("/logs/todo-20261109-205306.txt"));
+  EXPECT_FALSE(isLibraryBookFile("logs/wake-up-20261109-205306-1.txt"));
+  EXPECT_TRUE(isLibraryBookFile("/Books/logs/notes.txt"));
+  EXPECT_TRUE(isLibraryBookFile("/logs.txt"));
+  EXPECT_TRUE(isLibraryBookFile("/logsbook/notes.txt"));
+}
+
+TEST_F(LibraryBuilderTest, SkipsDebugLogFolder) {
+  fake::add("/logs/todo-20261109-205306.txt");
+  fake::add("/Books/logs/notes.txt");
+
+  initial();
+
+  LibraryIndexFile index;
+  ASSERT_TRUE(index.open(INDEX));
+  // The one book plus its /Books and /Books/logs folder rows.
+  EXPECT_EQ(index.header().bookCount, 3u);
+  EXPECT_EQ(fake::directoryEntriesByPath["/logs/todo-20261109-205306.txt"], 0u);
+}
+
 TEST_F(LibraryBuilderTest, XtcTitleAndAuthorComeFromTheFile) {
   fake::add("/Comics/one.xtc");
   fake::add("/Comics/two.xtch");
