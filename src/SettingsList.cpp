@@ -247,6 +247,12 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                            sizeof(SETTINGS.readerSleepWallpaperPath), "readerSleepWallpaperPath"));
   emit(SettingInfo::String(StrId::STR_SLEEP_SCREEN, &SETTINGS.powerOffWallpaperPath[0],
                            sizeof(SETTINGS.powerOffWallpaperPath), "powerOffWallpaperPath"));
+  emit(SettingInfo::Toggle(StrId::STR_KEEP_TRANSPARENCY, &CrossPointSettings::sleepWallpaperAlpha,
+                           "sleepWallpaperAlpha"));
+  emit(SettingInfo::Toggle(StrId::STR_KEEP_TRANSPARENCY, &CrossPointSettings::readerSleepWallpaperAlpha,
+                           "readerSleepWallpaperAlpha"));
+  emit(SettingInfo::Toggle(StrId::STR_KEEP_TRANSPARENCY, &CrossPointSettings::powerOffWallpaperAlpha,
+                           "powerOffWallpaperAlpha"));
   // OPDS download filename format: persisted + web-exposed, category-less so it
   // is hidden from the on-device Settings screen (cycled from the OPDS UI).
   emit(SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
