@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <BlePageTurner.h>
 #include <Logging.h>
-#include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <esp_mac.h>
 #include <esp_random.h>
@@ -17,24 +16,21 @@
 #include <new>
 #include <vector>
 
+#include "TilesBle.h"
 #include "TilesCloud.h"
 
 namespace tilesbind {
 namespace {
 
-// Service and characteristic UUIDs from the stock firmware. Each
-// characteristic is the service UUID with bytes 12-13 replaced, and carries
-// its endpoint name in a 0x2901 user description, as Espressif's
-// protocomm_nimble does.
-constexpr const char* SERVICE_UUID = "021a9004-0382-4aea-bff4-6b3f1c5adfb4";
-struct Endpoint {
-  const char* uuid;
-  const char* name;
-};
-constexpr Endpoint ENDPOINTS[] = {
-    {"021aff4f-0382-4aea-bff4-6b3f1c5adfb4", "prov-ctrl"},    {"021aff50-0382-4aea-bff4-6b3f1c5adfb4", "prov-scan"},
-    {"021aff51-0382-4aea-bff4-6b3f1c5adfb4", "prov-session"}, {"021aff52-0382-4aea-bff4-6b3f1c5adfb4", "prov-config"},
-    {"021aff53-0382-4aea-bff4-6b3f1c5adfb4", "proto-ver"},
+// Service UUID from the stock firmware, least significant byte first
+// (021a9004-0382-4aea-bff4-6b3f1c5adfb4). Each endpoint's UUID is the service
+// UUID with bytes 12-13 replaced, as Espressif's scheme_ble does.
+constexpr uint8_t SERVICE_UUID[16] = {0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
+                                      0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02};
+// Same order as network_prov_mgr's init_mgr().
+constexpr tilesble::Endpoint ENDPOINTS[] = {
+    {0xff4f, "prov-ctrl"},   {0xff50, "prov-scan"}, {0xff51, "prov-session"},
+    {0xff52, "prov-config"}, {0xff53, "proto-ver"},
 };
 constexpr const char* VERSION_JSON = R"({"prov":{"ver":"netprov-v1.2","sec_ver":1,"cap":["wifi_prov","wifi_scan"]}})";
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
@@ -210,7 +206,6 @@ std::string g_ssid;
 std::string g_pass;
 bool g_applied = false;
 unsigned long g_appliedAt = 0;
-NimBLEServer* g_server = nullptr;
 
 void setStage(const Stage s) {
   std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -521,147 +516,47 @@ std::string handleCtrl(const std::string& req) {
   return {};
 }
 
-// First bytes of a GATT value as hex, for the log.
-std::string hexHead(const uint8_t* data, const size_t len) {
-  static constexpr char DIGITS[] = "0123456789abcdef";
+// ---- endpoint requests from the BLE transport ----
+std::string onEndpointWrite(const size_t index, const std::string& raw) {
+  const char* name = ENDPOINTS[index].name;
+  if (strcmp(name, "proto-ver") == 0) return VERSION_JSON;
+  if (strcmp(name, "prov-session") == 0) return handleSession(raw);
+  if (!g_session.ready) {
+    logf("%s: no secure session yet", name);
+    return {};
+  }
+  const std::string plain = g_session.crypt(reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
   std::string out;
-  for (size_t i = 0; i < len && i < 24; ++i) {
-    out.push_back(DIGITS[data[i] >> 4]);
-    out.push_back(DIGITS[data[i] & 0xF]);
+  if (strcmp(name, "prov-config") == 0) {
+    out = handleConfig(plain);
+  } else if (strcmp(name, "prov-scan") == 0) {
+    out = handleScan(plain);
+  } else if (strcmp(name, "prov-ctrl") == 0) {
+    out = handleCtrl(plain);
   }
-  if (len > 24) out += "..";
-  return out;
+  return g_session.crypt(reinterpret_cast<const uint8_t*>(out.data()), out.size());
 }
 
-// ---- GATT glue: the app writes a request, then reads the reply ----
-class EndpointCallbacks final : public NimBLECharacteristicCallbacks {
- public:
-  explicit EndpointCallbacks(const char* name) : name(name) {}
-
-  void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
-    logf("read %s (%u bytes)", name, static_cast<unsigned>(c->getValue().length()));
-  }
-
-  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, const uint16_t subValue) override {
-    logf("subscribe %s = %u", name, subValue);
-  }
-
-  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
-    const NimBLEAttValue value = c->getValue();
-    const std::string raw(reinterpret_cast<const char*>(value.data()), value.length());
-    logf("write %s (%u bytes) %s", name, static_cast<unsigned>(raw.size()),
-         hexHead(value.data(), value.length()).c_str());
-    std::string reply;
-    if (strcmp(name, "proto-ver") == 0) {
-      reply = VERSION_JSON;
-    } else if (strcmp(name, "prov-session") == 0) {
-      reply = handleSession(raw);
-    } else if (!g_session.ready) {
-      logf("%s: no secure session yet", name);
-    } else {
-      const std::string plain = g_session.crypt(reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
-      std::string out;
-      if (strcmp(name, "prov-config") == 0) {
-        out = handleConfig(plain);
-      } else if (strcmp(name, "prov-scan") == 0) {
-        out = handleScan(plain);
-      } else if (strcmp(name, "prov-ctrl") == 0) {
-        out = handleCtrl(plain);
-      }
-      reply = g_session.crypt(reinterpret_cast<const uint8_t*>(out.data()), out.size());
-    }
-    c->setValue(reinterpret_cast<const uint8_t*>(reply.data()), reply.size());
-    logf("reply %s (%u bytes)", name, static_cast<unsigned>(reply.size()));
-  }
-
- private:
-  const char* name;
-};
-
-class DescriptorCallbacks final : public NimBLEDescriptorCallbacks {
- public:
-  void onRead(NimBLEDescriptor* d, NimBLEConnInfo&) override {
-    logf("read name of %s", d->getCharacteristic()->getUUID().toString().c_str());
-  }
-};
-DescriptorCallbacks g_descriptorCallbacks;
-
-class ServerCallbacks final : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer* server, NimBLEConnInfo& info) override {
-    g_session.reset();
-    setStage(Stage::Connected);
-    // Stock does this in its GAP CONNECT listener (ble_svc_gatt_changed over
-    // the whole range) so a phone that cached the stock table rediscovers.
-    server->sendServiceChangedIndication();
-    logf("app connected, MTU %u, peer %s (%s), handle %u, bonded %d, encrypted %d", info.getMTU(),
-         info.getAddress().toString().c_str(), info.getAddress().isPublic() ? "public" : "random", info.getConnHandle(),
-         info.isBonded(), info.isEncrypted());
-  }
-  void onConnParamsUpdate(NimBLEConnInfo& info) override {
-    logf("conn params: interval %u, latency %u, timeout %u", info.getConnInterval(), info.getConnLatency(),
-         info.getConnTimeout());
-  }
-  void onAuthenticationComplete(NimBLEConnInfo& info) override {
-    logf("auth complete: bonded %d, encrypted %d", info.isBonded(), info.isEncrypted());
-  }
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, const int reason) override {
-    g_session.reset();
-    logf("app disconnected, reason %d", reason);
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    if (g_stage == Stage::Connected || g_stage == Stage::SessionReady) g_stage = Stage::Advertising;
-  }
-  void onMTUChange(const uint16_t mtu, NimBLEConnInfo&) override { logf("MTU now %u", mtu); }
-};
-
-ServerCallbacks g_serverCallbacks;
-std::vector<EndpointCallbacks*> g_endpointCallbacks;
-
-// Raw GAP events, including ones for the GATT service (Service Changed) that
-// the server callbacks never see. Stock registers a listener the same way.
-int onGapEvent(ble_gap_event* event, void*) {
-  switch (event->type) {
-    case BLE_GAP_EVENT_SUBSCRIBE:
-      logf("gap subscribe attr %u: notify %d->%d, indicate %d->%d, reason %d", event->subscribe.attr_handle,
-           event->subscribe.prev_notify, event->subscribe.cur_notify, event->subscribe.prev_indicate,
-           event->subscribe.cur_indicate, event->subscribe.reason);
-      break;
-    case BLE_GAP_EVENT_NOTIFY_TX:
-      logf("gap %s tx attr %u status %d", event->notify_tx.indication ? "indication" : "notify",
-           event->notify_tx.attr_handle, event->notify_tx.status);
-      break;
-    case BLE_GAP_EVENT_ENC_CHANGE:
-      logf("gap encryption change status %d", event->enc_change.status);
-      break;
-    case BLE_GAP_EVENT_REPEAT_PAIRING:
-      logf("gap repeat pairing");
-      break;
-    case BLE_GAP_EVENT_PASSKEY_ACTION:
-      logf("gap passkey action %d", event->passkey.params.action);
-      break;
-    case BLE_GAP_EVENT_CONN_UPDATE_REQ:
-      logf("gap conn update request");
-      break;
-    case BLE_GAP_EVENT_DISCONNECT:
-      logf("gap disconnect reason %d", event->disconnect.reason);
-      break;
-    default:
-      break;
-  }
-  return 0;
+void onBleConnect() {
+  g_session.reset();
+  setStage(Stage::Connected);
 }
-ble_gap_event_listener g_gapListener;
-bool g_gapListenerOn = false;
 
-void logHandles() {
-  NimBLEService* service = g_server ? g_server->getServiceByUUID(SERVICE_UUID) : nullptr;
-  if (!service) return;
-  logf("service handle %u", service->getHandle());
-  for (const auto& ep : ENDPOINTS) {
-    NimBLECharacteristic* c = service->getCharacteristic(ep.uuid);
-    if (!c) continue;
-    NimBLEDescriptor* d = c->getDescriptorByUUID("2901");
-    logf("%s: value handle %u, name handle %u", ep.name, c->getHandle(), d ? d->getHandle() : 0);
+void onBleDisconnect(int) {
+  g_session.reset();
+  std::lock_guard<std::mutex> lock(g_stateMutex);
+  if (g_stage == Stage::Connected || g_stage == Stage::SessionReady) g_stage = Stage::Advertising;
+}
+
+void onBleLog(const char* line) {
+  // Stop steps run on the caller's task: write them at once so a crash shows
+  // where. Others come from the BLE host task, which must not wait on the SD.
+  if (strncmp(line, "stop:", 5) == 0) {
+    flushLog();
+    tilescloud::logLine("[bind] %s", line);
+    return;
   }
+  logf("%s", line);
 }
 
 std::string efuseHex() {
@@ -692,57 +587,14 @@ bool start(std::string& qrUrl) {
 
   // The page turner owns NimBLE as a central; release it first.
   bleturner::stopNow(3000);
-  // Also frees objects a previous stop() left behind (safe with the host off).
-  NimBLEDevice::deinit(true);
-  for (auto* cb : g_endpointCallbacks) delete cb;
-  g_endpointCallbacks.clear();
   WiFi.mode(WIFI_STA);
 
-  if (!NimBLEDevice::init(name)) {
-    logf("NimBLE init failed");
-    setStage(Stage::Failed);
-    return false;
-  }
-  NimBLEDevice::setMTU(256);
-  g_server = NimBLEDevice::createServer();
-  g_server->setCallbacks(&g_serverCallbacks, false);
-  g_server->advertiseOnDisconnect(true);
-  NimBLEService* service = g_server->createService(SERVICE_UUID);
-  for (const auto& ep : ENDPOINTS) {
-    NimBLECharacteristic* c =
-        service->createCharacteristic(ep.uuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE, 512);
-    NimBLEDescriptor* desc = c->createDescriptor("2901", NIMBLE_PROPERTY::READ, strlen(ep.name));
-    desc->setValue(ep.name);
-    desc->setCallbacks(&g_descriptorCallbacks);
-    auto* cb = new (std::nothrow) EndpointCallbacks(ep.name);
-    if (cb) {
-      g_endpointCallbacks.push_back(cb);
-      c->setCallbacks(cb);
-    }
-  }
-  service->start();
-
-  // Service UUID in the advertisement, name in the scan response (both do not
-  // fit in 31 bytes), as Espressif's scheme_ble does.
-  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  NimBLEAdvertisementData advData;
-  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-  advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
-  NimBLEAdvertisementData scanData;
-  scanData.setName(name);
-  adv->setAdvertisementData(advData);
-  adv->setScanResponseData(scanData);
-  adv->enableScanResponse(true);
-  if (!adv->start()) {
-    logf("advertising failed");
+  const tilesble::Callbacks callbacks{onEndpointWrite, onBleConnect, onBleDisconnect, onBleLog};
+  if (!tilesble::start(name, SERVICE_UUID, ENDPOINTS, sizeof(ENDPOINTS) / sizeof(ENDPOINTS[0]), callbacks)) {
     setStage(Stage::Failed);
     return false;
   }
   setStage(Stage::Advertising);
-  logHandles();
-  ble_gap_event_listener_unregister(&g_gapListener);  // in case the host kept it from a previous start
-  g_gapListenerOn = ble_gap_event_listener_register(&g_gapListener, onGapEvent, nullptr) == 0;
-  logf("gap listener %s", g_gapListenerOn ? "on" : "failed");
 
   uint8_t mac[6] = {};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -757,28 +609,8 @@ bool start(std::string& qrUrl) {
 }
 
 void stop() {
-  if (NimBLEDevice::isInitialized() && g_server) {
-    // Each step is written to the log before it runs, so a crash shows where.
-    auto step = [](const char* what) {
-      flushLog();
-      tilescloud::logLine("[bind] stop: %s", what);
-    };
-    step("advertising off");
-    g_server->advertiseOnDisconnect(false);
-    NimBLEDevice::getAdvertising()->stop();
-    step("disconnect");
-    for (const uint16_t handle : g_server->getPeerDevices()) g_server->disconnect(handle);
-    for (int i = 0; i < 25 && g_server->getConnectedCount() > 0; ++i) delay(20);
-    g_server->setCallbacks(nullptr, false);
-    if (g_gapListenerOn) ble_gap_event_listener_unregister(&g_gapListener);
-    g_gapListenerOn = false;
-    step("host stop");
-    // Keep the GATT objects until the next start(): a host event still in
-    // flight may point at them.
-    const bool stopped = NimBLEDevice::deinit(false);
-    tilescloud::logLine("[bind] stop: host stopped %d", stopped);
-  }
-  g_server = nullptr;
+  tilesble::stop();
+  flushLog();
   g_session.reset();
   setStage(Stage::Off);
 }
