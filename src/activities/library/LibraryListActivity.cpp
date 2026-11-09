@@ -12,6 +12,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
@@ -285,36 +286,44 @@ void LibraryListActivity::showRecentBookOptions(const int entry) {
     }
   }
 
-  const char* STORE_OPTIONS[] = {tr(STR_OPEN), tr(STR_REMOVE_FROM_RECENTS), tr(STR_DELETE), tr(STR_LIBRARY_REBUILD)};
-  const char* INDEX_OPTIONS[] = {tr(STR_OPEN), tr(STR_DELETE), tr(STR_LIBRARY_REBUILD)};
+  // Opened from the Tiles Bookshelf, the menu matches the Bookshelf's: touch
+  // boards rebuild from the header, button boards also switch layout here.
+  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT };
+  const bool buttonsOnly = !mappedInput.hasTouch();
+  const char* labels[5];
+  std::array<Item, 5> items{};
+  int count = 0;
+  const auto add = [&](const Item item, const char* label) {
+    items[static_cast<size_t>(count)] = item;
+    labels[count++] = label;
+  };
+  add(OPEN, tr(STR_OPEN));
+  if (isStoreRow) add(REMOVE_RECENT, tr(STR_REMOVE_FROM_RECENTS));
+  add(DELETE, tr(STR_DELETE));
+  if (!fromBookshelf || buttonsOnly) add(REBUILD, tr(STR_LIBRARY_REBUILD));
+  if (fromBookshelf && buttonsOnly) add(LAYOUT, tr(STR_SHOW_AS_GRID));
   app.clearTapFlash();
-  optionPopup.show(tr(STR_LIBRARY), title.c_str(), isStoreRow ? STORE_OPTIONS : INDEX_OPTIONS, isStoreRow ? 4 : 3, 0,
-                   [this, path, title, isStoreRow](const int choice) {
-                     swallowHeldReleases();
-                     switch (choice) {
-                       case 0:
-                         openBookByPath(path);
-                         break;
-                       case 1:
-                         if (isStoreRow) {
-                           promptRemoveRecentBook(path, title);
-                         } else {
-                           promptDeleteBookByPath(path, title);
-                         }
-                         break;
-                       case 2:
-                         if (isStoreRow)
-                           promptDeleteBookByPath(path, title);
-                         else
-                           promptRebuildIndex();
-                         break;
-                       case 3:
-                         if (isStoreRow) promptRebuildIndex();
-                         break;
-                       default:
-                         break;
-                     }
-                   });
+  optionPopup.show(tr(STR_LIBRARY), title.c_str(), labels, count, 0, [this, path, title, items](const int choice) {
+    swallowHeldReleases();
+    if (choice < 0) return;
+    switch (items[static_cast<size_t>(choice)]) {
+      case OPEN:
+        openBookByPath(path);
+        break;
+      case REMOVE_RECENT:
+        promptRemoveRecentBook(path, title);
+        break;
+      case DELETE:
+        promptDeleteBookByPath(path, title);
+        break;
+      case REBUILD:
+        promptRebuildIndex();
+        break;
+      case LAYOUT:
+        activityManager.goToBookshelf();
+        break;
+    }
+  });
   requestUpdate();
 }
 
@@ -979,6 +988,10 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
     if (mappedInput.hasTouch()) {
       header.trailingAdjacentIcon = fui::bitmapFromIcon(icon_refresh_cw_32);
       header.trailingAdjacentAction = ACTION_REBUILD;
+    } else if (fromBookshelf) {
+      // Button boards: the current layout, not a button (switch from the menu).
+      header.trailingAdjacentIcon = fui::bitmapFromIcon(icon_list_32);
+      header.trailingAdjacentAction = ACTION_LAYOUT_INDICATOR;
     }
     // Vertical placement comes from applyHeaderStatus: buttons center on the
     // unified band.

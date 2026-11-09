@@ -24,6 +24,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/CatalogScreens.h"
 #include "components/UITheme.h"
+#include "components/icons/appIcons.h"
 #include "components/icons/listIcons.h"
 #include "components/icons/search32.h"
 #include "util/BookCacheUtils.h"
@@ -37,6 +38,8 @@ constexpr fui::ActionId LIST = 2;
 constexpr fui::ActionId PAGE = 3;  // value -1 / +1
 constexpr fui::ActionId SEARCH = 4;
 constexpr fui::ActionId REFRESH = 5;
+// Paints the current-layout icon on button boards; nothing handles it.
+constexpr fui::ActionId LAYOUT_INDICATOR = 6;
 // Pending codes for the non-cell actions; cells use their slot index.
 constexpr int PENDING_LIST = 1000;
 constexpr int PENDING_PREV = 1001;
@@ -46,7 +49,7 @@ constexpr int PENDING_REFRESH = 1004;
 constexpr int16_t GAP = 14;
 constexpr int16_t PROGRESS_HEIGHT = 6;
 constexpr int16_t BAR_HEIGHT = 44;
-constexpr unsigned long DELETE_HOLD_MS = 1000;
+constexpr unsigned long MENU_HOLD_MS = 1000;
 const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
 const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
 
@@ -57,6 +60,11 @@ bool rebuildIndex() {
     return false;
   }
   return true;
+}
+
+bool inRecents(const std::string& path) {
+  const auto& books = RECENT_BOOKS.getBooks();
+  return std::any_of(books.begin(), books.end(), [&](const RecentBook& book) { return book.path == path; });
 }
 
 // The book's thumb path without a height, or empty for formats without covers.
@@ -181,7 +189,6 @@ void BookshelfActivity::openSearch() {
       query = std::get<KeyboardResult>(result.data).text;
       applyFilter();
       selected = 0;
-      listFocused = false;
       loadPage(0);
     }
     resetUi();
@@ -258,7 +265,6 @@ void BookshelfActivity::screenFn(UiScreen& screen, void* user) { static_cast<Boo
 void BookshelfActivity::select(const int index) {
   const int count = bookCount;
   if (count == 0) return;
-  listFocused = false;
   const int flat = (index % count + count) % count;
   const int targetPage = flat / PER_PAGE;
   selected = flat % PER_PAGE;
@@ -266,18 +272,12 @@ void BookshelfActivity::select(const int index) {
   requestUpdate();
 }
 
+// Next wraps from the last book to the first; Previous stops on the first
+// book, where its release opens search instead.
 void BookshelfActivity::step(const int direction) {
   if (bookCount == 0) return;
-  if (listFocused) {
-    select(direction > 0 ? 0 : bookCount - 1);
-    return;
-  }
   const int flat = page * PER_PAGE + selected + direction;
-  if (flat < 0 || flat >= bookCount) {
-    listFocused = true;
-    requestUpdate();
-    return;
-  }
+  if (flat < 0) return;
   select(flat);
 }
 
@@ -309,7 +309,75 @@ void BookshelfActivity::promptDelete(const int slot) {
   });
 }
 
+void BookshelfActivity::promptRemoveRecent(const int slot) {
+  if (slot < 0 || slot >= cellCount) return;
+  const std::string path = cells[slot].path;
+  auto confirmation =
+      makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_REMOVE_FROM_RECENTS), cells[slot].title);
+  if (!confirmation) {
+    LOG_ERR("SHELF", "OOM: remove-recent confirmation");
+    return;
+  }
+  startActivityForResult(std::move(confirmation), [this, path](const ActivityResult& result) {
+    if (!result.isCancelled && RECENT_BOOKS.removeByPath(path)) RECENT_BOOKS.saveToFile();
+    resetUi();
+    requestUpdate();
+  });
+}
+
+// Same items as the Library list's book menu. Refresh and the layout switch
+// are in the header on touch boards, so only button boards list them here.
+// With no book (empty shelf) only those two remain.
+void BookshelfActivity::showBookMenu(const int slot) {
+  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT };
+  const bool hasBook = slot >= 0 && slot < cellCount;
+  const bool buttonsOnly = !BoardConfig::hasTouch();
+  if (!hasBook && !buttonsOnly) return;
+  const char* labels[5];
+  Item items[5];
+  int count = 0;
+  const auto add = [&](const Item item, const char* label) {
+    items[count] = item;
+    labels[count++] = label;
+  };
+  if (hasBook) {
+    add(OPEN, tr(STR_OPEN));
+    if (inRecents(cells[slot].path)) add(REMOVE_RECENT, tr(STR_REMOVE_FROM_RECENTS));
+    add(DELETE, tr(STR_DELETE));
+  }
+  if (buttonsOnly) {
+    add(REBUILD, tr(STR_LIBRARY_REBUILD));
+    add(LAYOUT, tr(STR_SHOW_AS_LIST));
+  }
+  std::array<Item, 5> chosen{};
+  std::copy(items, items + count, chosen.begin());
+  app.clearTapFlash();
+  optionPopup.show(tr(STR_BOOKSHELF), hasBook ? cells[slot].title.c_str() : nullptr, labels, count, 0,
+                   [this, slot, chosen](const int choice) {
+                     if (choice < 0) return;
+                     switch (chosen[static_cast<size_t>(choice)]) {
+                       case OPEN:
+                         openCell(slot);
+                         break;
+                       case REMOVE_RECENT:
+                         promptRemoveRecent(slot);
+                         break;
+                       case DELETE:
+                         promptDelete(slot);
+                         break;
+                       case REBUILD:
+                         refreshIndex();
+                         break;
+                       case LAYOUT:
+                         activityManager.goToLibrary(true);
+                         break;
+                     }
+                   });
+  requestUpdate();
+}
+
 void BookshelfActivity::loop() {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
   if (thumbHeightChanged) {
     thumbHeightChanged = false;
     refreshThumbs();
@@ -335,7 +403,7 @@ void BookshelfActivity::loop() {
     } else if (pending == PENDING_REFRESH) {
       refreshIndex();
     } else if (pendingLong) {
-      promptDelete(pending);
+      showBookMenu(pending);
     } else {
       openCell(pending);
     }
@@ -359,7 +427,6 @@ void BookshelfActivity::loop() {
       query.clear();
       applyFilter();
       selected = 0;
-      listFocused = false;
       loadPage(0);
       requestUpdate();
       return;
@@ -368,30 +435,45 @@ void BookshelfActivity::loop() {
     return;
   }
   // The hold fires mid-press and swallows its release (as in the Library list).
-  if (!listFocused && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, DELETE_HOLD_MS)) {
-    promptDelete(selected);
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, MENU_HOLD_MS)) {
+    showBookMenu(bookCount == 0 ? -1 : selected);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (listFocused || bookCount == 0) {
-      activityManager.goToLibrary(true);
+    if (bookCount == 0) {
+      showBookMenu(-1);
     } else {
       openCell(selected);
     }
     return;
   }
+  // Like the Library list's tab row: Previous on the first book opens search on
+  // release, so a held Previous that reaches the first book stops there.
+  if (mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
+    previousFromFirst = page == 0 && selected == 0;
+  }
   buttonNavigator.onNext([this] { step(1); });
   buttonNavigator.onPrevious([this] { step(-1); });
+  buttonNavigator.onPreviousRelease([this] {
+    if (previousFromFirst && !BoardConfig::hasTouch()) openSearch();
+    previousFromFirst = false;
+  });
 }
 
 void BookshelfActivity::draw(UiScreen& screen) {
   coverCache.prepare();
   // While searching, the header shows the query in place of the title.
   const std::string searchTitle = query.empty() ? std::string() : "“" + query + "”";
-  catalogScreenHeader(screen, renderer, query.empty() ? tr(STR_BOOKSHELF) : searchTitle.c_str(),
-                      fui::bitmapFromIcon(icon_search_32), SEARCH, fui::bitmapFromIcon(icon_refresh_cw_32), REFRESH,
-                      fui::bitmapFromIcon(icon_list_32), LIST,
-                      (listFocused || bookCount == 0) && !BoardConfig::hasTouch());
+  const char* title = query.empty() ? tr(STR_BOOKSHELF) : searchTitle.c_str();
+  if (BoardConfig::hasTouch()) {
+    // Tap targets: search, refresh, and the list layout.
+    catalogScreenHeader(screen, renderer, title, fui::bitmapFromIcon(icon_search_32), SEARCH,
+                        fui::bitmapFromIcon(icon_refresh_cw_32), REFRESH, fui::bitmapFromIcon(icon_list_32), LIST);
+  } else {
+    // Buttons: search (Previous on the first book) and the current layout.
+    catalogScreenHeader(screen, renderer, title, fui::bitmapFromIcon(icon_search_32), SEARCH,
+                        fui::bitmapFromIcon(icon_app_apps_32), LAYOUT_INDICATOR);
+  }
   const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
@@ -504,7 +586,7 @@ void BookshelfActivity::drawCell(UiScreen& screen, const int slot, const fui::Re
     cardTitle.maxLines = 6;
     screen.target().text(cover.inset(fui::Insets{16, 8, 16, 8}), cell.title.c_str(), cardTitle);
   }
-  if (slot == selected && !listFocused && !BoardConfig::hasTouch()) {
+  if (slot == selected && !BoardConfig::hasTouch()) {
     screen.target().stroke(cover.inset(fui::Insets{-5, -5, -5, -5}), INK, 3, 6);
   }
   auto y = static_cast<int16_t>(cover.bottom() + theme.spaceSm);
@@ -523,6 +605,8 @@ void BookshelfActivity::drawCell(UiScreen& screen, const int slot, const fui::Re
 }
 
 void BookshelfActivity::render(RenderLock&&) {
+  // The menu draws over the last frame and owns the hints while it is up.
+  if (optionPopup.processRender(renderer, mappedInput)) return;
   renderer.clearScreen();
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

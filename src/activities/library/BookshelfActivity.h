@@ -6,16 +6,17 @@
 
 #include "activities/Activity.h"
 #include "components/HomeCoverCache.h"
+#include "components/OptionPopup.h"
 #include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
 // Tiles theme Library: every indexed book as a cover with its title and
 // reading progress, newest arrival first, six to a page. Tap opens, hold
-// offers delete, and "List" opens the full Library list (search and sort).
-// The header's search narrows the shelf to matching titles and authors, and
-// refresh rebuilds the library index.
-// Buttons walk the books with "List" between the last and the first; holding
-// Confirm on a book offers delete.
+// opens the book menu. The header's search narrows the shelf to matching
+// titles and authors; on touch boards refresh rebuilds the library index and
+// the list icon opens the Library list (search and sort).
+// Buttons walk the books; Previous on the first book opens search, and the
+// held-Confirm menu also offers refresh and the list layout.
 class BookshelfActivity final : public Activity, private UiAppHost {
  public:
   BookshelfActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -53,6 +54,8 @@ class BookshelfActivity final : public Activity, private UiAppHost {
   bool generateMissingThumb();
   void openCell(int slot);
   void promptDelete(int slot);
+  void promptRemoveRecent(int slot);
+  void showBookMenu(int slot);
   void select(int index);
   void step(int direction);
 
@@ -65,8 +68,9 @@ class BookshelfActivity final : public Activity, private UiAppHost {
   std::unique_ptr<uint16_t[]> matches;  // index rows (recent order) matching the query
   int matchCount = 0;
   int page = 0;
-  int selected = 0;          // flat index on the page, buttons only
-  bool listFocused = false;  // buttons are on the "List" button
+  int selected = 0;                // flat index on the page, buttons only
+  bool previousFromFirst = false;  // Previous was pressed on the first book
+  OptionPopup optionPopup;
   int thumbHeight = 0;
   bool thumbHeightChanged = false;
   int pending = -1;

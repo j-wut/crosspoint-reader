@@ -21,15 +21,14 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
                          const freeink::ui::BitmapRef& adjacentIcon = {},
                          freeink::ui::ActionId adjacentAction = freeink::ui::NO_ACTION,
                          const freeink::ui::BitmapRef& thirdIcon = {},
-                         freeink::ui::ActionId thirdAction = freeink::ui::NO_ACTION, bool thirdFocused = false);
+                         freeink::ui::ActionId thirdAction = freeink::ui::NO_ACTION);
 
 // A third icon button left of a header's two trailing ones (the header itself
 // draws at most two). Call right after freeink::ui::header() with the same
-// band and props; a long title under the button is painted over. `focused`
-// rings it for button navigation.
+// band and props; a long title under the button is painted over.
 void headerThirdTrailingButton(UiAppHost::UiScreen& screen, freeink::ui::Rect band,
                                const freeink::ui::HeaderProps& header, const freeink::ui::BitmapRef& icon,
-                               freeink::ui::ActionId action, bool focused = false);
+                               freeink::ui::ActionId action);
 
 // One line of a centered message block; bold marks a heading line.
 struct CatalogLine {

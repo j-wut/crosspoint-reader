@@ -17,7 +17,7 @@ namespace fui = freeink::ui;
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
                          const fui::BitmapRef& trailingIcon, const fui::ActionId trailingAction,
                          const fui::BitmapRef& adjacentIcon, const fui::ActionId adjacentAction,
-                         const fui::BitmapRef& thirdIcon, const fui::ActionId thirdAction, const bool thirdFocused) {
+                         const fui::BitmapRef& thirdIcon, const fui::ActionId thirdAction) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto& theme = screen.theme();
   fui::HeaderProps header;
@@ -66,7 +66,7 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
   header.minTouchSize = theme.minTouchSize;
   fui::header(screen.frame(), band, header);
   if (thirdIcon && thirdAction != fui::NO_ACTION) {
-    headerThirdTrailingButton(screen, band, header, thirdIcon, thirdAction, thirdFocused);
+    headerThirdTrailingButton(screen, band, header, thirdIcon, thirdAction);
   }
   screen.setContentMarginFromScreen(
       fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing), 0,
@@ -74,7 +74,7 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
 }
 
 void headerThirdTrailingButton(UiAppHost::UiScreen& screen, const fui::Rect band, const fui::HeaderProps& header,
-                               const fui::BitmapRef& icon, const fui::ActionId action, const bool focused) {
+                               const fui::BitmapRef& icon, const fui::ActionId action) {
   // Same geometry as the header's own icon-only trailing buttons: squares
   // anchored 12 px from the right edge, 4 px apart.
   const auto size = header.trailingSize > 0 ? header.trailingSize : static_cast<int16_t>(band.height - 8);
@@ -90,7 +90,6 @@ void headerThirdTrailingButton(UiAppHost::UiScreen& screen, const fui::Rect band
   button.radius = header.trailingRadius;
   button.minTouchSize = header.minTouchSize;
   fui::button(screen.frame(), rect, button);
-  if (focused) screen.target().stroke(rect, fui::Paint::solid(fui::Color::Black), 2, 6);
 }
 
 void catalogCenteredBlock(UiAppHost::UiScreen& screen, const std::initializer_list<CatalogLine> lines) {
