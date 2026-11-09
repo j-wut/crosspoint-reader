@@ -48,6 +48,7 @@
 #include "network/FirmwareFlasher.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "platform/VendorRecovery.h"
+#include "platform/WakeTrace.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
@@ -83,31 +84,6 @@ constexpr unsigned long RECOVERY_COMBO_HOLD_MS = 2000;
 // A wake hold must never become an in-app power-button action.  Boot may continue
 // while the button is held; swallow the one release that ends that wake gesture.
 static bool wakePowerReleasePending = false;
-
-// Power-button sleep/wake trace on the SD card, for checking Wake From Sleep
-// on a device without a serial console. Restarted once it passes 16 KB.
-static constexpr const char* WAKE_LOG_FILE = "/wake-log.txt";
-static void appendWakeLog(const char* fmt, ...) {
-  char line[256];
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(line, sizeof(line), fmt, args);
-  va_end(args);
-  LOG_INF("WAKE", "%s", line);
-  char entry[288];
-  const int len = snprintf(entry, sizeof(entry), "[%lld] %s\n", static_cast<long long>(time(nullptr)), line);
-  if (len <= 0) return;
-  HalFile file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
-  if (!file) return;
-  if (file.size() > 16 * 1024) {
-    file.close();
-    Storage.remove(WAKE_LOG_FILE);
-    file = Storage.open(WAKE_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND);
-    if (!file) return;
-  }
-  file.write(reinterpret_cast<const uint8_t*>(entry), std::min(static_cast<size_t>(len), sizeof(entry) - 1));
-  file.close();
-}
 
 // Fonts
 EpdFont notosans14RegularFont(&notosans_14_regular);
@@ -583,6 +559,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
 
   // Stop Bluetooth before plugin delivery can start WiFi; a timeout defers delivery.
   deepSleepInProgress = true;
+  wakeTraceStage(SleepStage::Started);
   const bool bluetoothStopped = bleturner::beforeSleep(2000);
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
   deliverSleepPluginEvents(bluetoothStopped);
@@ -595,9 +572,11 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   // it visible until the first useful reader or home paint replaces it.
   APP_STATE.showBootScreen = false;
 
-  APP_STATE.saveToFile();
+  const bool stateSaved = APP_STATE.saveToFile();
+  wakeTraceStage(SleepStage::StateSaved);
 
   activityManager.goToSleep(fromTimeout);
+  wakeTraceStage(SleepStage::ScreenDrawn);
 
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();
@@ -617,17 +596,24 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   // The I2C LED driver keeps its state through deep sleep; switch it off here
   // (SETTINGS.frontlightOn keeps the preference for restore-on-wake).
   Frontlight.setOn(false);
+  wakeTraceStage(SleepStage::UsbHold);
   const bool wakeOnHeldButton = holdSleepWhileUsbPowered();
+  wakeTraceStage(SleepStage::UsbHoldDone);
 #else
   const bool wakeOnHeldButton = false;
 #endif
 
-  appendWakeLog("sleep: timeout=%d powerOff=%d usb=%d heldWake=%d wakePress=%u shortPwrBtn=%u uptimeMs=%lu",
-                fromTimeout ? 1 : 0, powerOff ? 1 : 0, gpio.isUsbConnected() ? 1 : 0, wakeOnHeldButton ? 1 : 0,
-                SETTINGS.wakePress, SETTINGS.shortPwrBtn, millis());
+  appendWakeLog(
+      "sleep: timeout=%d powerOff=%d usb=%d heldWake=%d stateSaved=%d wakePress=%u shortPwrBtn=%u uptimeMs=%lu "
+      "heap=%lu minHeap=%lu",
+      fromTimeout ? 1 : 0, powerOff ? 1 : 0, gpio.isUsbConnected() ? 1 : 0, wakeOnHeldButton ? 1 : 0,
+      stateSaved ? 1 : 0, SETTINGS.wakePress, SETTINGS.shortPwrBtn, millis(),
+      static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()));
   halTiltSensor.deepSleep();
   display.deepSleep();
+  wakeTraceStage(SleepStage::DisplayOff);
   Storage.prepareForDeepSleep();
+  wakeTraceStage(SleepStage::StorageParked);
 
   if (powerOff && !wakeOnHeldButton && !gpio.isUsbConnected()) {
     // The charger leaves ship mode when its nINT line is held low, which may
@@ -636,6 +622,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
       delay(10);
       gpio.update();
     }
+    wakeTraceStage(SleepStage::ShipMode);
     if (BatteryMonitor::enterShipMode()) {
       LOG_INF("MAIN", "Battery cut off, powering down");
       // The SGM41562 opens its BATFET after a 1 s deglitch.
@@ -643,7 +630,8 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
       LOG_ERR("MAIN", "Still powered after ship mode, sleeping instead");
     }
   }
-  LOG_DBG("MAIN", "Entering deep sleep");
+  LOG_INF("MAIN", "Entering deep sleep");
+  wakeTraceStage(SleepStage::DeepSleep);
 
   powerManager.startDeepSleep(gpio, wakeOnHeldButton);
 }
@@ -694,6 +682,8 @@ void setup() {
   // On X3/X4 the button powers the board until this latch, so a wake press
   // must last at least this long (plus the ROM and bootloader time before it).
   const unsigned long powerLatchedMs = millis();
+  // Before HalSystem::begin(), which clears the previous boot's log ring.
+  wakeTraceCapture();
 
 #ifdef ENABLE_SERIAL_LOG
 #ifdef CROSSPOINT_WAIT_FOR_USB_SERIAL
@@ -776,7 +766,8 @@ void setup() {
 
   HalSystem::checkPanic();
 
-  APP_STATE.loadFromFile();
+  const bool stateLoaded = APP_STATE.loadFromFile();
+  const bool loadedShowBootScreen = APP_STATE.showBootScreen;
   const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
   const bool isPersistedSleepWake = isSleepWake && !APP_STATE.showBootScreen;
 
@@ -852,6 +843,7 @@ void setup() {
       if (wakeRejected) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
+        wakeTraceStage(SleepStage::DeepSleep);
         powerManager.startDeepSleep(gpio);
       }
       wakePowerReleasePending = true;
@@ -871,6 +863,7 @@ void setup() {
       break;
 #else
       Storage.prepareForDeepSleep();
+      wakeTraceStage(SleepStage::DeepSleep);
       powerManager.startDeepSleep(gpio);
       break;
 #endif
@@ -897,6 +890,28 @@ void setup() {
                             : isPersistedSleepWake ? BootResume::SplashlessWake
                                                    : BootResume::Splash;
   bool allowFastInitialReaderRefresh = false;
+
+  {
+    const char* reasonName = "other";
+    switch (wakeupReason) {
+      case HalGPIO::WakeupReason::PowerButton:
+        reasonName = "power-button";
+        break;
+      case HalGPIO::WakeupReason::AfterUSBPower:
+        reasonName = "usb-power";
+        break;
+      case HalGPIO::WakeupReason::AfterFlash:
+        reasonName = "after-flash";
+        break;
+      default:
+        break;
+    }
+    wakeTraceWriteBootReport(reasonName, stateLoaded, loadedShowBootScreen,
+                             resume == BootResume::Silent           ? "silent"
+                             : resume == BootResume::SplashlessWake ? "wake"
+                                                                    : "splash",
+                             rebootedFromPanic);
+  }
 
   setupDisplayAndFonts(resume != BootResume::Splash);
 
