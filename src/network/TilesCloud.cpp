@@ -904,6 +904,18 @@ void logLine(const char* format, ...) {
   log.close();
 }
 
+void logRecentDeviceLog(const char* why) {
+  if (!BoardConfig::isPicco()) return;
+  const std::string recent = getLastLogs();
+  HalFile log = openLog();
+  if (!log) return;
+  log.printf("[%lu s] recent device log (%s), heap %u, max block %u:\n", millis() / 1000, why,
+             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  log.print(recent.c_str());
+  log.println();
+  log.close();
+}
+
 std::string mdnsHostname(const char* fallback) {
   if (!BoardConfig::isPicco()) return fallback;
   return "Picco-" + efuseHex();

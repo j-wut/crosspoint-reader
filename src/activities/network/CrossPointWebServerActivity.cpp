@@ -126,6 +126,7 @@ void CrossPointWebServerActivity::onExit() {
   pluginevents::refreshSubscriptions();
 
   tilescloud::logLine("file transfer closed, restarting: %d", WiFi.getMode() != WIFI_MODE_NULL);
+  tilescloud::logRecentDeviceLog("file transfer closed");
   // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     if (isApMode) {

@@ -58,6 +58,9 @@ SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items);
 // token for this device yet. Needs Wi-Fi. Picco only.
 bool finishBinding();
 
+// Append the device's recent log lines to the same log, under `why` (Picco only).
+void logRecentDeviceLog(const char* why);
+
 // Append one printf-style line to the same log (Picco only).
 void logLine(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
