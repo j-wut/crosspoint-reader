@@ -371,7 +371,7 @@ struct StockDownload {
 
 // The stock firmware's download routine, step for step (see handlePushList).
 StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
-  constexpr size_t BUF_SIZE = 4 * 1024;
+  constexpr size_t BUF_SIZE = 32 * 1024;
   StockDownload d;
   const unsigned long started = millis();
   if (!Storage.ready()) {
@@ -418,36 +418,22 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     d.sdResult = "open .tmp failed";
     return d;
   }
-  // Internal RAM, like the File Transfer upload buffer: SD writes straight
-  // from a 32 KB PSRAM buffer failed on the first write (log of a65b3ee).
-  auto* buf = static_cast<uint8_t*>(heap_caps_malloc(BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  // The stock loop: a 32 KB PSRAM buffer; each read is written at once,
+  // the file is flushed every 256 KB, and the task yields 1 tick per read.
+  auto* buf = static_cast<uint8_t*>(heap_caps_malloc(BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!buf) {
     esp_http_client_cleanup(client);
-    d.sdResult = "no buffer";
+    d.sdResult = "no PSRAM buffer";
     return d;
   }
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
   mbedtls_sha256_starts(&sha, 0);
   bool writeOk = true;
-  size_t fill = 0;
+  size_t flushedAt = 0;
   size_t nextMark = 0;
-  const auto flush = [&]() {
-    if (fill == 0) return true;
-    const size_t wrote = file.write(buf, fill);
-    if (wrote != fill) {
-      LOG_ERR("TILES", "SD write %u of %u bytes at %u, heap %u, max block %u", static_cast<unsigned>(wrote),
-              static_cast<unsigned>(fill), static_cast<unsigned>(d.written), static_cast<unsigned>(ESP.getFreeHeap()),
-              static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      return false;
-    }
-    mbedtls_sha256_update(&sha, buf, fill);
-    d.written += fill;
-    fill = 0;
-    return true;
-  };
   while (true) {
-    const int n = esp_http_client_read(client, reinterpret_cast<char*>(buf + fill), BUF_SIZE - fill);
+    const int n = esp_http_client_read(client, reinterpret_cast<char*>(buf), BUF_SIZE);
     if (n < 0) {
       LOG_ERR("TILES", "http read failed errno=%d written=%u", errno, static_cast<unsigned>(d.written));
       break;
@@ -456,16 +442,28 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
       d.netOk = esp_http_client_is_complete_data_received(client) || d.contentLength <= 0;
       break;
     }
-    fill += n;
+    const size_t wrote = file.write(buf, n);
+    if (wrote != static_cast<size_t>(n)) {
+      LOG_ERR("TILES", "SD write %u of %d bytes at %u, heap %u, max block %u", static_cast<unsigned>(wrote), n,
+              static_cast<unsigned>(d.written), static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      writeOk = false;
+      break;
+    }
+    mbedtls_sha256_update(&sha, buf, n);
+    d.written += n;
+    if (d.written - flushedAt >= 256 * 1024) {
+      file.flush();
+      flushedAt = d.written;
+    }
     resetTaskWatchdogIfSubscribed();
-    if (fill == BUF_SIZE && !(writeOk = flush())) break;
-    if (d.written + fill >= nextMark) {
-      LOG_INF("TILES", "download %u bytes, heap %u", static_cast<unsigned>(d.written + fill),
+    if (d.written >= nextMark) {
+      LOG_INF("TILES", "download %u bytes, heap %u", static_cast<unsigned>(d.written),
               static_cast<unsigned>(ESP.getFreeHeap()));
       nextMark += 32 * 1024;
     }
+    vTaskDelay(1);
   }
-  if (writeOk) writeOk = flush();
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
   heap_caps_free(buf);
@@ -544,8 +542,8 @@ void handlePushList(HalFile& out, const std::string& body) {
     };
     // Same steps as the stock firmware's downloader: check the card is
     // ready and has room, open "<name>.tmp", read the body with
-    // esp_http_client (60 s timeout, up to 10 redirects) into a 4 KB buffer,
-    // write each full buffer to the file while updating a SHA-256,
+    // esp_http_client (60 s timeout, up to 10 redirects) into a 32 KB PSRAM
+    // buffer, write each read to the file while updating a SHA-256,
     // then rename the file into place. Each step is kept for the screen,
     // since the card log may not be writable after a failure.
     g_status.attemptCount = 0;
