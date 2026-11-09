@@ -1,5 +1,6 @@
 #include "Wallpaper.h"
 
+#include <Bitmap.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -264,6 +265,88 @@ bool screenBmp(const std::string& path, std::string& bmpPath) {
     if (!ok) Storage.remove(tmp.c_str());
   }
   if (!ok) LOG_ERR("WALL", "Cannot convert %s", path.c_str());
+  return ok;
+}
+
+// Box-filters the screen BMP down to the thumb size, then dithers it to 1 bit
+// (a 4x4 ordered pattern) so the grid draws in plain black and white.
+bool thumbBmp(const std::string& path, const int maxWidth, const int maxHeight, std::string& thumbPath) {
+  std::string bmpPath;
+  if (maxWidth <= 0 || maxHeight <= 0 || !screenBmp(path, bmpPath)) return false;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", bmpPath, in)) return false;
+  const std::string key = bmpPath + '|' + std::to_string(in.size()) + '|' + std::to_string(in.modificationTime()) +
+                          '|' + std::to_string(maxWidth) + 'x' + std::to_string(maxHeight) + "|t1";
+  thumbPath = "/.crosspoint/wpt_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
+  if (Storage.exists(thumbPath.c_str())) return true;
+
+  Bitmap src(in);
+  const BmpReaderError err = src.parseHeaders();
+  if (err != BmpReaderError::Ok) {
+    LOG_ERR("WALL", "thumb: bad BMP %s: %s", bmpPath.c_str(), Bitmap::errorToString(err));
+    return false;
+  }
+  const int srcW = src.getWidth();
+  const int srcH = src.getHeight();
+  const float scale = std::min({1.0f, static_cast<float>(maxWidth) / srcW, static_cast<float>(maxHeight) / srcH});
+  const int dstW = std::max(1, static_cast<int>(srcW * scale));
+  const int dstH = std::max(1, static_cast<int>(srcH * scale));
+  const uint32_t outRowBytes = (static_cast<uint32_t>(dstW) + 31) / 32 * 4;
+
+  auto raw = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(src.getRowBytes()));
+  auto gray = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(srcW));
+  auto sums = makeUniqueNoThrow<uint32_t[]>(static_cast<size_t>(dstW));
+  auto counts = makeUniqueNoThrow<uint16_t[]>(static_cast<size_t>(dstW));
+  auto row = makeUniqueNoThrow<uint8_t[]>(outRowBytes);
+  if (!raw || !gray || !sums || !counts || !row) {
+    LOG_ERR("WALL", "OOM: thumb %dx%d", dstW, dstH);
+    return false;
+  }
+  memset(counts.get(), 0, sizeof(uint16_t) * dstW);
+  for (int x = 0; x < srcW; ++x) ++counts[static_cast<int64_t>(x) * dstW / srcW];
+
+  uint8_t header[14 + 40 + 8] = {};
+  header[0] = 'B';
+  header[1] = 'M';
+  putLE32(header + 2, sizeof(header) + outRowBytes * dstH);
+  putLE32(header + 10, sizeof(header));
+  putLE32(header + 14, 40);
+  putLE32(header + 18, dstW);
+  putLE32(header + 22, static_cast<uint32_t>(-dstH));  // top-down rows
+  putLE16(header + 26, 1);
+  putLE16(header + 28, 1);
+  putLE32(header + 34, outRowBytes * dstH);
+  putLE32(header + 46, 2);
+  header[58] = header[59] = header[60] = 0xFF;  // palette: 0 black, 1 white
+
+  const std::string tmp = thumbPath + ".tmp";
+  HalFile out;
+  if (!Storage.openFileForWrite("WALL", tmp, out)) return false;
+  bool ok = out.write(header, sizeof(header)) == sizeof(header);
+  static constexpr uint8_t BAYER[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+  int sy = 0;
+  for (int dy = 0; ok && dy < dstH; ++dy) {
+    memset(sums.get(), 0, sizeof(uint32_t) * dstW);
+    int rows = 0;
+    for (; sy < srcH && static_cast<int64_t>(sy) * dstH / srcH == dy; ++sy, ++rows) {
+      if (src.readRowGray(sy, gray.get(), raw.get()) != BmpReaderError::Ok) {
+        ok = false;
+        break;
+      }
+      for (int x = 0; x < srcW; ++x) sums[static_cast<int64_t>(x) * dstW / srcW] += gray[x];
+    }
+    if (!ok || rows == 0) break;
+    memset(row.get(), 0, outRowBytes);
+    for (int x = 0; x < dstW; ++x) {
+      const uint32_t level = sums[x] / (static_cast<uint32_t>(counts[x]) * rows);
+      if (level * 16 > BAYER[dy & 3][x & 3] * 255u + 127u) row[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
+    }
+    ok = out.write(row.get(), outRowBytes) == outRowBytes;
+  }
+  ok = out.close() && ok;
+  ok = ok && Storage.replaceFile(tmp.c_str(), thumbPath.c_str());
+  if (!ok) Storage.remove(tmp.c_str());
+  LOG_INF("WALL", "thumb %s %dx%d -> %dx%d %s", path.c_str(), srcW, srcH, dstW, dstH, ok ? "ok" : "failed");
   return ok;
 }
 

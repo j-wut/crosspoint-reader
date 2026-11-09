@@ -1,12 +1,16 @@
 #include "GalleryActivity.h"
 
+#include <Bitmap.h>
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdio>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -21,6 +25,13 @@ namespace fui = freeink::ui;
 namespace {
 
 enum Action : int { VIEW, SET_SLEEP, SET_READING, SET_POWER_OFF, DELETE, ACTION_COUNT };
+
+constexpr fui::ActionId CELL = 1;
+constexpr fui::ActionId PAGE = 2;  // value -1 / +1
+constexpr int16_t GAP = 16;        // stock grid gap
+constexpr int16_t BAR_HEIGHT = 44;
+const fui::Paint INK = fui::Paint::solid(fui::Color::Black);
+const fui::Paint PAPER = fui::Paint::solid(fui::Color::White);
 
 // Option picker for one image, drawn over the Gallery list.
 class GalleryImageActivity final : public Activity {
@@ -62,8 +73,14 @@ class GalleryImageActivity final : public Activity {
 }  // namespace
 
 void GalleryActivity::onEnter() {
+  Activity::onEnter();
   reload();
-  UiListActivity::onEnter();
+  resetUi();
+  app.on(CELL, &GalleryActivity::onAction, this);
+  app.on(PAGE, &GalleryActivity::onAction, this);
+  app.setScreen(&GalleryActivity::screenFn, this);
+  loadPage(0);
+  requestUpdate();
 }
 
 void GalleryActivity::reload() {
@@ -72,20 +89,66 @@ void GalleryActivity::reload() {
   names.reserve(images.size());
   for (const auto& path : images) names.push_back(path.substr(path.find_last_of('/') + 1));
   hasReading = Storage.exists(wallpaper::READING_PATH);
+  LOG_INF("GAL", "%u images, reading image %d", static_cast<unsigned>(images.size()), hasReading);
 }
 
-const char* GalleryActivity::headerTitle() const { return tr(STR_APP_GALLERY); }
+int GalleryActivity::itemCount() const { return static_cast<int>(images.size()) + 1 + (hasReading ? 1 : 0); }
 
-int GalleryActivity::listCount() const { return static_cast<int>(images.size()) + 1 + (hasReading ? 1 : 0); }
+void GalleryActivity::loadPage(const int newPage) {
+  const int count = itemCount();
+  const int pages = std::max(1, (count + PER_PAGE - 1) / PER_PAGE);
+  page = std::clamp(newPage, 0, pages - 1);
+  cellCount = 0;
+  for (int slot = 0; slot < PER_PAGE; ++slot) {
+    const int item = page * PER_PAGE + slot;
+    if (item >= count) break;
+    cells[cellCount++] = Cell{item, {}, false};
+  }
+  selected = std::min(selected, std::max(0, cellCount - 1));
+}
 
-void GalleryActivity::activateIndex(const int index) {
+// Makes one missing preview per call so the page fills in image by image.
+bool GalleryActivity::makeMissingThumb() {
+  if (thumbW <= 0 || thumbH <= 0) return false;
+  const int imageCount = static_cast<int>(images.size());
+  for (int i = 0; i < cellCount; ++i) {
+    Cell& cell = cells[i];
+    if (cell.thumbTried || cell.item >= imageCount) continue;
+    cell.thumbTried = true;
+    RenderLock lock(*this);
+    if (!wallpaper::thumbBmp(images[cell.item], thumbW, thumbH, cell.thumb)) {
+      cell.thumb.clear();
+      LOG_ERR("GAL", "no preview for %s", images[cell.item].c_str());
+    }
+    return true;
+  }
+  return false;
+}
+
+void GalleryActivity::onAction(const fui::ActionEvent& event, void* user) {
+  auto& self = *static_cast<GalleryActivity*>(user);
+  self.pending = event.action == PAGE ? (event.value > 0 ? 1002 : 1001) : event.value;
+  self.app.clearTapFlash();
+}
+
+void GalleryActivity::screenFn(UiScreen& screen, void* user) { static_cast<GalleryActivity*>(user)->draw(screen); }
+
+void GalleryActivity::select(const int item) {
+  const int count = itemCount();
+  const int flat = (item % count + count) % count;
+  selected = flat % PER_PAGE;
+  if (flat / PER_PAGE != page) loadPage(flat / PER_PAGE);
+  requestUpdate();
+}
+
+void GalleryActivity::activate(const int item) {
   const int count = static_cast<int>(images.size());
-  if (index < count) {
-    openImage(index);
+  if (item < 0) return;
+  if (item < count) {
+    openImage(item);
     return;
   }
-  app.clearTapFlash();
-  if (index == count) {
+  if (item == count) {
     // Random: drop the chosen sleep image so the sleep screen picks from /sleep.
     if (Storage.exists(wallpaper::SLEEP_PATH)) Storage.remove(wallpaper::SLEEP_PATH);
     wallpaper::setWallpaper("", wallpaper::SLEEP);
@@ -98,12 +161,11 @@ void GalleryActivity::activateIndex(const int index) {
   GUI.drawPopup(renderer, tr(STR_DONE));
   delay(700);
   reload();
-  if (nav.selected >= listCount()) moveSelectionTo(listCount() - 1);
+  loadPage(page);
   requestUpdate();
 }
 
 void GalleryActivity::openImage(const int index) {
-  app.clearTapFlash();
   auto menu = makeUniqueNoThrow<GalleryImageActivity>(renderer, mappedInput, names[index]);
   if (!menu) {
     LOG_ERR("GAL", "OOM: image menu");
@@ -114,6 +176,53 @@ void GalleryActivity::openImage(const int index) {
     const auto* menuResult = std::get_if<MenuResult>(&result.data);
     if (menuResult) runAction(index, menuResult->action);
   });
+}
+
+void GalleryActivity::loop() {
+  if (thumbSizeChanged) {
+    thumbSizeChanged = false;
+    for (int i = 0; i < cellCount; ++i) cells[i] = Cell{cells[i].item, {}, false};
+    requestUpdate();
+    return;
+  }
+  if (makeMissingThumb()) {
+    requestUpdate();
+    return;
+  }
+
+  pending = -1;
+  const auto touch = routeTouch(mappedInput);
+  if (touch.snap.touchReleased && pending >= 0) {
+    if (pending == 1001 || pending == 1002) {
+      loadPage(page + (pending == 1002 ? 1 : -1));
+      requestUpdate();
+    } else if (pending < cellCount) {
+      activate(cells[pending].item);
+    }
+    return;
+  }
+  const int pages = std::max(1, (itemCount() + PER_PAGE - 1) / PER_PAGE);
+  const auto swipe = mappedInput.wasSwipe();
+  if ((swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Up) && page + 1 < pages) {
+    loadPage(page + 1);
+    requestUpdate();
+    return;
+  }
+  if ((swipe == MappedInputManager::SwipeDir::Right || swipe == MappedInputManager::SwipeDir::Down) && page > 0) {
+    loadPage(page - 1);
+    requestUpdate();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (selected < cellCount) activate(cells[selected].item);
+    return;
+  }
+  buttonNavigator.onNext([this] { select(page * PER_PAGE + selected + 1); });
+  buttonNavigator.onPrevious([this] { select(page * PER_PAGE + selected - 1); });
 }
 
 void GalleryActivity::runAction(const int image, const int action) {
@@ -162,7 +271,6 @@ void GalleryActivity::runAction(const int image, const int action) {
         if (result.isCancelled) return;
         if (!Storage.remove(path.c_str())) LOG_ERR("GAL", "Delete failed: %s", path.c_str());
         reload();
-        if (nav.selected >= listCount()) moveSelectionTo(listCount() - 1);
         requestUpdate();
       });
       return;
@@ -171,56 +279,144 @@ void GalleryActivity::runAction(const int image, const int action) {
       return;
   }
   reload();
+  loadPage(page);
   requestUpdate();
 }
 
-void GalleryActivity::buildScreen(UiScreen& screen) {
+void GalleryActivity::draw(UiScreen& screen) {
+  const auto& theme = screen.theme();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing),
+                  static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width) + metrics.contentSidePadding),
+                  static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
+                  static_cast<int16_t>(safe.x + metrics.contentSidePadding)});
+  const fui::Rect body = screen.body();
+  const int16_t bodyH = screen.target().lineHeight(theme.bodyText.font);
 
+  auto top = body.y;
   if (images.empty()) {
-    auto hint = screen.theme().smallText;
+    auto hint = theme.smallText;
     hint.align = fui::TextAlign::Center;
     hint.maxLines = 4;
-    const fui::Rect body = screen.body();
-    const fui::Rect band = screen.takeTop(static_cast<int16_t>(screen.target().lineHeight(hint.font) * 4),
-                                          static_cast<int16_t>(metrics.verticalSpacing));
-    screen.target().text(
-        fui::Rect{static_cast<int16_t>(body.x + 20), band.y, static_cast<int16_t>(body.width - 40), band.height},
-        tr(STR_GALLERY_EMPTY_HINT), hint);
+    const auto hintH = static_cast<int16_t>(screen.target().lineHeight(hint.font) * 4);
+    screen.target().text(fui::Rect{body.x, top, body.width, hintH}, tr(STR_GALLERY_EMPTY_HINT), hint);
+    top = static_cast<int16_t>(top + hintH + theme.spaceMd);
   }
 
-  rows.clear();
-  rows.reserve(listCount());
-  for (size_t i = 0; i < images.size(); ++i) {
-    fui::ListItem row;
-    row.label = names[i].c_str();
-    row.actionValue = static_cast<int16_t>(i);
-    rows.push_back(row);
-  }
-  fui::ListItem random;
-  random.label = tr(STR_GALLERY_RANDOM);
-  random.bold = true;
-  random.actionValue = static_cast<int16_t>(rows.size());
-  rows.push_back(random);
-  if (hasReading) {
-    fui::ListItem off;
-    off.label = tr(STR_GALLERY_READING_OFF);
-    off.bold = true;
-    off.actionValue = static_cast<int16_t>(rows.size());
-    rows.push_back(off);
+  // Pager along the bottom: previous, "page / pages", next.
+  const int pages = std::max(1, (itemCount() + PER_PAGE - 1) / PER_PAGE);
+  const auto pagerY = static_cast<int16_t>(body.bottom() - BAR_HEIGHT);
+  if (pages > 1) {
+    char pagerText[16];
+    snprintf(pagerText, sizeof(pagerText), "%d / %d", page + 1, pages);
+    auto text = theme.bodyText;
+    text.align = fui::TextAlign::Center;
+    screen.target().text(fui::Rect{body.x, static_cast<int16_t>(pagerY + (BAR_HEIGHT - bodyH) / 2), body.width, bodyH},
+                         pagerText, text);
+    const int16_t arrowW = 72;
+    auto arrow = theme.titleText;
+    arrow.bold = true;
+    arrow.align = fui::TextAlign::Center;
+    const int16_t arrowH = screen.target().lineHeight(arrow.font);
+    const auto drawArrow = [&](const fui::Rect r, const char* label, const int16_t value) {
+      screen.target().stroke(r, INK, 2, theme.controlRadius);
+      screen.target().text(fui::Rect{r.x, static_cast<int16_t>(r.y + (BAR_HEIGHT - arrowH) / 2), arrowW, arrowH}, label,
+                           arrow);
+      screen.frame().hit(r, PAGE, value, fui::InputTouch);
+    };
+    if (page > 0) drawArrow(fui::Rect{body.x, pagerY, arrowW, BAR_HEIGHT}, "<", -1);
+    if (page + 1 < pages) {
+      drawArrow(fui::Rect{static_cast<int16_t>(body.right() - arrowW), pagerY, arrowW, BAR_HEIGHT}, ">", 1);
+    }
   }
 
-  fui::ListProps props;
-  props.items = rows.data();
-  props.count = static_cast<uint16_t>(rows.size());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
-  syncListViewport(screen, props);
-  screen.list(props);
+  const auto gridH = static_cast<int16_t>(pagerY - theme.spaceMd - top);
+  const auto cellW = static_cast<int16_t>((body.width - GAP * (COLUMNS - 1)) / COLUMNS);
+  const auto cellH = static_cast<int16_t>((gridH - GAP * (ROWS - 1)) / ROWS);
+  for (int slot = 0; slot < cellCount; ++slot) {
+    const fui::Rect rect{static_cast<int16_t>(body.x + (slot % COLUMNS) * (cellW + GAP)),
+                         static_cast<int16_t>(top + (slot / COLUMNS) * (cellH + GAP)), cellW, cellH};
+    drawCell(screen, slot, rect);
+  }
+}
+
+void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect rect) {
+  const auto& theme = screen.theme();
+  const Cell& cell = cells[slot];
+  const bool isImage = cell.item < static_cast<int>(images.size());
+  auto name = theme.smallText;
+  name.align = fui::TextAlign::Center;
+  name.maxLines = 1;
+  const int16_t nameH = screen.target().lineHeight(name.font);
+  // Preview box in the screen's shape on top, the file name below it.
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  const int maxBoxH = rect.height - theme.spaceSm - nameH;
+  int boxW = rect.width;
+  int boxH = boxW * screenH / screenW;
+  if (boxH > maxBoxH) {
+    boxH = maxBoxH;
+    boxW = boxH * screenW / screenH;
+  }
+  const fui::Rect box{static_cast<int16_t>(rect.x + (rect.width - boxW) / 2), rect.y, static_cast<int16_t>(boxW),
+                      static_cast<int16_t>(boxH)};
+  constexpr int BORDER = 2;
+  const int innerW = boxW - 2 * BORDER;
+  const int innerH = boxH - 2 * BORDER;
+  if (innerW != thumbW || innerH != thumbH) {
+    // Recorded on the render task; the loop remakes previews for the new size.
+    thumbW = innerW;
+    thumbH = innerH;
+    thumbSizeChanged = true;
+  }
+
+  screen.target().fill(box, PAPER);
+  bool drawn = false;
+  if (isImage && !cell.thumb.empty() && !thumbSizeChanged) {
+    HalFile file;
+    if (Storage.openFileForRead("GAL", cell.thumb, file)) {
+      Bitmap bitmap(file);
+      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+        drawn = renderer.drawBitmap(bitmap, box.x + BORDER + (innerW - bitmap.getWidth()) / 2,
+                                    box.y + BORDER + (innerH - bitmap.getHeight()) / 2, innerW, innerH);
+      }
+      file.close();
+    }
+  }
+  if (!drawn) {
+    // Action tiles, and images whose preview is not ready (or failed).
+    auto label = theme.smallText;
+    label.bold = !isImage;
+    label.align = fui::TextAlign::Center;
+    label.maxLines = 4;
+    const char* text =
+        isImage ? (cell.thumbTried ? "?" : "...")
+                : (cell.item == static_cast<int>(images.size()) ? tr(STR_GALLERY_RANDOM) : tr(STR_GALLERY_READING_OFF));
+    const auto textH = static_cast<int16_t>(nameH * (isImage ? 1 : 4));
+    screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - textH) / 2),
+                                   static_cast<int16_t>(boxW - 16), textH},
+                         text, label);
+  }
+  screen.target().stroke(box, INK, BORDER, 0);
+  if (slot == selected && !BoardConfig::hasTouch()) {
+    screen.target().stroke(box.inset(fui::Insets{-5, -5, -5, -5}), INK, 3, 6);
+  }
+  if (isImage) {
+    screen.target().text(fui::Rect{rect.x, static_cast<int16_t>(box.bottom() + theme.spaceSm), rect.width, nameH},
+                         names[cell.item].c_str(), name);
+  }
+  screen.frame().hit(rect, CELL, static_cast<int16_t>(slot), fui::InputTouch);
+}
+
+void GalleryActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+                 tr(STR_APP_GALLERY));
+  renderUi();
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer();
 }

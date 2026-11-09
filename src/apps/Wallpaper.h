@@ -30,6 +30,10 @@ std::vector<std::string> list();
 // image cannot be read.
 bool screenBmp(const std::string& path, std::string& bmpPath);
 
+// A small 1-bit BMP of the image that fits in maxWidth x maxHeight, for the
+// Gallery grid. Made from the screen BMP and cached in /.crosspoint.
+bool thumbBmp(const std::string& path, int maxWidth, int maxHeight, std::string& thumbPath);
+
 // Write an .opg image's first page as a 1- or 2-bit BMP. False when the file
 // is not an .opg image this code understands.
 bool opgToBmp(const std::string& opgPath, const std::string& bmpPath);
