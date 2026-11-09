@@ -43,6 +43,7 @@ class GalleryActivity final : public Activity, private UiAppHost {
   int itemCount() const;
   void reload();
   void loadPage(int newPage);
+  bool allPreviewsCached() const;
   void makePreviews();
   bool saveOnePreview();
   void activate(int item);
@@ -63,5 +64,7 @@ class GalleryActivity final : public Activity, private UiAppHost {
   bool thumbSizeChanged = false;
   bool previewsReady = false;             // the grid is shown only once all its previews are made
   std::atomic<bool> loadingShown{false};  // set by the render task once the loading ring is up
+  std::atomic<bool> showRing{false};      // some preview on the page must be made first
+  bool ringDecided = false;
   int pending = -1;
 };

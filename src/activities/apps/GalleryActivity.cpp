@@ -112,7 +112,17 @@ void GalleryActivity::loadPage(const int newPage) {
   for (int slot = cellCount; slot < PER_PAGE; ++slot) cells[slot] = Cell{};
   previewsReady = cellCount == 0;
   loadingShown = false;
+  showRing = false;
+  ringDecided = false;
   selected = std::min(selected, std::max(0, cellCount - 1));
+}
+
+bool GalleryActivity::allPreviewsCached() const {
+  for (int i = 0; i < cellCount; ++i) {
+    const std::string cachePath = wallpaper::thumbCachePath(images[cells[i].item], thumbW, thumbH);
+    if (cachePath.empty() || !Storage.exists(cachePath.c_str())) return false;
+  }
+  return true;
 }
 
 // Makes every preview on the page before it is shown: from the cache file
@@ -203,11 +213,22 @@ void GalleryActivity::loop() {
       return;
     }
   }
-  // The loading screen goes up first, so a tap or page turn shows at once.
-  if (!previewsReady && thumbW > 0 && loadingShown) {
-    makePreviews();
-    requestUpdate();
-    return;
+  if (!previewsReady && thumbW > 0) {
+    // A page whose previews are all cached is shown straight away; otherwise
+    // the loading ring goes up first, so the touch shows at once.
+    if (!ringDecided) {
+      ringDecided = true;
+      showRing = !allPreviewsCached();
+      if (showRing) {
+        requestUpdate();
+        return;
+      }
+    }
+    if (!showRing || loadingShown) {
+      makePreviews();
+      requestUpdate();
+      return;
+    }
   }
   // After the page is shown: write missing cache files, then the log.
   if (previewsReady && !saveOnePreview()) wallpaper::flushLog();
@@ -384,7 +405,7 @@ void GalleryActivity::draw(UiScreen& screen) {
                          static_cast<int16_t>(top + (slot / COLUMNS) * (cellH + GAP)), cellW, cellH};
     drawCell(screen, slot, rect);
   }
-  if (!previewsReady && cellCount > 0) {
+  if (!previewsReady && showRing && cellCount > 0) {
     // Loading ring in the middle of the grid: a thin track with a thick quarter.
     const int cx = body.x + body.width / 2;
     const int cy = top + gridH / 2;
@@ -454,6 +475,11 @@ void GalleryActivity::render(RenderLock&&) {
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!previewsReady && !showRing) {
+    // This draw only measured the preview size; the page is shown once its
+    // previews are made.
+    return;
+  }
   const unsigned long start = millis();
   renderer.displayBuffer();
   if (previewsReady) {
