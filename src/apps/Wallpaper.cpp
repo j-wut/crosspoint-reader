@@ -15,6 +15,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 
 #include "CrossPointSettings.h"
 
@@ -564,6 +565,57 @@ bool setWallpaper(const std::string& path, const Kind kind) {
   const bool ok = SETTINGS.saveToFile();
   LOG_INF("WALL", "wallpaper set kind=%u path='%s' saved=%d", kind, path.c_str(), ok);
   return ok;
+}
+
+namespace {
+constexpr size_t LOG_KEEP_BYTES = 16 * 1024;
+constexpr size_t LOG_FILE_MAX_BYTES = 64 * 1024;
+std::string logLines;  // test-build capture; freed by stopLogCapture
+std::mutex logMutex;   // the render task logs too
+void keepLine(const char* line) {
+  std::lock_guard<std::mutex> lock(logMutex);
+  if (logLines.size() < LOG_KEEP_BYTES) logLines += line;
+}
+}  // namespace
+
+void startLogCapture() {
+  {
+    std::lock_guard<std::mutex> lock(logMutex);
+    logLines.clear();
+  }
+  setLogSink(keepLine);
+  LOG_INF("GAL", "log start, version %s", CROSSPOINT_VERSION);
+}
+
+void flushLog() {
+  std::string lines;
+  {
+    std::lock_guard<std::mutex> lock(logMutex);
+    lines.swap(logLines);
+  }
+  if (lines.empty()) return;
+  HalFile probe;
+  if (Storage.openFileForRead("WALL", LOG_PATH, probe)) {
+    const size_t size = probe.size();
+    probe.close();
+    if (size > LOG_FILE_MAX_BYTES) {
+      const std::string old = std::string(LOG_PATH) + ".old";
+      Storage.remove(old.c_str());
+      Storage.rename(LOG_PATH, old.c_str());
+    }
+  }
+  HalFile file = Storage.open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND);
+  if (file) {
+    file.write(reinterpret_cast<const uint8_t*>(lines.data()), lines.size());
+    file.close();
+  }
+}
+
+void stopLogCapture() {
+  setLogSink(nullptr);
+  flushLog();
+  std::lock_guard<std::mutex> lock(logMutex);
+  std::string().swap(logLines);
 }
 
 DrawResult drawOpg(GfxRenderer& renderer, const std::string& path) {

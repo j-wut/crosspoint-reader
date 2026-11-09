@@ -72,6 +72,7 @@ class GalleryImageActivity final : public Activity {
 
 void GalleryActivity::onEnter() {
   Activity::onEnter();
+  wallpaper::startLogCapture();
   reload();
   resetUi();
   app.on(CELL, &GalleryActivity::onAction, this);
@@ -79,6 +80,11 @@ void GalleryActivity::onEnter() {
   app.setScreen(&GalleryActivity::screenFn, this);
   loadPage(0);
   requestUpdate();
+}
+
+void GalleryActivity::onExit() {
+  wallpaper::stopLogCapture();
+  Activity::onExit();
 }
 
 void GalleryActivity::reload() {
@@ -196,7 +202,8 @@ void GalleryActivity::loop() {
     requestUpdate();
     return;
   }
-  if (previewsReady) saveOnePreview();
+  // After the page is shown: write missing cache files, then the log.
+  if (previewsReady && !saveOnePreview()) wallpaper::flushLog();
 
   pending = -1;
   const auto touch = routeTouch(mappedInput);
@@ -255,10 +262,8 @@ void GalleryActivity::runAction(const int image, const int action) {
   const std::string path = images[image];
   switch (action) {
     case VIEW: {
-      std::string bmp;
       GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-      // The viewer reads BMP, PNG and JPEG; .opg goes through its converted BMP.
-      activityManager.goToReader(wallpaper::isOpg(path) && wallpaper::screenBmp(path, bmp) ? bmp : path);
+      activityManager.goToReader(path);
       return;
     }
     case SET_POWER_OFF: {

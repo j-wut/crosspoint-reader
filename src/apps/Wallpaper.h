@@ -67,6 +67,13 @@ const char* storedPath(Kind kind);
 // Store (or with "" clear) the image for the screen. Saves settings.
 bool setWallpaper(const std::string& path, Kind kind);
 
+// Gallery log: while capturing, every log line is kept in memory; flushLog
+// appends them to LOG_PATH on the card (renamed to .old past 64 KB).
+constexpr const char* LOG_PATH = "/gallery-log.txt";
+void startLogCapture();
+void flushLog();
+void stopLogCapture();
+
 struct DrawResult {
   bool ok = false;
   bool hasAlpha = false;

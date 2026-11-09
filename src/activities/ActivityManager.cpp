@@ -351,13 +351,8 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
     return;
   }
 
-  // BOOX .opg images open in the image viewer through a converted BMP.
-  if (wallpaper::isOpg(path)) {
-    std::string bmp;
-    if (wallpaper::screenBmp(path, bmp)) path = std::move(bmp);
-  }
-
-  if (FsHelpers::hasImageExtension(path)) {
+  // The image viewer draws BOOX .opg images straight from the file.
+  if (FsHelpers::hasImageExtension(path) || wallpaper::isOpg(path)) {
     auto activity = makeUniqueNoThrow<BmpViewerActivity>(renderer, mappedInput, std::move(path));
     if (!activity) {
       LOG_ERR("ACT", "OOM: bitmap viewer activity");

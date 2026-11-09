@@ -14,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "apps/Wallpaper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -72,7 +73,7 @@ void BmpViewerActivity::loadSiblingImages() {
   for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     if (file.isDirectory()) continue;
     file.getName(name.get(), 500);
-    if (name[0] != '.' && FsHelpers::hasImageExtension(std::string_view{name.get()})) ++imageCount;
+    if (name[0] != '.' && wallpaper::isImage(std::string_view{name.get()})) ++imageCount;
   }
   dir.rewindDirectory();
   siblingImages.reserve(imageCount);
@@ -82,7 +83,7 @@ void BmpViewerActivity::loadSiblingImages() {
       file.getName(name.get(), 500);
       if (name[0] != '.') {
         std::string fname(name.get());
-        if (FsHelpers::hasImageExtension(fname)) {
+        if (wallpaper::isImage(fname)) {
           siblingImages.push_back(fname);
         }
       }
@@ -170,6 +171,31 @@ void BmpViewerActivity::onEnter() {
   const auto pageHeight = renderer.getScreenHeight();
   Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
+  if (wallpaper::isOpg(filePath)) {
+    // Straight from the file into the frame buffer; no converted copy.
+    wallpaper::startLogCapture();
+    const unsigned long start = millis();
+    renderer.clearScreen();
+    const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
+    if (ok) {
+      const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
+      const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
+                           currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", hasPrevious ? "<" : "", hasNext ? ">" : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    } else {
+      renderer.clearScreen();
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
+    }
+    const unsigned long drawn = millis();
+    renderer.displayBuffer(ok ? HalDisplay::FAST_REFRESH : HalDisplay::HALF_REFRESH);
+    LOG_INF("BMP", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
+    wallpaper::stopLogCapture();
+    return;
+  }
+
   if (FsHelpers::hasPngExtension(filePath) || FsHelpers::hasJpgExtension(filePath)) {
     renderer.clearScreen();
     if (!renderImage()) {
