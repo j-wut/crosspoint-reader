@@ -1,20 +1,29 @@
 #include "BooxSd.h"
 
 #include <BoardConfig.h>
-#include <BooxExFat.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <soc/soc_caps.h>
+
+// The stock stack needs an SDMMC host (Picco's ESP32-S3). On other chips only
+// the SdFat backend exists.
+#define BOOXSD_HAS_STOCK SOC_SDMMC_HOST_SUPPORTED
+
+#if BOOXSD_HAS_STOCK
+#include <BooxExFat.h>
 #include <SD_MMC.h>
 #include <driver/sdmmc_host.h>
 #include <esp32-hal-periman.h>
 #include <esp_vfs_fat.h>
 #include <vfs_api.h>
+#endif
 
 #include <memory>
 
 namespace booxsd {
 namespace {
 
+#if BOOXSD_HAS_STOCK
 // The stock firmware's mount: SD_MMC.begin("/sdcard", false, false, 40000, 15).
 constexpr const char* MOUNT_POINT = "/sdcard";
 constexpr int FREQ_KHZ = SDMMC_FREQ_HIGHSPEED;
@@ -136,6 +145,21 @@ class BooxCardFs final : public fs::SDMMCFS {
 };
 
 BooxCardFs g_card;
+#else
+// Stand-in so the shared code compiles; never mounted.
+class BooxCardFs final : public fs::FS {
+ public:
+  BooxCardFs() : fs::FS(nullptr) {}
+  void* card() const { return nullptr; }
+  void setPins(int, int, int, int, int, int) {}
+  bool beginExFat(const char*, bool, bool, int, uint8_t) { return false; }
+  void endExFat() {}
+};
+BooxCardFs g_card;
+constexpr const char* MOUNT_POINT = "/sdcard";
+constexpr int FREQ_KHZ = 0;
+constexpr uint8_t MAX_FILES = 0;
+#endif
 bool g_mounted = false;
 Backend g_backend = Backend::Stock;
 
@@ -167,6 +191,10 @@ bool mount(const Backend backend) {
     logState("after mount");
     return g_mounted;
   }
+#if !BOOXSD_HAS_STOCK
+  LOG_ERR("BOOXSD", "stock SD stack needs an SDMMC host");
+  return false;
+#endif
   const BoardConfig::SdmmcPins& p = BoardConfig::ACTIVE.sdmmc;
   LOG_INF("BOOXSD", "mount: SdFat ready %d, pins clk %d cmd %d d0 %d d1 %d d2 %d d3 %d", Storage.ready() ? 1 : 0,
           p.clk, p.cmd, p.d0, p.d1, p.d2, p.d3);
@@ -268,7 +296,11 @@ bool spaceInfo(uint64_t& total, uint64_t& freeBytes) {
     freeBytes = Storage.freeBytes();
     return true;
   }
+#if BOOXSD_HAS_STOCK
   return bxf_esp_vfs_fat_info(MOUNT_POINT, &total, &freeBytes) == ESP_OK;
+#else
+  return false;
+#endif
 }
 
 void logState(const char* when) {
@@ -277,6 +309,7 @@ void logState(const char* when) {
             static_cast<unsigned long long>(Storage.freeBytes() / (1024 * 1024)));
     return;
   }
+#if BOOXSD_HAS_STOCK
   sdmmc_card_t* card = g_card.card();
   if (!g_mounted || !card) {
     LOG_INF("BOOXSD", "%s: not mounted", when);
@@ -295,6 +328,9 @@ void logState(const char* when) {
           static_cast<unsigned>(card->host.flags), card->real_freq_khz, card->max_freq_khz, card->is_ddr ? 1 : 0,
           static_cast<unsigned long long>(freeBytes / (1024 * 1024)),
           static_cast<unsigned long long>(total / (1024 * 1024)), esp_err_to_name(infoErr));
+#else
+  LOG_INF("BOOXSD", "%s: not mounted", when);
+#endif
 }
 
 }  // namespace booxsd
