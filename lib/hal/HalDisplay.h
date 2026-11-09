@@ -140,3 +140,6 @@ class HalDisplay {
 };
 
 extern HalDisplay display;
+
+// When true, panel refreshes are logged (download diagnostics).
+extern volatile bool g_logDisplayRefresh;

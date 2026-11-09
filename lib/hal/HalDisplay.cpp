@@ -1,8 +1,11 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <Logging.h>
 
 // Global HalDisplay instance
 HalDisplay display;
+
+volatile bool g_logDisplayRefresh = false;
 
 #define SD_SPI_MISO 7
 
@@ -64,7 +67,9 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
     einkDisplay.requestResync(1);
   }
 
+  if (g_logDisplayRefresh) LOG_INF("DISP", "displayBuffer mode %d start", static_cast<int>(mode));
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
+  if (g_logDisplayRefresh) LOG_INF("DISP", "displayBuffer done");
 }
 
 void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
@@ -72,10 +77,14 @@ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
     einkDisplay.requestResync(1);
   }
 
+  if (g_logDisplayRefresh) LOG_INF("DISP", "displayBufferAsync mode %d start", static_cast<int>(mode));
   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode));
 }
 
-void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
+void HalDisplay::waitRefreshComplete() {
+  einkDisplay.waitRefreshComplete();
+  if (g_logDisplayRefresh) LOG_INF("DISP", "refresh complete");
+}
 
 bool HalDisplay::supportsAsyncRefresh() const { return einkDisplay.supportsAsyncRefresh(); }
 
@@ -90,7 +99,9 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
     einkDisplay.requestResync(1);
   }
 
+  if (g_logDisplayRefresh) LOG_INF("DISP", "refreshDisplay mode %d start", static_cast<int>(mode));
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
+  if (g_logDisplayRefresh) LOG_INF("DISP", "refreshDisplay done");
 }
 
 void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }

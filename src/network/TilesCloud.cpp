@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
 #include <ESPmDNS.h>
+#include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <LibraryBuilder.h>
@@ -380,8 +381,10 @@ class DiagCapture {
     for (const char* tag : DEBUG_TAGS) esp_log_level_set(tag, ESP_LOG_DEBUG);
     previous = esp_log_set_vprintf(capture);
     setLogSink(sink);
+    g_logDisplayRefresh = true;
   }
   ~DiagCapture() {
+    g_logDisplayRefresh = false;
     setLogSink(nullptr);
     esp_log_set_vprintf(previous);
     esp_log_level_set("*", previousLevel);
@@ -687,25 +690,34 @@ void handlePushList(HalFile& out, const std::string& body) {
       DiagCapture capture;
       logSystemState("before download");
       logCardState("before download");
-      d = stockDownload(url, dest, item["size"] | 0u);
+      // Like the stock firmware's SD remount retry (max 3): when the card
+      // stops answering, remount it and download again.
+      constexpr int MAX_TRIES = 3;
+      for (int attempt = 1; attempt <= MAX_TRIES; ++attempt) {
+        LOG_INF("TILES", "download attempt %d/%d", attempt, MAX_TRIES);
+        d = stockDownload(url, dest, item["size"] | 0u);
+        logSystemState("after download");
+        logCardState("after download");
+        if (d.ok || strcmp(sdWriteTest(), "ok") == 0) break;
+        Storage.prepareForDeepSleep();
+        LOG_ERR("TILES", "card not answering; remount %d", Storage.begin() ? 1 : 0);
+        logCardState("after remount");
+      }
+      if (d.ok) {
+        HalFile check = Storage.open(dest.c_str());
+        LOG_INF("TILES", "saved %s: %u bytes on card", dest.c_str(), check ? static_cast<unsigned>(check.size()) : 0u);
+      }
       step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
            static_cast<unsigned>((item["size"] | 0u) / 1024));
       step("net %s HTTP %d len %d got %u %lus", d.netOk ? "ok" : "FAIL", d.status, d.contentLength,
            static_cast<unsigned>(d.written), d.ms / 1000);
       step("SD %s", d.sdResult);
-      logSystemState("after download");
-      logCardState("after download");
-      if (!d.ok && strcmp(sdWriteTest(), "ok") != 0) {
-        // Like the stock firmware's remount after an SD I/O error, so the
-        // log can still be written.
-        Storage.prepareForDeepSleep();
-        LOG_ERR("TILES", "card not answering; remount %d", Storage.begin() ? 1 : 0);
-        logCardState("after remount");
-      }
       out = openLog();
       if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
     }
     DiagCapture::dump(out);
+    out.flush();
+    LOG_INF("TILES", "log after dump: open %d, %u bytes", out ? 1 : 0, out ? static_cast<unsigned>(out.size()) : 0u);
     const bool gotBook = d.ok;
     for (int i = 0; i < g_status.attemptCount; ++i) out.printf("  %s\n", g_status.attempts[i]);
     out.printf("  %lu ms, sha256 %s, SD free now %llu\n", d.ms, d.sha256,
