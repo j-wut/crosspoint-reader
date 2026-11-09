@@ -39,7 +39,7 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   void buildTiles(UiScreen& screen);
   void activateIndex(int index) override;
   void onBackButton() override { onCancel(); }
-  // The Picco adds BOOX Cloud, BOOX Tiles binding and BOOX LAN rows after the
+  // The Picco adds BOOX Tiles binding, BOOX Cloud and BOOX LAN rows after the
   // fixed ones.
   int itemCount_ = MENU_ITEM_COUNT;
   const char* headerTitle() const override;

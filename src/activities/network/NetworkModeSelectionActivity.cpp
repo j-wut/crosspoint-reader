@@ -65,14 +65,14 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.label = tr(STR_BOOX_CLOUD);
     item.subtitle = tr(STR_BOOX_CLOUD_DESC);
     item.icon = listIconFor(UIIcon::Wifi, 32);
-    item.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT);
-    rowItems_[MENU_ITEM_COUNT] = item;
+    item.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 1);
+    rowItems_[MENU_ITEM_COUNT + 1] = item;
     fui::ListItem bind;
     bind.label = tr(STR_BIND_TITLE);
     bind.subtitle = tr(STR_BIND_DESC);
     bind.icon = listIconFor(UIIcon::Wifi, 32);
-    bind.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 1);
-    rowItems_[MENU_ITEM_COUNT + 1] = bind;
+    bind.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT);
+    rowItems_[MENU_ITEM_COUNT] = bind;
     fui::ListItem lan;
     lan.label = tr(STR_BOOX_LAN);
     lan.subtitle = tr(STR_BOOX_LAN_DESC);
@@ -96,7 +96,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   if (index < MENU_ITEM_COUNT) {
     onModeSelected(static_cast<NetworkMode>(index));
   } else {
-    constexpr NetworkMode PICCO_MODES[] = {NetworkMode::BOOX_CLOUD, NetworkMode::BOOX_BIND, NetworkMode::BOOX_LAN};
+    constexpr NetworkMode PICCO_MODES[] = {NetworkMode::BOOX_BIND, NetworkMode::BOOX_CLOUD, NetworkMode::BOOX_LAN};
     onModeSelected(PICCO_MODES[index - MENU_ITEM_COUNT]);
   }
 }
