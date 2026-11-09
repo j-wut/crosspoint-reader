@@ -51,6 +51,7 @@
 #include "TilesCloud.h"
 #include "WifiPowerSaveGuard.h"
 #include "apps/AppLists.h"
+#include "apps/Wallpaper.h"
 #include "html/AppsPageHtml.generated.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
@@ -779,7 +780,7 @@ static bool canUpdateFirmware() { return !BoardConfig::isPicco(); }
 // The BOOX Tiles app uploads with ?fileType= instead of ?path=, like the stock
 // Picco firmware: 0 books, 1 images, 2 fonts.
 static String fileTypeUploadDir(const String& fileType) {
-  if (fileType == "1") return "/sleep";
+  if (fileType == "1") return wallpaper::DIR;
   if (fileType == "2") return SdCardFontRegistry::FONTS_DIR_VISIBLE;
   return "/";
 }

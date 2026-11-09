@@ -519,8 +519,9 @@ void handlePushList(HalFile& out, const std::string& body) {
       out.println("  no URL field; not downloaded");
       continue;
     }
-    // Pushed images go to the Gallery (the sleep image folder); books to the card root.
-    const bool image = wallpaper::isImage(name);
+    // Like the stock firmware, pushed .opg images go to the Gallery folder;
+    // other files go to the card root as books.
+    const bool image = wallpaper::isOpg(name);
     if (image) Storage.mkdir(wallpaper::DIR);
     const std::string dest = (image ? std::string(wallpaper::DIR) + "/" : std::string("/")) + name;
     // The log stays closed while the book is written, so the two files never

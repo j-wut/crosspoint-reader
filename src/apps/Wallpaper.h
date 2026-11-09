@@ -4,12 +4,12 @@
 #include <string_view>
 #include <vector>
 
-// Wallpapers for the sleep screen, kept in /sleep like the other custom sleep
-// images. Besides BMP, the Gallery and the sleep screen take PNG, JPEG and
-// the BOOX .opg images the stock Picco firmware and the BOOX Tiles app use.
+// Gallery images, kept in /images like the stock Picco firmware, which saves
+// the BOOX Tiles app's images there. Besides BMP, the Gallery and the sleep
+// screen take PNG, JPEG and the BOOX .opg images the stock firmware uses.
 namespace wallpaper {
 
-constexpr const char* DIR = "/sleep";
+constexpr const char* DIR = "/images";
 // Sleep image used outside a book (the CrossPoint custom sleep file).
 constexpr const char* SLEEP_PATH = "/sleep.bmp";
 // Sleep image used while a book is open, like the stock reading wallpaper.
