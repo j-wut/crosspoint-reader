@@ -19,7 +19,7 @@ class TodoActivity final : public UiListActivity {
   void onExit() override;
 
  private:
-  // BOOX Tiles cloud sync, only when the sync row is pressed (Picco only). It
+  // BOOX Tiles cloud sync, only when the Sync button is pressed (Picco only). It
   // runs in the background; the list stays usable meanwhile.
   bool handleCustomInput() override;
   // Without Wi-Fi, the Wi-Fi screen comes first (it joins a saved network
@@ -30,9 +30,17 @@ class TodoActivity final : public UiListActivity {
   bool ownsWifi = false;
   CloudSyncJob<applists::TodoItem> sync;
   bool editedDuringSync = false;
-  // Rows: 0 adds an item, then the sync row (Picco), the items, and a last
-  // row that clears done items.
-  int syncRows() const;
+  // On the Picco the first row is two buttons, Add (left) and Sync (right),
+  // drawn above the list; Up/Down walk them before the rows (selection 0 and
+  // 1, rows from 2). Elsewhere row 0 of the list adds an item. The items
+  // follow, then a row that clears done items.
+  static constexpr freeink::ui::ActionId ACTION_HEADER = ACTION_USER;
+  static void headerActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+  int headerSlots() const;
+  int addRows() const { return headerSlots() > 0 ? 0 : 1; }
+  void activateHeader(int slot);
+  void onRowAction(const freeink::ui::ActionEvent& event) override;
+  void navigateButtons() override;
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;

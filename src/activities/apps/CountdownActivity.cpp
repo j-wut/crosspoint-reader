@@ -21,12 +21,40 @@ void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
   sortAndRefresh();
   UiListActivity::onEnter();
+  app.on(ACTION_HEADER, &CountdownActivity::headerActionTrampoline, this);
 }
 
-int CountdownActivity::syncRows() const { return BoardConfig::isPicco() ? 1 : 0; }
+int CountdownActivity::headerSlots() const { return BoardConfig::isPicco() ? 1 : 0; }
+
+void CountdownActivity::headerActionTrampoline(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<CountdownActivity*>(user);
+  if (event.value < 0 || event.value >= self->headerSlots()) return;
+  self->nav.selected = event.value;
+  self->startSync();
+}
+
+void CountdownActivity::onRowAction(const fui::ActionEvent& event) {
+  // Rows have nothing to open; a tap only moves the selection.
+  nav.selected = event.value + headerSlots();
+  requestUpdate();
+}
+
+void CountdownActivity::navigateButtons() {
+  const int ringSize = listCount() + headerSlots();
+  buttonNavigator.onNextPress(
+      [this, ringSize] { moveSelectionTo(ButtonNavigator::nextIndex(nav.selected, ringSize)); });
+  buttonNavigator.onPreviousPress(
+      [this, ringSize] { moveSelectionTo(ButtonNavigator::previousIndex(nav.selected, ringSize)); });
+  buttonNavigator.onNextContinuous([this, ringSize] {
+    moveSelectionTo(ButtonNavigator::nextPageIndex(nav.selected, ringSize, nav.inputPageRows()));
+  });
+  buttonNavigator.onPreviousContinuous([this, ringSize] {
+    moveSelectionTo(ButtonNavigator::previousPageIndex(nav.selected, ringSize, nav.inputPageRows()));
+  });
+}
 
 int CountdownActivity::itemAt(const int row) const {
-  const int index = row - syncRows();
+  const int index = row;
   return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
 }
 
@@ -71,9 +99,7 @@ void CountdownActivity::onExit() {
   UiListActivity::onExit();
 }
 
-void CountdownActivity::activateIndex(const int index) {
-  if (syncRows() > 0 && index == 0) startSync();
-}
+void CountdownActivity::activateIndex(int) {}
 
 bool CountdownActivity::handleCustomInput() {
   std::vector<applists::CountdownItem> synced;
@@ -138,7 +164,8 @@ void CountdownActivity::deleteRow(const int row) {
   if (sync.running()) editedDuringSync = true;
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
   refreshRows();
-  if (nav.selected >= listCount()) moveSelectionTo(std::max(0, listCount() - 1));
+  const int ringSize = listCount() + headerSlots();
+  if (nav.selected >= ringSize) moveSelectionTo(std::max(0, ringSize - 1));
   requestUpdate();
 }
 
@@ -158,12 +185,12 @@ void CountdownActivity::promptDelete(const int row) {
 
 bool CountdownActivity::handleButtons() {
   // Item rows have nothing to open, so Confirm offers delete; a tap still does
-  // nothing. On the sync row Confirm syncs.
+  // nothing. On the Sync button Confirm syncs.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (itemAt(nav.selected) >= 0) {
-      promptDelete(nav.selected);
-    } else {
-      activateIndex(nav.selected);
+    if (nav.selected < headerSlots()) {
+      startSync();
+    } else if (itemAt(nav.selected - headerSlots()) >= 0) {
+      promptDelete(nav.selected - headerSlots());
     }
     return true;
   }
@@ -172,8 +199,9 @@ bool CountdownActivity::handleButtons() {
 
 void CountdownActivity::drawFooter() {
   const auto labels = mappedInput.mapLabels(
-      tr(STR_BACK), itemAt(nav.selected) >= 0 ? tr(STR_DELETE) : (syncRows() > 0 ? tr(STR_SELECT) : ""), tr(STR_DIR_UP),
-      tr(STR_DIR_DOWN));
+      tr(STR_BACK),
+      nav.selected < headerSlots() ? tr(STR_SELECT) : (itemAt(nav.selected - headerSlots()) >= 0 ? tr(STR_DELETE) : ""),
+      tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
@@ -186,7 +214,24 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
       static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  auto hint = screen.theme().smallText;
+  const auto& theme = screen.theme();
+  if (headerSlots() > 0) {
+    // First row: the Sync button.
+    const fui::Rect band = screen.takeTop(theme.rowHeight, static_cast<int16_t>(metrics.verticalSpacing));
+    const char* syncStatus = sync.statusText();
+    fui::ButtonProps button;
+    button.label = syncStatus ? syncStatus : tr(STR_CLOUD_SYNC_NOW);
+    button.action = ACTION_HEADER;
+    button.value = 0;
+    button.inputMask = fui::InputTouch;
+    button.text = theme.bodyText;
+    button.text.align = fui::TextAlign::Center;
+    if (nav.selected == 0) button.state = fui::StateSelected;
+    screen.button(button, band);
+  }
+
+  // Then the message row, then the items.
+  auto hint = theme.smallText;
   hint.align = fui::TextAlign::Center;
   hint.maxLines = 3;
   const char* message = items.empty() ? tr(STR_COUNTDOWN_EMPTY_HINT) : clockSet ? nullptr : tr(STR_COUNTDOWN_NO_CLOCK);
@@ -201,19 +246,12 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
 
   rows.clear();
   rows.reserve(listCount());
-  if (syncRows() > 0) {
-    fui::ListItem syncRow;
-    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
-    syncRow.value = sync.statusText();
-    syncRow.actionValue = 0;
-    rows.push_back(syncRow);
-  }
   for (size_t i = 0; i < items.size(); ++i) {
     fui::ListItem row;
     row.label = items[i].title.c_str();
     row.subtitle = texts[i].date.c_str();
     row.value = texts[i].value.empty() ? nullptr : texts[i].value.c_str();
-    row.actionValue = static_cast<int16_t>(i + syncRows());
+    row.actionValue = static_cast<int16_t>(i);
     rows.push_back(row);
   }
   fui::ListProps props;
@@ -224,6 +262,6 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
 #if FREEINK_CAP_TOUCH
   configureSwipeDelete(screen, props);
 #endif
-  syncListViewport(screen, props);
+  syncListViewport(screen, props, headerSlots());
   screen.list(props);
 }
