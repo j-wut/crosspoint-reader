@@ -88,7 +88,7 @@ const char* TodoActivity::headerTitle() const { return tr(STR_APP_TODO); }
 int TodoActivity::listCount() const { return 1 + syncRows() + static_cast<int>(items.size()) + (hasDone() ? 1 : 0); }
 
 int TodoActivity::itemAt(const int row) const {
-  const int index = row - 1 - syncRows();
+  const int index = row - 1;
   return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
 }
 
@@ -106,7 +106,7 @@ void TodoActivity::activateIndex(const int index) {
     addItem();
     return;
   }
-  if (syncRows() > 0 && index == 1) {
+  if (syncRows() > 0 && index == listCount() - 1) {
     startSync();
     return;
   }
@@ -203,19 +203,12 @@ void TodoActivity::buildScreen(UiScreen& screen) {
   add.bold = true;
   add.actionValue = 0;
   rows.push_back(add);
-  if (syncRows() > 0) {
-    fui::ListItem syncRow;
-    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
-    syncRow.value = sync.statusText();
-    syncRow.actionValue = 1;
-    rows.push_back(syncRow);
-  }
   for (size_t i = 0; i < items.size(); ++i) {
     fui::ListItem row;
     row.label = items[i].text.c_str();
     row.toggle = true;
     row.toggleChecked = items[i].done;
-    row.actionValue = static_cast<int16_t>(i + 1 + syncRows());
+    row.actionValue = static_cast<int16_t>(i + 1);
     rows.push_back(row);
   }
   if (hasDone()) {
@@ -223,6 +216,13 @@ void TodoActivity::buildScreen(UiScreen& screen) {
     clear.label = tr(STR_TODO_CLEAR_DONE);
     clear.actionValue = static_cast<int16_t>(rows.size());
     rows.push_back(clear);
+  }
+  if (syncRows() > 0) {
+    fui::ListItem syncRow;
+    syncRow.label = tr(STR_CLOUD_SYNC_NOW);
+    syncRow.value = sync.statusText();
+    syncRow.actionValue = static_cast<int16_t>(rows.size());
+    rows.push_back(syncRow);
   }
 
   fui::ListProps props;
