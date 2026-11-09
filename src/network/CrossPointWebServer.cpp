@@ -1121,6 +1121,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
                         upload.type.c_str());
     if (!FsHelpers::isSafePathComponent(state.fileName)) {
       state.error = "Invalid file name";
+      tilescloud::logLine("upload rejected: unsafe file name");
       LOG_DBG("WEB", "[UPLOAD] Rejected unsafe filename: %s", state.fileName.c_str());
       return;
     }
@@ -1188,6 +1189,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       return;
     }
     resetTaskWatchdogIfSubscribed();
+    tilescloud::logLine("upload writing %s", uploadWritePath(state).c_str());
 
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", uploadWritePath(state).c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -1220,6 +1222,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       }
 
       state.size += upload.currentSize;
+      if (state.size == upload.currentSize || state.size / 65536 != (state.size - upload.currentSize) / 65536) {
+        tilescloud::logLine("upload progress: %u bytes", static_cast<unsigned>(state.size));
+      }
 
       // Log progress every 100KB
       if (state.size - lastLoggedSize >= 102400) {
@@ -1231,7 +1236,18 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       }
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (!server->client().connected()) return;
+    if (!server->client().connected()) {
+      // The sender left before the end: drop the partial file.
+      state.buffer.reset();
+      if (state.file) {
+        state.file.close();
+        removeUploadedFile(state);
+      }
+      state.error = "Upload aborted";
+      tilescloud::logLine("upload end: client disconnected after %u bytes, partial file removed",
+                          static_cast<unsigned>(state.size));
+      return;
+    }
     if (state.file) {
       // Flush any remaining buffered data
       if (!flushUploadBuffer(state)) {
