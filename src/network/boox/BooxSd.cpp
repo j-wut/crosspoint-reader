@@ -137,6 +137,7 @@ class BooxCardFs final : public fs::SDMMCFS {
 
 BooxCardFs g_card;
 bool g_mounted = false;
+Backend g_backend = Backend::Stock;
 
 const char* fsTypeName(const int type) {
   switch (type) {
@@ -155,8 +156,17 @@ const char* fsTypeName(const int type) {
 
 }  // namespace
 
-bool mount() {
-  if (g_mounted) return true;
+const char* backendName(const Backend backend) { return backend == Backend::SdFat ? "SdFat" : "stock SD_MMC + exFAT FatFs"; }
+
+bool mount(const Backend backend) {
+  if (g_mounted) return g_backend == backend;
+  g_backend = backend;
+  if (backend == Backend::SdFat) {
+    g_mounted = Storage.ready();
+    LOG_INF("BOOXSD", "mount with SdFat: ready %d", g_mounted ? 1 : 0);
+    logState("after mount");
+    return g_mounted;
+  }
   const BoardConfig::SdmmcPins& p = BoardConfig::ACTIVE.sdmmc;
   LOG_INF("BOOXSD", "mount: SdFat ready %d, pins clk %d cmd %d d0 %d d1 %d d2 %d d3 %d", Storage.ready() ? 1 : 0,
           p.clk, p.cmd, p.d0, p.d1, p.d2, p.d3);
@@ -173,20 +183,82 @@ bool mount() {
 
 void unmount() {
   if (!g_mounted) return;
-  g_card.endExFat();
+  if (g_backend == Backend::Stock) g_card.endExFat();
   g_mounted = false;
   LOG_INF("BOOXSD", "unmounted");
 }
 
 bool mounted() { return g_mounted; }
+Backend backend() { return g_backend; }
+bool stockMounted() { return g_mounted && g_backend == Backend::Stock; }
 fs::FS& fs() { return g_card; }
+
+size_t File::write(const uint8_t* data, const size_t len) {
+  if (sdfat_) return hal_ ? hal_.write(data, len) : 0;
+  return vfs_ ? vfs_.write(data, len) : 0;
+}
+
+void File::flush() {
+  if (sdfat_) {
+    if (hal_) hal_.flush();
+  } else if (vfs_) {
+    vfs_.flush();
+  }
+}
+
+void File::close() {
+  if (sdfat_) {
+    if (hal_) hal_.close();
+  } else if (vfs_) {
+    vfs_.close();
+  }
+}
+
+File::operator bool() const { return sdfat_ ? static_cast<bool>(hal_) : static_cast<bool>(vfs_); }
+
+File openWrite(const char* path) {
+  File f;
+  if (g_backend == Backend::SdFat) {
+    f.sdfat_ = true;
+    f.hal_ = Storage.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+  } else {
+    f.vfs_ = g_card.open(path, FILE_WRITE);
+  }
+  return f;
+}
+
+bool exists(const char* path) { return g_backend == Backend::SdFat ? Storage.exists(path) : g_card.exists(path); }
+bool mkdir(const char* path) { return g_backend == Backend::SdFat ? Storage.mkdir(path) : g_card.mkdir(path); }
+bool remove(const char* path) { return g_backend == Backend::SdFat ? Storage.remove(path) : g_card.remove(path); }
+bool rename(const char* from, const char* to) {
+  return g_backend == Backend::SdFat ? Storage.rename(from, to) : g_card.rename(from, to);
+}
+
+size_t fileSize(const char* path) {
+  if (g_backend == Backend::SdFat) {
+    HalFile f = Storage.open(path);
+    return f ? f.size() : 0;
+  }
+  fs::File f = g_card.open(path, FILE_READ);
+  return f ? f.size() : 0;
+}
 
 bool spaceInfo(uint64_t& total, uint64_t& freeBytes) {
   if (!g_mounted) return false;
+  if (g_backend == Backend::SdFat) {
+    total = 0;
+    freeBytes = Storage.freeBytes();
+    return true;
+  }
   return bxf_esp_vfs_fat_info(MOUNT_POINT, &total, &freeBytes) == ESP_OK;
 }
 
 void logState(const char* when) {
+  if (g_mounted && g_backend == Backend::SdFat) {
+    LOG_INF("BOOXSD", "%s: SdFat, ready %d, free %llu MB", when, Storage.ready() ? 1 : 0,
+            static_cast<unsigned long long>(Storage.freeBytes() / (1024 * 1024)));
+    return;
+  }
   sdmmc_card_t* card = g_card.card();
   if (!g_mounted || !card) {
     LOG_INF("BOOXSD", "%s: not mounted", when);

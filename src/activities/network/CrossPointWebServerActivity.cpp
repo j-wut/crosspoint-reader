@@ -57,6 +57,14 @@ void restartMdns(const char* hostname, const char* tag) {
   }
 }
 
+bool isBooxLan(const NetworkMode mode) { return mode == NetworkMode::BOOX_LAN || mode == NetworkMode::BOOX_LAN_SDFAT; }
+bool isBooxSdFat(const NetworkMode mode) {
+  return mode == NetworkMode::BOOX_CLOUD_SDFAT || mode == NetworkMode::BOOX_LAN_SDFAT;
+}
+bool isBooxMode(const NetworkMode mode) {
+  return isBooxLan(mode) || mode == NetworkMode::BOOX_CLOUD || mode == NetworkMode::BOOX_CLOUD_SDFAT;
+}
+
 // 0..4 bars from RSSI (dBm), with 3 dBm hysteresis on currentBars to suppress flicker.
 int barsForRssi(int rssi, int currentBars) {
   static constexpr int RISE_DBM[] = {-85, -75, -65, -55};
@@ -169,6 +177,10 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Bind BOOX Tiles";
   } else if (mode == NetworkMode::BOOX_LAN) {
     modeName = "BOOX LAN";
+  } else if (mode == NetworkMode::BOOX_CLOUD_SDFAT) {
+    modeName = "BOOX Cloud (SdFat)";
+  } else if (mode == NetworkMode::BOOX_LAN_SDFAT) {
+    modeName = "BOOX LAN (SdFat)";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
 #if FREEINK_CAP_USB_MSC
@@ -210,7 +222,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     return;
   }
 
-  if (mode == NetworkMode::JOIN_NETWORK || mode == NetworkMode::BOOX_CLOUD || mode == NetworkMode::BOOX_LAN) {
+  if (mode == NetworkMode::JOIN_NETWORK || isBooxMode(mode)) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     WiFi.mode(WIFI_STA);
@@ -237,7 +249,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) {
   LOG_DBG("WEBACT", "WifiSelectionActivity completed, connected=%d", connected);
 
-  if (connected && (networkMode == NetworkMode::BOOX_CLOUD || networkMode == NetworkMode::BOOX_LAN)) {
+  if (connected && isBooxMode(networkMode)) {
     isApMode = false;
     startBoox();
     return;
@@ -268,15 +280,17 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
 }
 
 void CrossPointWebServerActivity::startBoox() {
-  const bool lan = networkMode == NetworkMode::BOOX_LAN;
-  // Mount the card the stock way, and keep every log line of it for the card log.
+  const bool lan = isBooxLan(networkMode);
+  const booxsd::Backend backend = isBooxSdFat(networkMode) ? booxsd::Backend::SdFat : booxsd::Backend::Stock;
+  // Mount the card, and keep every log line of it for the card log.
   booxCapture = std::make_unique<booxdiag::Capture>();
   booxdiag::logSystemState(lan ? "BOOX LAN start" : "BOOX Cloud start");
-  booxSdFailed = !booxsd::mount();
+  booxSdFailed = !booxsd::mount(backend);
   if (!booxSdFailed && lan) booxLanFailed = !booxlan::start();
   if (booxdiag::LogFile log = booxdiag::openLog()) {
-    log.printf("\n=== [%lu s] %s, %s, SD %s, IP %s ===\n", millis() / 1000, lan ? "BOOX LAN" : "BOOX Cloud",
-               CROSSPOINT_VERSION, booxSdFailed ? "mount FAILED" : "mounted", connectedIP.c_str());
+    log.printf("\n=== [%lu s] %s, %s, %s, SD %s, IP %s ===\n", millis() / 1000, lan ? "BOOX LAN" : "BOOX Cloud",
+               booxsd::backendName(backend), CROSSPOINT_VERSION, booxSdFailed ? "mount FAILED" : "mounted",
+               connectedIP.c_str());
     booxdiag::Capture::dumpAndReset(log);
     log.close();
   }
@@ -683,7 +697,8 @@ void CrossPointWebServerActivity::renderServerRunning() const {
 void CrossPointWebServerActivity::renderCloudRunning() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOX_CLOUD), nullptr);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 isBooxSdFat(networkMode) ? tr(STR_BOOX_CLOUD_SDFAT) : tr(STR_BOOX_CLOUD), nullptr);
   const int subHeaderTop = metrics.topPadding + metrics.headerHeight;
   GUI.drawSubHeader(renderer, Rect{0, subHeaderTop, pageWidth, metrics.tabBarHeight}, WiFi.SSID().c_str());
   renderWifiIndicator(subHeaderTop);
@@ -728,7 +743,8 @@ void CrossPointWebServerActivity::renderCloudRunning() const {
 void CrossPointWebServerActivity::renderLanRunning() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOX_LAN), nullptr);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 isBooxSdFat(networkMode) ? tr(STR_BOOX_LAN_SDFAT) : tr(STR_BOOX_LAN), nullptr);
   const int subHeaderTop = metrics.topPadding + metrics.headerHeight;
   GUI.drawSubHeader(renderer, Rect{0, subHeaderTop, pageWidth, metrics.tabBarHeight}, connectedSSID.c_str());
   renderWifiIndicator(subHeaderTop);

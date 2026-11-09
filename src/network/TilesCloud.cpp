@@ -368,7 +368,7 @@ struct StockDownload {
 // The stock firmware's download routine, step for step: check the card has
 // room, write "<dest>.tmp" from a 32 KB PSRAM buffer (each read written at
 // once, a flush every 256 KB, a 1-tick yield per read), close, then rename
-// it into place. Uses the stock SD stack (booxsd).
+// it into place. Writes through the stack booxsd mounted.
 StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
   constexpr size_t BUF_SIZE = 32 * 1024;
   StockDownload d;
@@ -377,7 +377,6 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     d.sdResult = "not mounted";
     return d;
   }
-  fs::FS& fs = booxsd::fs();
   uint64_t cardBytes = 0;
   uint64_t freeBytes = 0;
   if (expected > 0 && booxsd::spaceInfo(cardBytes, freeBytes) && freeBytes < expected) {
@@ -413,8 +412,8 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   }
 
   const std::string tmp = dest + ".tmp";
-  if (fs.exists(tmp.c_str())) fs.remove(tmp.c_str());
-  fs::File file = fs.open(tmp.c_str(), FILE_WRITE);
+  if (booxsd::exists(tmp.c_str())) booxsd::remove(tmp.c_str());
+  booxsd::File file = booxsd::openWrite(tmp.c_str());
   if (!file) {
     esp_http_client_cleanup(client);
     LOG_ERR("TILES", "write tmp failed: %s", tmp.c_str());
@@ -506,8 +505,8 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   } else if (d.written == 0) {
     d.sdResult = "empty";
   } else {
-    if (fs.exists(dest.c_str())) fs.remove(dest.c_str());
-    if (!fs.rename(tmp.c_str(), dest.c_str())) {
+    if (booxsd::exists(dest.c_str())) booxsd::remove(dest.c_str());
+    if (!booxsd::rename(tmp.c_str(), dest.c_str())) {
       LOG_ERR("TILES", "rename failed: %s -> %s", tmp.c_str(), dest.c_str());
       d.sdResult = "rename failed";
     } else {
@@ -515,7 +514,7 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
       d.ok = true;
     }
   }
-  if (!d.ok) fs.remove(tmp.c_str());
+  if (!d.ok) booxsd::remove(tmp.c_str());
   return d;
 }
 
@@ -559,7 +558,7 @@ void handlePushList(booxdiag::LogFile& out, const std::string& body) {
       continue;
     }
     const char* dir = pushDir(name);
-    if (!booxsd::fs().exists(dir) && !booxsd::fs().mkdir(dir)) LOG_ERR("TILES", "ensure parent failed: %s", dir);
+    if (!booxsd::exists(dir) && !booxsd::mkdir(dir)) LOG_ERR("TILES", "ensure parent failed: %s", dir);
     const std::string dest = std::string(dir) + "/" + name;
     // Each step is kept for the screen, since the card log may not be
     // writable after a failure.
@@ -591,8 +590,7 @@ void handlePushList(booxdiag::LogFile& out, const std::string& body) {
       booxdiag::logSystemState("after download");
       booxsd::logState("after download");
       if (d.ok) {
-        fs::File check = booxsd::fs().open(dest.c_str(), FILE_READ);
-        LOG_INF("TILES", "saved %s: %u bytes on card", dest.c_str(), check ? static_cast<unsigned>(check.size()) : 0u);
+        LOG_INF("TILES", "saved %s: %u bytes on card", dest.c_str(), static_cast<unsigned>(booxsd::fileSize(dest.c_str())));
       }
       step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
            static_cast<unsigned>((item["size"] | 0u) / 1024));

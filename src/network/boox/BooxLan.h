@@ -7,7 +7,7 @@
 // app: esp_http_server on port 80 with POST /upload?fileType=, OPTIONS
 // /upload and /ping, HEAD /ping and GET /. One upload at a time; received
 // data goes through three 32 KB PSRAM buffers to an SD writer task
-// ("httpSd"), which writes it to the card mounted by booxsd.
+// ("httpSd"), which writes it to the card through the stack booxsd mounted.
 namespace booxlan {
 
 struct Status {

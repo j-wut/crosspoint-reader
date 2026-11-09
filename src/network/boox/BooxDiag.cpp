@@ -145,7 +145,7 @@ LogFile::operator bool() const { return useVfs_ ? static_cast<bool>(vfs_) : stat
 
 LogFile openLog() {
   LogFile log;
-  if (booxsd::mounted()) {
+  if (booxsd::stockMounted()) {
     fs::FS& fs = booxsd::fs();
     bool fresh = true;
     if (fs.exists(LOG_PATH)) {

@@ -103,7 +103,7 @@ SemaphoreHandle_t g_uploadLock = nullptr;
 TaskHandle_t g_writerTask = nullptr;
 volatile int g_pending = 0;
 volatile bool g_writeFailed = false;
-fs::File g_file;
+booxsd::File g_file;
 std::string g_path;
 // Writer statistics, for the log.
 volatile uint32_t g_writeCount = 0;
@@ -275,13 +275,12 @@ const char* openDestination(Upload& up, const char* dir, const std::string& head
   }
   if (up.name.empty()) up.name = "upload.bin";
   if (up.name == "." || up.name == ".." || up.name.find("..") != std::string::npos) return "Failed to create file";
-  fs::FS& fs = booxsd::fs();
-  if (!fs.exists(dir) && !fs.mkdir(dir)) return "Failed to create directory";
+  if (!booxsd::exists(dir) && !booxsd::mkdir(dir)) return "Failed to create directory";
   char path[320];
   snprintf(path, sizeof(path), "%s/%s", dir, up.name.c_str());
   g_path = path;
   g_writeFailed = false;
-  g_file = fs.open(path, FILE_WRITE);
+  g_file = booxsd::openWrite(path);
   if (!g_file) return "Failed to create file";
   LOG_INF("BOOXLAN", "Upload start: %s %s", up.name.c_str(), path);
   return nullptr;
@@ -497,7 +496,7 @@ esp_err_t handleUpload(httpd_req_t* req) {
   } else {
     LOG_ERR("BOOXLAN", "Upload failed: %s (%s)", up.error, g_path.empty() ? "-" : g_path.c_str());
     if (!g_path.empty() && booxsd::mounted()) {
-      if (booxsd::fs().remove(g_path.c_str())) {
+      if (booxsd::remove(g_path.c_str())) {
         LOG_INF("BOOXLAN", "deleted upload file %s", g_path.c_str());
       } else {
         LOG_ERR("BOOXLAN", "delete upload file failed %s", g_path.c_str());

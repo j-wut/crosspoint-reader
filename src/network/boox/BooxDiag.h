@@ -22,8 +22,8 @@ class Capture {
   static void dumpAndReset(Print& out);
 };
 
-// The card log, /tiles-cloud-log.txt. Written through the BOOX SD stack
-// while it is mounted, through SdFat otherwise.
+// The card log, /tiles-cloud-log.txt. Written through the stock SD stack
+// while it holds the card, through SdFat otherwise.
 class LogFile final : public Print {
  public:
   LogFile() = default;
