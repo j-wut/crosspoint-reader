@@ -131,7 +131,7 @@ bool BmpViewerActivity::renderImage() {
 
   if (!drawImage()) return false;
   if (!jpeg) {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    showFrame();
     return true;
   }
 
@@ -159,6 +159,7 @@ bool BmpViewerActivity::renderImage() {
   renderer.clearScreen();
   if (!drawImage()) ready = false;
   renderer.cleanupGrayscaleWithFrameBuffer();
+  if (ready && keepOverlay) drawOverlay();
   return ready;
 }
 
@@ -194,7 +195,11 @@ void BmpViewerActivity::onEnter() {
       GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
     }
     const unsigned long drawn = millis();
-    renderer.displayBuffer(ok ? HalDisplay::FAST_REFRESH : HalDisplay::HALF_REFRESH);
+    if (ok) {
+      showFrame();
+    } else {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
     LOG_INF("BMP", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
     wallpaper::stopLogCapture();
     return;
@@ -299,9 +304,10 @@ void BmpViewerActivity::onEnter() {
         }
         GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
         renderer.cleanupGrayscaleWithFrameBuffer();
+        if (planesReady && keepOverlay) drawOverlay();
         if (!planesReady) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
       } else {
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        showFrame();
       }
 
     } else {
@@ -469,24 +475,55 @@ void BmpViewerActivity::doSetSleepCover() {
   onEnter();
 }
 
-void BmpViewerActivity::drawOverlay() {
+// Top bar: back arrow and file name. Bottom bar: previous / next arrows and
+// "image / images".
+void BmpViewerActivity::drawOverlayContent() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int width = renderer.getScreenWidth();
   const int height = renderer.getScreenHeight();
   const int barHeight = metrics.topPadding + metrics.headerHeight;
-  renderer.fillRect(0, 0, width, barHeight, false);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, "");
-
   const std::string name = filePath.substr(filePath.find_last_of('/') + 1);
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const int footHeight = lineHeight + 2 * metrics.verticalSpacing;
+  renderer.fillRect(0, 0, width, barHeight, false);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, name.c_str());
+
+  constexpr int ARROW_W = 72;
+  constexpr int ARROW_H = 44;
+  const int footHeight = ARROW_H + 2 * metrics.verticalSpacing;
   const int footY = height - footHeight;
   renderer.fillRect(0, footY, width, footHeight, false);
   renderer.drawLine(0, footY, width - 1, footY, 2, true);
-  const std::string shown = renderer.truncatedText(UI_10_FONT_ID, name.c_str(), width - 2 * metrics.contentSidePadding);
-  renderer.drawCenteredText(UI_10_FONT_ID, footY + (footHeight - lineHeight) / 2, shown.c_str());
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  const int arrowY = footY + metrics.verticalSpacing;
+  const int side = metrics.contentSidePadding;
+  const int count = static_cast<int>(siblingImages.size());
+  prevArrow = currentImageIndex > 0 ? Rect{side, arrowY, ARROW_W, ARROW_H} : Rect{};
+  nextArrow = currentImageIndex >= 0 && currentImageIndex + 1 < count
+                  ? Rect{width - side - ARROW_W, arrowY, ARROW_W, ARROW_H}
+                  : Rect{};
+  const int textH = renderer.getLineHeight(UI_12_FONT_ID);
+  for (const auto& [rect, label] : {std::pair{prevArrow, "<"}, std::pair{nextArrow, ">"}}) {
+    if (rect.width == 0) continue;
+    renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 2, 6, true);
+    const int textW = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textW) / 2, rect.y + (rect.height - textH) / 2, label, true,
+                      EpdFontFamily::BOLD);
+  }
+  if (currentImageIndex >= 0 && count > 0) {
+    char position[24];
+    snprintf(position, sizeof(position), "%d / %d", currentImageIndex + 1, count);
+    renderer.drawCenteredText(UI_12_FONT_ID, arrowY + (ARROW_H - textH) / 2, position);
+  }
   overlayShown = true;
+}
+
+void BmpViewerActivity::drawOverlay() {
+  drawOverlayContent();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+// Shows the drawn image, with the bars when they were up before a page change.
+void BmpViewerActivity::showFrame() {
+  if (keepOverlay) drawOverlayContent();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 void BmpViewerActivity::loop() {
@@ -497,6 +534,7 @@ void BmpViewerActivity::loop() {
     if (currentImageIndex < 0) {
       return false;
     }
+    keepOverlay = overlayShown;
     const int nextIndex = currentImageIndex + delta;
     if (siblingImages.size() <= 1 || nextIndex < 0 || nextIndex >= static_cast<int>(siblingImages.size())) {
       return false;
@@ -506,6 +544,7 @@ void BmpViewerActivity::loop() {
     if (dirPath.back() != '/') dirPath += "/";
     filePath = dirPath + siblingImages[currentImageIndex];
     onEnter();
+    keepOverlay = false;
     return true;
   };
 
@@ -518,12 +557,19 @@ void BmpViewerActivity::loop() {
     return;
   }
 
-  // Like the stock Picco viewer: a tap shows a top bar with a back arrow and
-  // the file name along the bottom; another tap hides them.
+  // Like the stock Picco viewer: a tap shows the bars, a tap on an arrow
+  // changes the image, any other tap hides them.
   int tapX = 0;
   int tapY = 0;
   if (BoardConfig::hasTouch() && mappedInput.wasScreenTapped(tapX, tapY)) {
-    if (overlayShown) {
+    const auto inside = [tapX, tapY](const Rect& r) {
+      return r.width > 0 && tapX >= r.x && tapX < r.x + r.width && tapY >= r.y && tapY < r.y + r.height;
+    };
+    if (overlayShown && inside(prevArrow)) {
+      openSibling(-1);
+    } else if (overlayShown && inside(nextArrow)) {
+      openSibling(1);
+    } else if (overlayShown) {
       onEnter();
     } else {
       drawOverlay();

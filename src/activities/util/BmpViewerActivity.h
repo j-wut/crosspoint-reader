@@ -5,6 +5,7 @@
 
 #include "MappedInputManager.h"
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 
 class BmpViewerActivity final : public Activity {
  public:
@@ -24,10 +25,15 @@ class BmpViewerActivity final : public Activity {
   bool renderImage();
   bool saveJpegSleepCover();
   void drawOverlay();
+  void drawOverlayContent();
+  void showFrame();
 
   std::string filePath;
   std::vector<std::string> siblingImages;
   int currentImageIndex = -1;
   bool returnToCaller = false;
-  bool overlayShown = false;  // touch boards: tap shows a top bar and the file name
+  bool overlayShown = false;  // touch boards: tap shows the top and bottom bars
+  bool keepOverlay = false;   // redraw the bars on the next image
+  Rect prevArrow{};
+  Rect nextArrow{};
 };

@@ -109,7 +109,7 @@ std::vector<std::string> list() {
     if (name[0] == '.' || !isImage(name)) continue;
     out.push_back(std::string(DIR) + "/" + name);
   }
-  std::sort(out.begin(), out.end());
+  FsHelpers::sortFileList(out);  // same order as the image viewer
   return out;
 }
 
