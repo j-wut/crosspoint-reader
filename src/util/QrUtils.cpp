@@ -2,35 +2,12 @@
 
 #include <Utf8.h>
 #include <qrcode.h>
+#include <qrcodegen.h>
 
 #include <algorithm>
 #include <memory>
 
 #include "Logging.h"
-
-namespace {
-void drawModules(const GfxRenderer& renderer, const Rect& bounds, QRCode& qrcode) {
-  // Determine the optimal pixel size.
-  const int maxDim = std::min(bounds.width, bounds.height);
-
-  int px = maxDim / qrcode.size;
-  if (px < 1) px = 1;
-
-  // Calculate centering X and Y
-  const int qrDisplaySize = qrcode.size * px;
-  const int xOff = bounds.x + (bounds.width - qrDisplaySize) / 2;
-  const int yOff = bounds.y + (bounds.height - qrDisplaySize) / 2;
-
-  // Draw the QR Code
-  for (uint8_t cy = 0; cy < qrcode.size; cy++) {
-    for (uint8_t cx = 0; cx < qrcode.size; cx++) {
-      if (qrcode_getModule(&qrcode, cx, cy)) {
-        renderer.fillRect(xOff + px * cx, yOff + px * cy, px, px, true);
-      }
-    }
-  }
-}
-}  // namespace
 
 void QrUtils::drawQrCode(const GfxRenderer& renderer, const Rect& bounds, const std::string& textPayload) {
   // Dynamically calculate the QR code version based on text length
@@ -64,7 +41,25 @@ void QrUtils::drawQrCode(const GfxRenderer& renderer, const Rect& bounds, const 
   int8_t res = qrcode_initText(&qrcode, qrcodeBytes.get(), version, ECC_LOW, payload);
 
   if (res == 0) {
-    drawModules(renderer, bounds, qrcode);
+    // Determine the optimal pixel size.
+    const int maxDim = std::min(bounds.width, bounds.height);
+
+    int px = maxDim / qrcode.size;
+    if (px < 1) px = 1;
+
+    // Calculate centering X and Y
+    const int qrDisplaySize = qrcode.size * px;
+    const int xOff = bounds.x + (bounds.width - qrDisplaySize) / 2;
+    const int yOff = bounds.y + (bounds.height - qrDisplaySize) / 2;
+
+    // Draw the QR Code
+    for (uint8_t cy = 0; cy < qrcode.size; cy++) {
+      for (uint8_t cx = 0; cx < qrcode.size; cx++) {
+        if (qrcode_getModule(&qrcode, cx, cy)) {
+          renderer.fillRect(xOff + px * cx, yOff + px * cy, px, px, true);
+        }
+      }
+    }
   } else {
     // If it fails (e.g. text too large), log an error
     LOG_ERR("QR", "Text too large for QR Code version %d", version);
@@ -72,29 +67,25 @@ void QrUtils::drawQrCode(const GfxRenderer& renderer, const Rect& bounds, const 
 }
 
 void QrUtils::drawStockQrCode(const GfxRenderer& renderer, const Rect& bounds, const std::string& textPayload) {
-  // Byte-mode capacity per version 1-10, for ECC LOW, MEDIUM, QUARTILE, HIGH.
-  // The QR library writes past its buffer when the text does not fit, so
-  // check before encoding.
-  static constexpr uint16_t CAPACITY[4][10] = {
-      {17, 32, 53, 78, 106, 134, 154, 192, 230, 271},
-      {14, 26, 42, 62, 84, 106, 122, 152, 180, 213},
-      {11, 20, 32, 46, 60, 74, 86, 108, 130, 151},
-      {7, 14, 24, 34, 44, 58, 64, 84, 98, 119},
-  };
-  constexpr uint8_t MAX_VERSION = 10;
-  const size_t len = textPayload.size();
-  for (uint8_t version = 1; version <= MAX_VERSION; ++version) {
-    if (len > CAPACITY[ECC_LOW][version - 1]) continue;
-    // Use the strongest error correction that still fits this version.
-    uint8_t ecc = ECC_HIGH;
-    while (len > CAPACITY[ecc][version - 1]) --ecc;
-    auto buffer = std::make_unique<uint8_t[]>(qrcode_getBufferSize(version));
-    QRCode qrcode;
-    if (qrcode_initText(&qrcode, buffer.get(), version, ecc, textPayload.c_str()) == 0) {
-      drawModules(renderer, bounds, qrcode);
-      return;
-    }
-    break;
+  // Same call as ESP-IDF esp_qrcode_generate() with the stock config:
+  // versions 1-10, low ECC, automatic mask, boosted ECC. Two 408-byte
+  // buffers, freed after drawing.
+  constexpr int MAX_VERSION = 10;
+  constexpr size_t BUFFER_LEN = qrcodegen_BUFFER_LEN_FOR_VERSION(MAX_VERSION);
+  auto qrcode = std::make_unique<uint8_t[]>(BUFFER_LEN);
+  auto temp = std::make_unique<uint8_t[]>(BUFFER_LEN);
+  if (!qrcodegen_encodeText(textPayload.c_str(), temp.get(), qrcode.get(), qrcodegen_Ecc_LOW, qrcodegen_VERSION_MIN,
+                            MAX_VERSION, qrcodegen_Mask_AUTO, true)) {
+    LOG_ERR("QR", "Text too large for QR Code version %d", MAX_VERSION);
+    return;
   }
-  LOG_ERR("QR", "Text too large for QR Code version %d", MAX_VERSION);
+  const int size = qrcodegen_getSize(qrcode.get());
+  const int px = std::max(1, std::min(bounds.width, bounds.height) / size);
+  const int xOff = bounds.x + (bounds.width - size * px) / 2;
+  const int yOff = bounds.y + (bounds.height - size * px) / 2;
+  for (int y = 0; y < size; y++) {
+    for (int x = 0; x < size; x++) {
+      if (qrcodegen_getModule(qrcode.get(), x, y)) renderer.fillRect(xOff + px * x, yOff + px * y, px, px, true);
+    }
+  }
 }
