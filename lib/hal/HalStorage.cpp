@@ -90,6 +90,29 @@ bool HalStorage::usbDriveHostSuspended() const {
 #endif
 }
 
+void HalStorage::detachUsbDriveMedia() {
+#if FREEINK_CAP_USB_MSC
+  StorageLock lock;
+  usbMassStorage.detachMedia();
+#endif
+}
+
+bool HalStorage::usbDriveIoBusy() const {
+#if FREEINK_CAP_USB_MSC
+  return usbMassStorage.ioBusy();
+#else
+  return false;
+#endif
+}
+
+uint32_t HalStorage::usbDriveLastIoMs() const {
+#if FREEINK_CAP_USB_MSC
+  return usbMassStorage.lastIoMs();
+#else
+  return 0;
+#endif
+}
+
 void HalStorage::endUsbDrive() {
 #if FREEINK_CAP_USB_MSC
   StorageLock lock;

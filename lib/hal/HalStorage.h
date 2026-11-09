@@ -36,6 +36,11 @@ class HalStorage {
   void endUsbDrive();
   UsbDriveState usbDriveState() const;
   bool usbDriveHostSuspended() const;
+  // Device-side stop: report the medium as removed, then wait for host I/O to
+  // go idle before endUsbDrive().
+  void detachUsbDriveMedia();
+  bool usbDriveIoBusy() const;
+  uint32_t usbDriveLastIoMs() const;
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);

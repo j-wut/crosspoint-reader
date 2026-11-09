@@ -39,12 +39,20 @@ void UsbDriveActivity::onExit() {
 }
 
 void UsbDriveActivity::loop() {
+  if (restartRequested) return;
   if (!startFailed) {
     const State nextState = Storage.usbDriveState();
     if (nextState != state) {
+      LOG_INF("USB", "USB Drive state %d -> %d (stopping=%d)", static_cast<int>(state), static_cast<int>(nextState),
+              stopping);
       state = nextState;
       requestUpdate();
     }
+  }
+
+  if (stopping) {
+    continueDeviceStop();
+    return;
   }
 
   // A battery-powered USB device may stay mounted after cable removal. End
@@ -90,10 +98,15 @@ void UsbDriveActivity::loop() {
     return;
   }
 
-  const bool canExitWithInput = state == State::WaitingForHost || startFailed;
-  if (canExitWithInput && (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-                           mappedInput.wasPressed(MappedInputManager::Button::Power) || mappedInput.wasHomeGesture())) {
+  const bool exitPressed = mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.wasPressed(MappedInputManager::Button::Power) || mappedInput.wasHomeGesture();
+  if (exitPressed && (state == State::WaitingForHost || startFailed)) {
+    LOG_INF("USB", "USB Drive exit pressed before host connected");
     restartToHome();
+    return;
+  }
+  if (exitPressed && state == State::Connected) {
+    beginDeviceStop();
     return;
   }
 
@@ -111,7 +124,7 @@ void UsbDriveActivity::render(RenderLock&&) {
 
   renderUi();
 
-  if (state == State::WaitingForHost || startFailed) {
+  if (!stopping && (state == State::WaitingForHost || state == State::Connected || startFailed)) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
@@ -129,6 +142,8 @@ void UsbDriveActivity::buildDriveScreen(UiScreen& screen) const {
   if (preparing) {
     message = tr(STR_USB_DRIVE_PREPARING);
     detail = tr(STR_USB_DRIVE_EJECT_HINT);
+  } else if (stopping) {
+    message = tr(STR_USB_DRIVE_STOPPING);
   } else {
     switch (state) {
       case State::WaitingForHost:
@@ -137,7 +152,7 @@ void UsbDriveActivity::buildDriveScreen(UiScreen& screen) const {
       case State::Connected:
         message = tr(STR_USB_DRIVE_CONNECTED);
         detail = tr(STR_USB_DRIVE_CONNECT_DELAY);
-        secondaryDetail = tr(STR_USB_DRIVE_EJECT_HINT);
+        secondaryDetail = tr(STR_USB_DRIVE_EXIT_HINT);
         break;
       case State::IoError:
         message = startFailed ? tr(STR_USB_DRIVE_START_ERROR) : tr(STR_USB_DRIVE_ERROR);
@@ -183,9 +198,43 @@ void UsbDriveActivity::buildDriveScreen(UiScreen& screen) const {
   }
 }
 
+// Same order as the stock BOOX firmware: report the medium as removed, wait for
+// host I/O to go idle (bounded), then disconnect and leave.
+void UsbDriveActivity::beginDeviceStop() {
+  const unsigned long now = millis();
+  const uint32_t lastIo = Storage.usbDriveLastIoMs();
+  LOG_INF("USB", "USB Drive stop pressed while connected: busy=%d lastIo=%lu ms ago suspended=%d heap=%u",
+          Storage.usbDriveIoBusy(), lastIo ? now - lastIo : 0UL, Storage.usbDriveHostSuspended(),
+          static_cast<unsigned>(ESP.getFreeHeap()));
+  stopping = true;
+  stopStartedAt = now;
+  Storage.detachUsbDriveMedia();
+  requestUpdate();
+}
+
+void UsbDriveActivity::continueDeviceStop() {
+  const unsigned long now = millis();
+  const unsigned long elapsed = now - stopStartedAt;
+  const bool busy = Storage.usbDriveIoBusy();
+  const uint32_t lastIo = Storage.usbDriveLastIoMs();
+  const unsigned long sinceIo = lastIo ? now - lastIo : elapsed;
+  const bool idle = !busy && sinceIo >= STOP_IDLE_MS && elapsed >= STOP_IDLE_MS;
+  if (!idle && elapsed < STOP_TIMEOUT_MS) return;
+  if (idle) {
+    LOG_INF("USB", "USB Drive host I/O idle after %lu ms (last I/O %lu ms ago, state=%d); ending session", elapsed,
+            sinceIo, static_cast<int>(state));
+  } else {
+    LOG_ERR("USB", "USB Drive stop timed out after %lu ms (busy=%d, last I/O %lu ms ago, state=%d); ending anyway",
+            elapsed, busy, sinceIo, static_cast<int>(state));
+  }
+  restartToHome();
+}
+
 void UsbDriveActivity::restartToHome() {
   if (restartRequested) return;
   restartRequested = true;
+  LOG_INF("USB", "USB Drive ending: state=%d stopping=%d startFailed=%d", static_cast<int>(state), stopping,
+          startFailed);
   Storage.endUsbDrive();
   delay(20);
   restartToHomeAfterStorageHandoff();

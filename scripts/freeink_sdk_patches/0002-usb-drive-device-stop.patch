@@ -1,0 +1,95 @@
+diff --git a/libs/hardware/UsbMassStorage/include/UsbMassStorage.h b/libs/hardware/UsbMassStorage/include/UsbMassStorage.h
+index 063e8da..b0daa0f 100644
+--- a/libs/hardware/UsbMassStorage/include/UsbMassStorage.h
++++ b/libs/hardware/UsbMassStorage/include/UsbMassStorage.h
+@@ -52,6 +52,13 @@ class UsbMassStorage {
+   // Soft-disconnect the USB device from the host. Call from application/task
+   // context, never from an MSC callback; end() still owns final teardown.
+   bool disconnectHost() const;
++  // Report the medium as removed so the host stops issuing I/O (like ejecting
++  // a card from a reader). Used before a device-side stop.
++  void detachMedia() const;
++  // True while a host read or write callback is running.
++  bool ioBusy() const;
++  // millis() of the last host read or write; 0 if none yet.
++  uint32_t lastIoMs() const { return _lastIoMs.load(); }
+ 
+   // Called by the TinyUSB callbacks to publish the most recent host event.
+   void markAccessed() const;
+@@ -64,6 +71,7 @@ class UsbMassStorage {
+   // best-effort byte-sized write.
+   mutable std::atomic<UsbMassStorageState> _state{UsbMassStorageState::Idle};
+   mutable std::atomic<bool> _hostSeen{false};
++  mutable std::atomic<uint32_t> _lastIoMs{0};
+   bool _active = false;
+ };
+ 
+@@ -79,6 +87,9 @@ class UsbMassStorage {
+   bool hostConnected() const { return false; }
+   bool hostSuspended() const { return false; }
+   bool disconnectHost() const { return false; }
++  void detachMedia() const {}
++  bool ioBusy() const { return false; }
++  uint32_t lastIoMs() const { return 0; }
+ };
+ }  // namespace freeink
+ 
+diff --git a/libs/hardware/UsbMassStorage/src/UsbMassStorage.cpp b/libs/hardware/UsbMassStorage/src/UsbMassStorage.cpp
+index 2951662..4c14710 100644
+--- a/libs/hardware/UsbMassStorage/src/UsbMassStorage.cpp
++++ b/libs/hardware/UsbMassStorage/src/UsbMassStorage.cpp
+@@ -23,6 +23,13 @@ std::atomic<UsbMassStorage*> gOwner{nullptr};
+ std::atomic<FsBlockDeviceInterface*> gDev{nullptr};
+ constexpr uint16_t kBlockSize = 512;
+ uint8_t gSectorScratch[kBlockSize];
++std::atomic<int> gIoInFlight{0};
++
++// Counts a host read/write as in flight for its whole callback.
++struct IoGuard {
++  IoGuard() { gIoInFlight.fetch_add(1); }
++  ~IoGuard() { gIoInFlight.fetch_sub(1); }
++};
+ 
+ bool isRangeValid(FsBlockDeviceInterface* dev, const uint32_t lba, const uint32_t offset, const uint32_t bufsize) {
+   if (!dev || bufsize == 0) return false;
+@@ -33,6 +40,7 @@ bool isRangeValid(FsBlockDeviceInterface* dev, const uint32_t lba, const uint32_
+ }
+ 
+ int32_t mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
++  const IoGuard guard;
+   auto* const dev = gDev.load();
+   auto* const owner = gOwner.load();
+   if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
+@@ -72,6 +80,7 @@ int32_t mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+ }
+ 
+ int32_t mscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
++  const IoGuard guard;
+   auto* const dev = gDev.load();
+   auto* const owner = gOwner.load();
+   if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
+@@ -130,6 +139,7 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
+   gOwner.store(this);
+   _state.store(UsbMassStorageState::WaitingForHost);
+   _hostSeen.store(false);
++  _lastIoMs.store(0);
+   gMsc.vendorID("FreeInk");
+   gMsc.productID("SD Card");
+   gMsc.productRevision("1.0");
+@@ -206,9 +216,16 @@ bool UsbMassStorage::hostConnected() const {
+ 
+ bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
+ 
++void UsbMassStorage::detachMedia() const {
++  if (_active) gMsc.mediaPresent(false);
++}
++
++bool UsbMassStorage::ioBusy() const { return gIoInFlight.load() > 0; }
++
+ bool UsbMassStorage::hostSuspended() const { return _active && tud_mounted() && tud_suspended(); }
+ 
+ void UsbMassStorage::markAccessed() const {
++  _lastIoMs.store(millis());
+   auto current = _state.load();
+   while (current != UsbMassStorageState::Ejected && current != UsbMassStorageState::IoError) {
+     if (_state.compare_exchange_weak(current, UsbMassStorageState::Accessed)) return;
