@@ -108,6 +108,8 @@ class ActivityManager {
   // by the main loop with consumePowerOffRequest().
   void showPowerOffPopup();
   void requestPowerOff() { powerOffRequested = true; }
+  // The popup owns Power presses while it is up.
+  bool isPowerOffPopupOpen() const;
   bool consumePowerOffRequest();
 
   // This will move current activity to stack instead of deleting it

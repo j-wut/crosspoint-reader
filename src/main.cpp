@@ -1280,7 +1280,11 @@ void loop() {
   // Short Sleep with a hold bound elsewhere sleeps on release instead of on
   // button-down. The X4 Pro double-click path above handles clicks up to
   // X4PRO_POWER_CLICK_MAX_HOLD_MS.
-  if (SETTINGS.shortPowerSleepsOnRelease() && millis() >= allowSleepAt &&
+  // A short Power press while the Power Off popup is up confirms it, so the
+  // configured short action must not also run.
+  const bool powerOffPopupOpen = activityManager.isPowerOffPopupOpen();
+
+  if (SETTINGS.shortPowerSleepsOnRelease() && !powerOffPopupOpen && millis() >= allowSleepAt &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
       (!x4ProDoubleClickPwrLight || gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) &&
       gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
@@ -1311,7 +1315,7 @@ void loop() {
     toggleFrontlight();
   }
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
-      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH && !powerOffPopupOpen &&
        mappedInputManager.wasReleased(MappedInputManager::Button::Power))) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {

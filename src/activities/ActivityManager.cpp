@@ -380,8 +380,12 @@ void ActivityManager::goToSleep(bool fromTimeout, bool powerOff) {
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
+bool ActivityManager::isPowerOffPopupOpen() const {
+  return currentActivity && currentActivity->name == "PowerOffPopup";
+}
+
 void ActivityManager::showPowerOffPopup() {
-  if (pendingAction != PendingAction::None || (currentActivity && currentActivity->name == "PowerOffPopup")) return;
+  if (pendingAction != PendingAction::None || isPowerOffPopupOpen()) return;
   pushActivity(std::make_unique<PowerOffPopupActivity>(renderer, mappedInput));
 }
 
