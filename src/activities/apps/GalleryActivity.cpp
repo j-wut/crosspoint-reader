@@ -200,8 +200,25 @@ void GalleryActivity::loop() {
     if (selected < cellCount) activate(cells[selected].item);
     return;
   }
-  buttonNavigator.onNext([this] { select(page * PER_PAGE + selected + 1); });
-  buttonNavigator.onPrevious([this] { select(page * PER_PAGE + selected - 1); });
+  // Press steps one image; hold jumps a page, as in the lists. Pages count
+  // from where the press started, so the first step cannot change the page.
+  const int current = page * PER_PAGE + selected;
+  buttonNavigator.onNextPress([this, current] {
+    holdAnchor = current;
+    select(current + 1);
+  });
+  buttonNavigator.onPreviousPress([this, current] {
+    holdAnchor = current;
+    select(current - 1);
+  });
+  buttonNavigator.onNextContinuous([this] {
+    holdAnchor = ButtonNavigator::nextPageIndex(holdAnchor, itemCount(), PER_PAGE);
+    select(holdAnchor);
+  });
+  buttonNavigator.onPreviousContinuous([this] {
+    holdAnchor = ButtonNavigator::previousPageIndex(holdAnchor, itemCount(), PER_PAGE);
+    select(holdAnchor);
+  });
 }
 
 void GalleryActivity::runAction(const int image, const int action) {

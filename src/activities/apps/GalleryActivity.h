@@ -11,7 +11,7 @@
 // Images in /images (BMP, PNG, JPEG, BOOX .opg) as a grid of previews, six to
 // a page, like the stock Picco Gallery. Open one to view it or set it as the
 // sleep, reading sleep or power-off screen. The BOOX Tiles app and the web
-// page add images here.
+// page add images here. Buttons: press steps one image, hold jumps a page.
 class GalleryActivity final : public Activity, private UiAppHost {
  public:
   GalleryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -51,8 +51,9 @@ class GalleryActivity final : public Activity, private UiAppHost {
   std::array<Cell, PER_PAGE> cells;
   int cellCount = 0;
   int page = 0;
-  int selected = 0;  // flat index on the page, buttons only
-  int thumbW = 0;    // preview size, set by the render task
+  int selected = 0;    // flat index on the page, buttons only
+  int holdAnchor = 0;  // image a held button pages from
+  int thumbW = 0;      // preview size, set by the render task
   int thumbH = 0;
   bool thumbSizeChanged = false;
   int pending = -1;
