@@ -111,6 +111,7 @@ void GalleryActivity::loadPage(const int newPage) {
   }
   for (int slot = cellCount; slot < PER_PAGE; ++slot) cells[slot] = Cell{};
   previewsReady = cellCount == 0;
+  loadingShown = false;
   selected = std::min(selected, std::max(0, cellCount - 1));
 }
 
@@ -196,9 +197,14 @@ void GalleryActivity::loop() {
   if (thumbSizeChanged) {
     // The first draw measures the preview size; previews for another size are dropped.
     thumbSizeChanged = false;
-    loadPage(page);
+    if (previewsReady) {
+      loadPage(page);
+      requestUpdate();
+      return;
+    }
   }
-  if (!previewsReady && thumbW > 0) {
+  // The loading screen goes up first, so a tap or page turn shows at once.
+  if (!previewsReady && thumbW > 0 && loadingShown) {
     makePreviews();
     requestUpdate();
     return;
@@ -378,6 +384,16 @@ void GalleryActivity::draw(UiScreen& screen) {
                          static_cast<int16_t>(top + (slot / COLUMNS) * (cellH + GAP)), cellW, cellH};
     drawCell(screen, slot, rect);
   }
+  if (!previewsReady && cellCount > 0) {
+    // Loading ring in the middle of the grid: a thin track with a thick quarter.
+    const int cx = body.x + body.width / 2;
+    const int cy = top + gridH / 2;
+    constexpr int RADIUS = 36;
+    for (const auto& [xDir, yDir] : {std::pair{1, -1}, std::pair{1, 1}, std::pair{-1, 1}, std::pair{-1, -1}}) {
+      renderer.drawArc(RADIUS, cx, cy, xDir, yDir, 3, true);
+    }
+    renderer.drawArc(RADIUS, cx, cy, 1, -1, 9, true);
+  }
 }
 
 void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect rect) {
@@ -408,6 +424,7 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
     thumbH = innerH;
     thumbSizeChanged = true;
   }
+  if (!previewsReady) return;  // loading: the ring stands in for the grid
 
   screen.target().fill(box, PAPER);
   if (cell.thumb && !thumbSizeChanged) {
@@ -418,7 +435,7 @@ void GalleryActivity::drawCell(UiScreen& screen, const int slot, const fui::Rect
     label.align = fui::TextAlign::Center;
     screen.target().text(fui::Rect{static_cast<int16_t>(box.x + 8), static_cast<int16_t>(box.y + (boxH - nameH) / 2),
                                    static_cast<int16_t>(boxW - 16), nameH},
-                         previewsReady ? "?" : "...", label);
+                         "?", label);
   }
   screen.target().stroke(box, INK, BORDER, 0);
   if (slot == selected && !BoardConfig::hasTouch()) {
@@ -437,12 +454,13 @@ void GalleryActivity::render(RenderLock&&) {
   renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  if (!previewsReady) {
-    // This draw only measured the preview size; the loop makes the previews
-    // and the page is shown once, complete.
-    return;
-  }
   const unsigned long start = millis();
   renderer.displayBuffer();
-  LOG_INF("GAL", "page %d shown, refresh %lu ms", page + 1, millis() - start);
+  if (previewsReady) {
+    LOG_INF("GAL", "page %d shown, refresh %lu ms", page + 1, millis() - start);
+  } else {
+    // The loop makes the previews once the loading screen is up.
+    LOG_INF("GAL", "page %d loading screen, refresh %lu ms", page + 1, millis() - start);
+    loadingShown = true;
+  }
 }

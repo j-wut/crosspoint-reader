@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,7 @@ class GalleryActivity final : public Activity, private UiAppHost {
   int thumbW = 0;      // preview size, set by the render task
   int thumbH = 0;
   bool thumbSizeChanged = false;
-  bool previewsReady = false;  // the page is shown only once all its previews are made
+  bool previewsReady = false;             // the grid is shown only once all its previews are made
+  std::atomic<bool> loadingShown{false};  // set by the render task once the loading ring is up
   int pending = -1;
 };
