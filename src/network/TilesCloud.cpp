@@ -471,15 +471,21 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   mbedtls_sha256_finish(&sha, digest);
   mbedtls_sha256_free(&sha);
   for (int i = 0; i < 32; ++i) snprintf(d.sha256 + i * 2, 3, "%02x", digest[i]);
+  // Stock flushes and closes without checking the result; the checks below
+  // decide. The result is only logged.
+  file.flush();
   const bool closeOk = file.close();
+  if (!closeOk) {
+    HalFile check = Storage.open(tmp.c_str());
+    const unsigned onCard = check ? static_cast<unsigned>(check.size()) : 0u;
+    LOG_ERR("TILES", "close returned false; .tmp is %u bytes, wrote %u", onCard, static_cast<unsigned>(d.written));
+  }
   d.ms = millis() - started;
 
   static char sdMsg[48];
   if (!writeOk) {
     snprintf(sdMsg, sizeof(sdMsg), "write failed at %u", static_cast<unsigned>(d.written));
     d.sdResult = sdMsg;
-  } else if (!closeOk) {
-    d.sdResult = "close failed";
   } else if (!d.netOk) {
     d.sdResult = "incomplete";
   } else if (d.written == 0) {
