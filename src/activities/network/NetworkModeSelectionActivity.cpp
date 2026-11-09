@@ -73,7 +73,13 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     bind.icon = listIconFor(UIIcon::Wifi, 32);
     bind.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 1);
     rowItems_[MENU_ITEM_COUNT + 1] = bind;
-    itemCount_ = MENU_ITEM_COUNT + 2;
+    fui::ListItem lan;
+    lan.label = tr(STR_BOOX_LAN);
+    lan.subtitle = tr(STR_BOOX_LAN_DESC);
+    lan.icon = listIconFor(UIIcon::Wifi, 32);
+    lan.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 2);
+    rowItems_[MENU_ITEM_COUNT + 2] = lan;
+    itemCount_ = MENU_ITEM_COUNT + 3;
   }
 }
 
@@ -90,7 +96,8 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   if (index < MENU_ITEM_COUNT) {
     onModeSelected(static_cast<NetworkMode>(index));
   } else {
-    onModeSelected(index == MENU_ITEM_COUNT ? NetworkMode::BOOX_CLOUD : NetworkMode::BOOX_BIND);
+    constexpr NetworkMode PICCO_MODES[] = {NetworkMode::BOOX_CLOUD, NetworkMode::BOOX_BIND, NetworkMode::BOOX_LAN};
+    onModeSelected(PICCO_MODES[index - MENU_ITEM_COUNT]);
   }
 }
 
@@ -109,7 +116,7 @@ void NetworkModeSelectionActivity::buildTiles(UiScreen& screen) {
   const int count = listCount();
   tilesgrid::Tile tiles[tilesgrid::PER_PAGE];
   for (int i = 0; i < count && i < tilesgrid::PER_PAGE; i++) {
-    // Rows added after the fixed ones (BOOX Cloud on the Picco) use the cloud icon.
+    // Rows added after the fixed ones (the BOOX rows on the Picco) use the cloud icon.
     tiles[i] = {rowItems_[i].label, i < MENU_ITEM_COUNT ? menuTileIcons[i] : &icon_app_cloud_48};
   }
   tilesgrid::draw(screen, tiles, std::min(count, tilesgrid::PER_PAGE), nav.selected, ACTION_ROW);

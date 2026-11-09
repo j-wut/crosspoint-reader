@@ -34,6 +34,8 @@
 #include "HttpDownloader.h"
 #include "WifiCredentialStore.h"
 #include "apps/Wallpaper.h"
+#include "network/boox/BooxDiag.h"
+#include "network/boox/BooxSd.h"
 #include "util/TaskWatchdog.h"
 
 void addToLogRingBuffer(const char* message);  // Logging.cpp
@@ -41,9 +43,8 @@ void addToLogRingBuffer(const char* message);  // Logging.cpp
 namespace tilescloud {
 namespace {
 
-constexpr const char* LOG_PATH = "/tiles-cloud-log.txt";
-// Start a new log instead of growing past this.
-constexpr size_t LOG_MAX_BYTES = 256 * 1024;
+using booxdiag::LOG_PATH;
+using booxdiag::openLog;
 // Response bytes kept per request.
 constexpr size_t BODY_CAP = 6 * 1024;
 constexpr const char* NVS_NAMESPACE = "user_cred";
@@ -352,124 +353,6 @@ void setTlsInPsram(const bool on) {
   }
 }
 
-// Write, read back and remove a small file: "ok" or the step that failed.
-const char* sdWriteTest() {
-  constexpr const char* PATH = "/.tiles-sd-test";
-  HalFile f = Storage.open(PATH, O_WRONLY | O_CREAT | O_TRUNC);
-  if (!f) return "open-fail";
-  if (f.write(reinterpret_cast<const uint8_t*>("ok"), 2) != 2) return "write-fail";
-  f.close();
-  if (!Storage.remove(PATH)) return "remove-fail";
-  return "ok";
-}
-
-// While alive, keeps every log line written during a cloud download (ours,
-// and ESP-IDF's from Wi-Fi, HTTP, the SD card driver and the heap) in a
-// PSRAM buffer, so the whole story can be written to the card log
-// afterwards, even when the card had to be remounted. ESP-IDF errors and
-// warnings also go to the device log ring, which survives a restart.
-class DiagCapture {
- public:
-  DiagCapture() {
-    // Allocated once and never freed: another task may still be inside
-    // sink() or capture() just after the destructor unhooks them.
-    if (!buffer) buffer = static_cast<char*>(heap_caps_malloc(CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    used = 0;
-    dropped = 0;
-    previousLevel = esp_log_level_get("*");
-    esp_log_level_set("*", ESP_LOG_INFO);
-    for (const char* tag : DEBUG_TAGS) esp_log_level_set(tag, ESP_LOG_DEBUG);
-    previous = esp_log_set_vprintf(capture);
-    setLogSink(sink);
-    g_logDisplayRefresh = true;
-  }
-  ~DiagCapture() {
-    g_logDisplayRefresh = false;
-    setLogSink(nullptr);
-    esp_log_set_vprintf(previous);
-    esp_log_level_set("*", previousLevel);
-  }
-  // The lines kept by the last capture.
-  static void dump(Print& out) {
-    if (!buffer) {
-      out.println("  (no PSRAM for the download log)");
-      return;
-    }
-    out.printf("  download log (%u bytes, %u bytes dropped):\n", static_cast<unsigned>(used),
-               static_cast<unsigned>(dropped));
-    out.write(reinterpret_cast<const uint8_t*>(buffer), used);
-    out.println();
-  }
-
- private:
-  static constexpr size_t CAPACITY = 64 * 1024;
-  // SD card driver tags, logged in full.
-  static constexpr const char* DEBUG_TAGS[] = {"sdmmc_req", "sdmmc_cmd", "sdmmc_common", "sdmmc_sd",
-                                               "sdmmc_periph", "sdmmc_io", "sdmmc_init"};
-  static inline char* buffer = nullptr;
-  static inline size_t used = 0;
-  static inline size_t dropped = 0;
-  static inline portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
-  static inline vprintf_like_t previous = nullptr;
-  esp_log_level_t previousLevel = ESP_LOG_ERROR;
-
-  static void append(const char* text, size_t len) {
-    if (!buffer) return;
-    portENTER_CRITICAL_SAFE(&lock);
-    if (used + len <= CAPACITY) {
-      memcpy(buffer + used, text, len);
-      used += len;
-    } else {
-      dropped += len;
-    }
-    portEXIT_CRITICAL_SAFE(&lock);
-  }
-  static void sink(const char* line) { append(line, strlen(line)); }
-  static int capture(const char* format, va_list args) {
-    va_list copy;
-    va_copy(copy, args);
-    char line[224];
-    const int len = vsnprintf(line, sizeof(line), format, copy);
-    va_end(copy);
-    if (len > 0) {
-      const char* text = line;
-      if (text[0] == '\033') {
-        const char* end = strchr(text, 'm');
-        text = end ? end + 1 : text;
-      }
-      char entry[240];
-      const int n = snprintf(entry, sizeof(entry), "[%lu] [IDF] %s", millis(), text);
-      if (n > 0) append(entry, std::min(static_cast<size_t>(n), sizeof(entry) - 1));
-      if (text[0] == 'E' || text[0] == 'W') addToLogRingBuffer(entry);
-    }
-    return previous ? previous(format, args) : len;
-  }
-};
-
-// One line with the state of everything a download depends on.
-void logSystemState(const char* when) {
-  LOG_INF("TILES", "%s: heap %u max %u, DMA %u max %u, PSRAM %u, heap ok %d, RSSI %d, wifi %d, battery %u%%, stack %u",
-          when, static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
-          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
-          static_cast<unsigned>(ESP.getFreePsram()), heap_caps_check_integrity_all(true) ? 1 : 0,
-          static_cast<int>(WiFi.RSSI()), static_cast<int>(WiFi.status()),
-          static_cast<unsigned>(powerManager.getBatteryPercentage()),
-          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-}
-
-// Card state below the file system: a raw read of sector 0, then a file
-// system read and a write test.
-void logCardState(const char* when) {
-  static uint8_t sector[512];
-  FsBlockDeviceInterface* dev = SdMan.rawBlockDevice();
-  const bool raw = dev && dev->readSector(0, sector);
-  const bool mbr = raw && sector[510] == 0x55 && sector[511] == 0xAA;
-  LOG_INF("TILES", "%s: card ready %d, raw sector 0 read %d (signature %d), log exists %d, write test %s", when,
-          Storage.ready() ? 1 : 0, raw ? 1 : 0, mbr ? 1 : 0, Storage.exists(LOG_PATH) ? 1 : 0, sdWriteTest());
-}
-
 // Result of stockDownload(), kept for the screen and the log.
 struct StockDownload {
   bool ok = false;
@@ -482,16 +365,22 @@ struct StockDownload {
   char sha256[65] = "";
 };
 
-// The stock firmware's download routine, step for step (see handlePushList).
+// The stock firmware's download routine, step for step: check the card has
+// room, write "<dest>.tmp" from a 32 KB PSRAM buffer (each read written at
+// once, a flush every 256 KB, a 1-tick yield per read), close, then rename
+// it into place. Uses the stock SD stack (booxsd).
 StockDownload stockDownload(const std::string& url, const std::string& dest, const size_t expected) {
   constexpr size_t BUF_SIZE = 32 * 1024;
   StockDownload d;
   const unsigned long started = millis();
-  if (!Storage.ready()) {
-    d.sdResult = "not ready";
+  if (!booxsd::mounted()) {
+    d.sdResult = "not mounted";
     return d;
   }
-  if (expected > 0 && Storage.freeBytes() < expected) {
+  fs::FS& fs = booxsd::fs();
+  uint64_t cardBytes = 0;
+  uint64_t freeBytes = 0;
+  if (expected > 0 && booxsd::spaceInfo(cardBytes, freeBytes) && freeBytes < expected) {
     d.sdResult = "no space";
     return d;
   }
@@ -524,17 +413,17 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   }
 
   const std::string tmp = dest + ".tmp";
-  Storage.remove(tmp.c_str());
-  HalFile file;
-  if (!Storage.openFileForWrite("TILES", tmp.c_str(), file)) {
+  if (fs.exists(tmp.c_str())) fs.remove(tmp.c_str());
+  fs::File file = fs.open(tmp.c_str(), FILE_WRITE);
+  if (!file) {
     esp_http_client_cleanup(client);
+    LOG_ERR("TILES", "write tmp failed: %s", tmp.c_str());
     d.sdResult = "open .tmp failed";
     return d;
   }
-  // The stock loop: a 32 KB PSRAM buffer; each read is written at once,
-  // the file is flushed every 256 KB, and the task yields 1 tick per read.
   auto* buf = static_cast<uint8_t*>(heap_caps_malloc(BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!buf) {
+    file.close();
     esp_http_client_cleanup(client);
     d.sdResult = "no PSRAM buffer";
     return d;
@@ -545,6 +434,10 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   bool writeOk = true;
   size_t flushedAt = 0;
   size_t nextMark = 0;
+  uint32_t reads = 0;
+  uint32_t slowWrites = 0;
+  unsigned long writeMsTotal = 0;
+  unsigned long writeMsMax = 0;
   while (true) {
     const int n = esp_http_client_read(client, reinterpret_cast<char*>(buf), BUF_SIZE);
     if (n < 0) {
@@ -555,20 +448,14 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
       d.netOk = esp_http_client_is_complete_data_received(client) || d.contentLength <= 0;
       break;
     }
-    // Stock writes this PSRAM buffer through FATFS, and ESP-IDF's
-    // sdmmc_write_sectors() splits a write from memory the SD DMA cannot
-    // reach into one single-sector command per 512 bytes. Our block device
-    // sends 8-sector commands back to back, which is when the card stopped
-    // answering (0x107). Write one sector per call to send what stock sends.
+    reads++;
     const unsigned long writeStart = millis();
-    size_t wrote = 0;
-    while (wrote < static_cast<size_t>(n)) {
-      const size_t part = std::min<size_t>(512, n - wrote);
-      if (file.write(buf + wrote, part) != part) break;
-      wrote += part;
-    }
+    const size_t wrote = file.write(buf, n);
     const unsigned long writeMs = millis() - writeStart;
+    writeMsTotal += writeMs;
+    writeMsMax = std::max(writeMsMax, writeMs);
     if (writeMs > 300) {
+      slowWrites++;
       LOG_INF("TILES", "slow SD write: %d bytes at %u took %lu ms", n, static_cast<unsigned>(d.written), writeMs);
     }
     if (wrote != static_cast<size_t>(n)) {
@@ -581,14 +468,16 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     mbedtls_sha256_update(&sha, buf, n);
     d.written += n;
     if (d.written - flushedAt >= 256 * 1024) {
+      const unsigned long flushStart = millis();
       file.flush();
+      LOG_INF("TILES", "flush at %u took %lu ms", static_cast<unsigned>(d.written), millis() - flushStart);
       flushedAt = d.written;
     }
     resetTaskWatchdogIfSubscribed();
     if (d.written >= nextMark) {
       LOG_INF("TILES", "download %u bytes, heap %u", static_cast<unsigned>(d.written),
               static_cast<unsigned>(ESP.getFreeHeap()));
-      nextMark += 128 * 1024;  // the ring keeps only 16 lines
+      nextMark += 256 * 1024;
     }
     vTaskDelay(1);
   }
@@ -599,16 +488,14 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
   mbedtls_sha256_finish(&sha, digest);
   mbedtls_sha256_free(&sha);
   for (int i = 0; i < 32; ++i) snprintf(d.sha256 + i * 2, 3, "%02x", digest[i]);
-  // Stock flushes and closes without checking the result; the checks below
-  // decide. The result is only logged.
   file.flush();
-  const bool closeOk = file.close();
-  if (!closeOk) {
-    HalFile check = Storage.open(tmp.c_str());
-    const unsigned onCard = check ? static_cast<unsigned>(check.size()) : 0u;
-    LOG_ERR("TILES", "close returned false; .tmp is %u bytes, wrote %u", onCard, static_cast<unsigned>(d.written));
-  }
+  const unsigned long closeStart = millis();
+  file.close();
   d.ms = millis() - started;
+  LOG_INF("TILES", "download stats: %u bytes in %lu ms (%lu KB/s), reads %u, writes avg %lu ms max %lu ms slow %u, "
+          "close %lu ms", static_cast<unsigned>(d.written), d.ms,
+          d.ms ? static_cast<unsigned long>(d.written / d.ms * 1000 / 1024) : 0UL, static_cast<unsigned>(reads),
+          reads ? writeMsTotal / reads : 0UL, writeMsMax, static_cast<unsigned>(slowWrites), millis() - closeStart);
 
   static char sdMsg[48];
   if (!writeOk) {
@@ -618,21 +505,33 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     d.sdResult = "incomplete";
   } else if (d.written == 0) {
     d.sdResult = "empty";
-  } else if (!Storage.replaceFile(tmp.c_str(), dest.c_str())) {
-    d.sdResult = "rename failed";
   } else {
-    d.sdResult = "ok";
-    d.ok = true;
+    if (fs.exists(dest.c_str())) fs.remove(dest.c_str());
+    if (!fs.rename(tmp.c_str(), dest.c_str())) {
+      LOG_ERR("TILES", "rename failed: %s -> %s", tmp.c_str(), dest.c_str());
+      d.sdResult = "rename failed";
+    } else {
+      d.sdResult = "ok";
+      d.ok = true;
+    }
   }
-  if (!d.ok) Storage.remove(tmp.c_str());
+  if (!d.ok) fs.remove(tmp.c_str());
   return d;
 }
 
-// Log each push item in full, download it to the SD card root from its URL
-// and report it as received.
-HalFile openLog();
+// The stock firmware's folder for a pushed file, by extension.
+const char* pushDir(const std::string& name) {
+  const size_t dot = name.rfind('.');
+  std::string ext = dot == std::string::npos ? "" : name.substr(dot);
+  for (char& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  if (ext == ".opg") return "/images";
+  if (ext == ".ttf" || ext == ".otf" || ext == ".ttc" || ext == ".ofont") return "/fonts";
+  return "/books";
+}
 
-void handlePushList(HalFile& out, const std::string& body) {
+// Log each push item in full, download it to the stock folder for its type
+// and report it as received.
+void handlePushList(booxdiag::LogFile& out, const std::string& body) {
   JsonDocument doc;
   if (deserializeJson(doc, body)) return;
   JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
@@ -659,27 +558,11 @@ void handlePushList(HalFile& out, const std::string& body) {
       out.println("  no URL field; not downloaded");
       continue;
     }
-    // Like the stock firmware, pushed .opg images go to the Gallery folder;
-    // other files go to the card root as books.
-    const bool image = wallpaper::isOpg(name);
-    if (image) Storage.mkdir(wallpaper::DIR);
-    const std::string dest = (image ? std::string(wallpaper::DIR) + "/" : std::string("/")) + name;
-    // The log stays closed while the book is written, so the two files never
-    // share the card at once. Progress goes to the device log ring instead.
-    size_t nextMark = 0;
-    const auto progress = [&nextMark](size_t done, size_t total) {
-      resetTaskWatchdogIfSubscribed();
-      if (done < nextMark) return;
-      nextMark = done + 32 * 1024;
-      LOG_INF("TILES", "download %u/%u bytes, heap %u", static_cast<unsigned>(done), static_cast<unsigned>(total),
-              static_cast<unsigned>(ESP.getFreeHeap()));
-    };
-    // Same steps as the stock firmware's downloader: check the card is
-    // ready and has room, open "<name>.tmp", read the body with
-    // esp_http_client (60 s timeout, up to 10 redirects) into a 32 KB PSRAM
-    // buffer, write each read to the file while updating a SHA-256,
-    // then rename the file into place. Each step is kept for the screen,
-    // since the card log may not be writable after a failure.
+    const char* dir = pushDir(name);
+    if (!booxsd::fs().exists(dir) && !booxsd::fs().mkdir(dir)) LOG_ERR("TILES", "ensure parent failed: %s", dir);
+    const std::string dest = std::string(dir) + "/" + name;
+    // Each step is kept for the screen, since the card log may not be
+    // writable after a failure.
     g_status.attemptCount = 0;
     const auto step = [](const char* format, ...) {
       if (g_status.attemptCount >= Status::MAX_ATTEMPTS) return;
@@ -689,32 +572,26 @@ void handlePushList(HalFile& out, const std::string& body) {
       va_end(args);
       LOG_INF("TILES", "%s", g_status.attempts[g_status.attemptCount - 1]);
     };
-    const uint64_t freeBefore = Storage.freeBytes();
+    uint64_t cardBytes = 0;
+    uint64_t freeBefore = 0;
+    booxsd::spaceInfo(cardBytes, freeBefore);
     out.printf("  download %s -> %s (size %u, SD free %llu, heap %u, max block %u, PSRAM free %u)\n", url.c_str(),
                dest.c_str(), static_cast<unsigned>(item["size"] | 0u), static_cast<unsigned long long>(freeBefore),
                static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
                static_cast<unsigned>(ESP.getFreePsram()));
+    // The log stays closed while the file is written, so the two files never
+    // share the card at once.
     out.close();
     StockDownload d;
     {
-      DiagCapture capture;
-      logSystemState("before download");
-      logCardState("before download");
-      // Like the stock firmware's SD remount retry (max 3): when the card
-      // stops answering, remount it and download again.
-      constexpr int MAX_TRIES = 3;
-      for (int attempt = 1; attempt <= MAX_TRIES; ++attempt) {
-        LOG_INF("TILES", "download attempt %d/%d", attempt, MAX_TRIES);
-        d = stockDownload(url, dest, item["size"] | 0u);
-        logSystemState("after download");
-        logCardState("after download");
-        if (d.ok || strcmp(sdWriteTest(), "ok") == 0) break;
-        Storage.prepareForDeepSleep();
-        LOG_ERR("TILES", "card not answering; remount %d", Storage.begin() ? 1 : 0);
-        logCardState("after remount");
-      }
+      booxdiag::Capture capture;
+      booxdiag::logSystemState("before download");
+      booxsd::logState("before download");
+      d = stockDownload(url, dest, item["size"] | 0u);
+      booxdiag::logSystemState("after download");
+      booxsd::logState("after download");
       if (d.ok) {
-        HalFile check = Storage.open(dest.c_str());
+        fs::File check = booxsd::fs().open(dest.c_str(), FILE_READ);
         LOG_INF("TILES", "saved %s: %u bytes on card", dest.c_str(), check ? static_cast<unsigned>(check.size()) : 0u);
       }
       step("SD free %lluKB need %uKB", static_cast<unsigned long long>(freeBefore / 1024),
@@ -724,15 +601,15 @@ void handlePushList(HalFile& out, const std::string& body) {
       step("SD %s", d.sdResult);
       out = openLog();
       if (!out) LOG_ERR("TILES", "cannot reopen %s after download", LOG_PATH);
+      booxdiag::Capture::dumpAndReset(out);
     }
-    DiagCapture::dump(out);
     out.flush();
     LOG_INF("TILES", "log after dump: open %d, %u bytes", out ? 1 : 0, out ? static_cast<unsigned>(out.size()) : 0u);
     const bool gotBook = d.ok;
     for (int i = 0; i < g_status.attemptCount; ++i) out.printf("  %s\n", g_status.attempts[i]);
-    out.printf("  %lu ms, sha256 %s, SD free now %llu\n", d.ms, d.sha256,
-               static_cast<unsigned long long>(Storage.freeBytes()));
-    out.printf("  SD write test now: %s\n", sdWriteTest());
+    uint64_t freeAfter = 0;
+    booxsd::spaceInfo(cardBytes, freeAfter);
+    out.printf("  %lu ms, sha256 %s, SD free now %llu\n", d.ms, d.sha256, static_cast<unsigned long long>(freeAfter));
     if (!gotBook) {
       out.println("  recent device log:");
       out.print(getLastLogs().c_str());
@@ -750,14 +627,6 @@ void handlePushList(HalFile& out, const std::string& body) {
   reportDownloaded(out, reported);
 }
 
-HalFile openLog() {
-  bool fresh = true;
-  if (Storage.exists(LOG_PATH)) {
-    HalFile existing = Storage.open(LOG_PATH);
-    fresh = !existing || existing.size() > LOG_MAX_BYTES;
-  }
-  return Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
-}
 
 // The stock firmware's UserAuth asks for a new token once the saved one is
 // this old (seconds since tokenLastAt), or when the server rejects it.
@@ -1010,7 +879,7 @@ class LineLog final : public Print {
  private:
   void flushLine() {
     if (line.empty()) return;
-    HalFile log = openLog();
+    booxdiag::LogFile log = openLog();
     if (log) {
       log.println(line.c_str());
       log.close();
@@ -1063,7 +932,7 @@ void logLine(const char* format, ...) {
   va_start(args, format);
   vsnprintf(line, sizeof(line), format, args);
   va_end(args);
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) return;
   log.printf("[%lu s] %s\n", millis() / 1000, line);
   log.close();
@@ -1071,7 +940,7 @@ void logLine(const char* format, ...) {
 
 void logBoot(const int resetReason, const std::string& previousLogs) {
   if (!BoardConfig::isPicco()) return;
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) return;
   log.printf("\n### boot %s, reset reason %d\n", CROSSPOINT_VERSION, resetReason);
   if (!previousLogs.empty()) {
@@ -1085,7 +954,7 @@ void logBoot(const int resetReason, const std::string& previousLogs) {
 void logRecentDeviceLog(const char* why) {
   if (!BoardConfig::isPicco()) return;
   const std::string recent = getLastLogs();
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) return;
   log.printf("[%lu s] recent device log (%s), heap %u, max block %u:\n", millis() / 1000, why,
              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
@@ -1109,7 +978,7 @@ void addMdnsService() {
 void probe() {
   if (!BoardConfig::isPicco()) return;
 
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) {
     LOG_ERR("TILES", "cannot open %s", LOG_PATH);
     return;
@@ -1159,7 +1028,7 @@ const Status& status() { return g_status; }
 
 bool finishBinding() {
   if (!BoardConfig::isPicco()) return false;
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) return false;
   setTlsInPsram(true);
   const bool ok = refreshToken(log);
@@ -1205,7 +1074,7 @@ SyncResult syncCountdowns(std::vector<applists::CountdownItem>& items) {
 
 void poll() {
   if (!BoardConfig::isPicco() || g_authorization.empty()) return;
-  HalFile log = openLog();
+  booxdiag::LogFile log = openLog();
   if (!log) return;
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;

@@ -4,7 +4,7 @@
 
 #include "activities/UiListActivity.h"
 
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, BOOX_CLOUD, BOOX_BIND };
+enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, BOOX_CLOUD, BOOX_BIND, BOOX_LAN };
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:
@@ -39,12 +39,13 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   void buildTiles(UiScreen& screen);
   void activateIndex(int index) override;
   void onBackButton() override { onCancel(); }
-  // The Picco adds BOOX Cloud and BOOX Tiles binding rows after the fixed ones.
+  // The Picco adds BOOX Cloud, BOOX Tiles binding and BOOX LAN rows after the
+  // fixed ones.
   int itemCount_ = MENU_ITEM_COUNT;
   const char* headerTitle() const override;
 
   // Row storage: entirely static (label/subtitle/icon never change), so it's
   // built once in the constructor instead of every buildScreen() call, into
   // fixed-capacity storage that avoids any heap allocation for the row list.
-  freeink::ui::ListItem rowItems_[MENU_ITEM_COUNT + 2]{};
+  freeink::ui::ListItem rowItems_[MENU_ITEM_COUNT + 3]{};
 };

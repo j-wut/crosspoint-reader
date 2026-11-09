@@ -1,0 +1,10 @@
+{
+  "name": "BooxExFat",
+  "version": "1.0.0",
+  "description": "ESP-IDF fatfs copy with exFAT enabled, for the BOOX transfer modes",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "srcFilter": ["+<*.c>", "-<idf/>"]
+  }
+}

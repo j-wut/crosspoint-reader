@@ -7,6 +7,7 @@
 #include "NetworkModeSelectionActivity.h"
 #include "activities/Activity.h"
 #include "network/CrossPointWebServer.h"
+#include "network/boox/BooxDiag.h"
 
 // Web server activity states
 enum class WebServerActivityState {
@@ -15,6 +16,7 @@ enum class WebServerActivityState {
   AP_STARTING,     // Starting Access Point mode
   SERVER_RUNNING,  // Web server is running and handling requests
   CLOUD_RUNNING,   // BOOX Cloud: checking the push list (Picco)
+  LAN_RUNNING,     // BOOX LAN: the stock upload server for the BOOX Tiles app (Picco)
   SHUTTING_DOWN    // Shutting down server and WiFi
 };
 
@@ -52,6 +54,13 @@ class CrossPointWebServerActivity final : public Activity {
   bool cloudCheckDue = false;
   bool cloudChecking = false;
   bool cloudProbed = false;
+  // BOOX Cloud and BOOX LAN: the card mount (stock SD stack) and LAN server results.
+  bool booxSdFailed = false;
+  bool booxLanFailed = false;
+  uint32_t lanStatusVersion = 0;
+  unsigned long lastLanWifiCheck = 0;
+  // Log lines of a BOOX LAN session, written to the card log after each upload.
+  std::unique_ptr<booxdiag::Capture> booxCapture;
 
   // Set when Back or Home is seen while an upload holds handleClient().
   bool leaveRequested = false;
@@ -69,6 +78,10 @@ class CrossPointWebServerActivity final : public Activity {
   void renderServerRunning() const;
   void renderCloudRunning() const;
   void loopCloud();
+  // BOOX Cloud / BOOX LAN after Wi-Fi is up: mount the card, start the LAN server.
+  void startBoox();
+  void renderLanRunning() const;
+  void loopLan();
   void renderWifiIndicator(int subHeaderTop) const;
 
   void onNetworkModeSelected(NetworkMode mode);
@@ -85,5 +98,7 @@ class CrossPointWebServerActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return webServer && webServer->isRunning(); }
-  bool preventAutoSleep() override { return webServer && webServer->isRunning(); }
+  bool preventAutoSleep() override {
+    return (webServer && webServer->isRunning()) || state == WebServerActivityState::LAN_RUNNING;
+  }
 };

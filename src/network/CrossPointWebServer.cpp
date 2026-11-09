@@ -367,14 +367,6 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/files", HTTP_GET, [](S& s) { s.handleFileListData(); }, nullptr},
         {"/download", HTTP_GET, [](S& s) { s.handleDownload(); }, nullptr},
         {"/upload", HTTP_POST, [](S& s) { s.handleUploadPost(s.upload); }, [](S& s) { s.handleUpload(s.upload); }},
-        // BOOX Tiles app "Import File" checks the reader with HEAD /ping before it uploads.
-        {"/ping", HTTP_GET, [](S& s) { s.server->send(200, "text/plain", "pong"); }, nullptr},
-        {"/ping", HTTP_HEAD,
-         [](S& s) {
-           s.server->setContentLength(4);  // HEAD sends the GET length without a body
-           s.server->send(200, "text/plain", "");
-         },
-         nullptr},
         {"/mkdir", HTTP_POST, [](S& s) { s.handleCreateFolder(); }, nullptr},
         {"/rename", HTTP_POST, [](S& s) { s.handleRename(); }, nullptr},
         {"/move", HTTP_POST, [](S& s) { s.handleMove(); }, nullptr},
@@ -486,22 +478,6 @@ void CrossPointWebServer::begin() {
       s.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
       s.send(302, "text/plain", "");
       return true;
-    });
-  }
-
-  // Diagnostic for the BOOX Tiles app: log every request on the Picco.
-  if (BoardConfig::isPicco()) {
-    server->addMiddleware([](WebServer& s, Middleware::Callback next) {
-      // Skip the web UI's own page loads and polling; unknown GETs show up as 404s.
-      if ((s.method() == HTTP_GET || s.method() == HTTP_HEAD) && s.uri() != "/" && s.uri() != "/ping") return next();
-      String args;
-      for (int i = 0; i < s.args() && args.length() < 120; ++i) {
-        args += " " + s.argName(i) + "=" + s.arg(i).substring(0, 40);
-      }
-      tilescloud::logLine("%s %s%s | type=%s len=%s ua=%s", http_method_str(s.method()), s.uri().c_str(),
-                          args.c_str(), s.header("Content-Type").c_str(), s.header("Content-Length").c_str(),
-                          s.header("User-Agent").c_str());
-      return next();
     });
   }
 
@@ -818,14 +794,6 @@ void CrossPointWebServer::handleJszip() const {
 // Same rule as the on-device SD Firmware Update item: the Picco's stock layout has
 // one app slot (partitions_picco.csv), so it cannot flash itself.
 static bool canUpdateFirmware() { return !BoardConfig::isPicco(); }
-
-// The BOOX Tiles app uploads with ?fileType= instead of ?path=, like the stock
-// Picco firmware: 0 books, 1 images, 2 fonts.
-static String fileTypeUploadDir(const String& fileType) {
-  if (fileType == "1") return wallpaper::DIR;
-  if (fileType == "2") return SdCardFontRegistry::FONTS_DIR_VISIBLE;
-  return "/";
-}
 
 void CrossPointWebServer::handleNotFound() const {
   // CORS preflight: routes are registered per-method, so OPTIONS requests land
@@ -1182,13 +1150,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Get upload path from query parameter (defaults to root if not specified)
     // Note: We use query parameter instead of form data because multipart form
     // fields aren't available until after file upload completes
-    bool fileTypeUpload = false;
     if (server->hasArg("path")) {
       state.path = normalizeWebPath(server->arg("path"));
-    } else if (server->hasArg("fileType")) {
-      fileTypeUpload = true;
-      state.path = fileTypeUploadDir(server->arg("fileType"));
-      if (!Storage.exists(state.path.c_str())) Storage.mkdir(state.path.c_str());
     } else {
       state.path = "/";
     }
@@ -1208,9 +1171,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     resetTaskWatchdogIfSubscribed();
     if (Storage.exists(filePath.c_str())) {
       const String overwrite = server->arg("overwrite");
-      // Like the stock Picco firmware, a BOOX Tiles app upload replaces the old copy.
-      const bool replace = overwrite == "1" || overwrite == "true" || fileTypeUpload;
-      if (!replace) {
+      if (overwrite != "1" && overwrite != "true") {
         state.error = "File already exists: " + state.fileName;
         LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
         return;
@@ -1393,9 +1354,7 @@ void CrossPointWebServer::handleUploadPost(UploadState& state) const {
   tilescloud::logLine("upload reply: success=%d error=%s raw body=%u bytes", state.success, state.error.c_str(),
                       static_cast<unsigned>(server->arg("plain").length()));
   if (state.success) {
-    // The stock Picco firmware answers a BOOX Tiles app upload with "OK".
-    const bool tilesUpload = server->hasArg("fileType") && !server->hasArg("path");
-    server->send(200, "text/plain", tilesUpload ? String("OK") : "File uploaded successfully: " + state.fileName);
+    server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {
     const String error = state.error.isEmpty() ? "Unknown error during upload" : state.error;
     server->send(400, "text/plain", error);
