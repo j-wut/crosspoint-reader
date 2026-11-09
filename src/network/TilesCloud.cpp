@@ -594,24 +594,107 @@ HalFile openLog() {
   return Storage.open(LOG_PATH, fresh ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
 }
 
-// Token for cloud requests: the saved binding's accessToken, else one from
-// /users/deviceToken (the stock firmware's way to get a fresh one).
-bool ensureAuthorization(Print& log) {
-  if (!g_authorization.empty()) return true;
-  std::string token;
-  std::string userInfo;
-  if (readUserInfo(userInfo, log)) {
-    JsonDocument doc;
-    if (!deserializeJson(doc, userInfo)) {
-      token = findString(doc.as<JsonVariantConst>(), "accessToken");
-      if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
-    }
+// The stock firmware's UserAuth asks for a new token once the saved one is
+// this old (seconds since tokenLastAt), or when the server rejects it.
+constexpr uint32_t TOKEN_FRESH_SECONDS = 14399;
+
+// The saved token and when it was issued (0 when unknown).
+std::string savedToken(Print& log, uint32_t& issuedAt) {
+  issuedAt = 0;
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+    nvs_get_u32(handle, "tokenLastAt", &issuedAt);
+    nvs_close(handle);
   }
-  if (token.empty()) token = requestDeviceToken(log);
+  std::string userInfo;
+  if (!readUserInfo(userInfo, log)) return {};
+  JsonDocument doc;
+  if (deserializeJson(doc, userInfo)) return {};
+  std::string token = findString(doc.as<JsonVariantConst>(), "accessToken");
+  if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
+  return token;
+}
+
+// The stock firmware's UserAuth steps: GET /users/deviceToken for a new
+// token, read /users/me with it, then save both to NVS user_cred (userInfo,
+// token, deviceId, secretHex, tokenLastAt). False while the server has no
+// token for this device.
+bool refreshToken(Print& log) {
+  const std::string token = requestDeviceToken(log);
   if (token.empty()) return false;
+  std::string body;
+  const std::string url = std::string(API_BASE) + "/users/me";
+  const int status = logGet(log, url.c_str(), token, "me", &body, 16 * 1024);
+  JsonDocument reply;
+  if (status != 200 || deserializeJson(reply, body) || (reply["result_code"] | -1) != 0 ||
+      !reply["data"].is<JsonObject>()) {
+    log.println("auth: /users/me did not return the account");
+    return false;
+  }
+  // The stock userInfo is the /users/me data plus accessToken and tokenExpiredAt.
+  JsonDocument info;
+  info.set(reply["data"]);
+  info["accessToken"] = token;
+  if (!reply["tokenExpiredAt"].isNull()) info["tokenExpiredAt"] = reply["tokenExpiredAt"];
+  std::string userInfo;
+  serializeJson(info, userInfo);
+  const std::string deviceId = findString(info.as<JsonVariantConst>(), "id");
+  const char* devId = info["device"]["id"] | deviceId.c_str();
+  const char* secret = info["device"]["secretHex"] | "";
+  const auto now = static_cast<uint32_t>(time(nullptr));
+
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, NVS_USER_INFO, userInfo.c_str());
+    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
+    if (err == ESP_OK) err = nvs_set_str(handle, "deviceId", devId);
+    if (err == ESP_OK && *secret) err = nvs_set_str(handle, "secretHex", secret);
+    if (err == ESP_OK) err = nvs_set_u32(handle, "tokenLastAt", now);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  log.printf("auth: saved new token (%u chars, userInfo %u bytes, device %s, secret %u chars, time %u): %s\n",
+             static_cast<unsigned>(token.size()), static_cast<unsigned>(userInfo.size()), devId,
+             static_cast<unsigned>(strlen(secret)), static_cast<unsigned>(now), esp_err_to_name(err));
   g_authorization = token;
   g_status.bound = true;
   return true;
+}
+
+// Token for cloud requests, as the stock UserAuth picks it: the saved token
+// while it is fresh and the clock is set, else a new one from
+// /users/deviceToken. `force` asks for a new one, after a 401.
+bool ensureAuthorization(Print& log, const bool force = false) {
+  uint32_t issuedAt = 0;
+  const std::string saved = savedToken(log, issuedAt);
+  const auto now = static_cast<uint32_t>(time(nullptr));
+  const bool clockSet = now > 1000000000u;
+  log.printf("auth: saved token %u chars, issued %u, now %u, force %d\n", static_cast<unsigned>(saved.size()),
+             static_cast<unsigned>(issuedAt), static_cast<unsigned>(now), force);
+  if (!force && !saved.empty() && clockSet && issuedAt != 0 && now >= issuedAt &&
+      now - issuedAt <= TOKEN_FRESH_SECONDS) {
+    log.println("auth: saved token still fresh");
+    g_authorization = saved;
+    g_status.bound = true;
+    return true;
+  }
+  if (refreshToken(log)) return true;
+  log.println("auth: no new token from /users/deviceToken");
+  if (force || saved.empty()) return false;
+  g_authorization = saved;
+  g_status.bound = true;
+  return true;
+}
+
+// GET with the current token; on 401 or 403 get a new token once and retry,
+// as the stock firmware does when the server says the token expired.
+int authedGet(Print& log, const char* url, const char* label, std::string* bodyOut, const size_t cap = BODY_CAP) {
+  int status = logGet(log, url, g_authorization, label, bodyOut, cap);
+  if ((status == 401 || status == 403) && ensureAuthorization(log, true)) {
+    status = logGet(log, url, g_authorization, label, bodyOut, cap);
+  }
+  return status;
 }
 
 // Join the last used Wi-Fi network, as the stock apps do before a cloud
@@ -645,7 +728,7 @@ void stopWifi(const bool joined) {
 
 // GET API_BASE + path and return the reply's data.list, as the stock
 // firmware's list request does ({result_code, message, data:{total, limit,
-// offset, list}}). A rejected token is replaced once from /users/deviceToken.
+// offset, list}}). A rejected token is replaced once.
 // Set when the cloud refused the token and handed out no new one: the
 // device is no longer bound to an account.
 bool g_unbound = false;
@@ -654,14 +737,7 @@ bool fetchList(Print& log, const char* path, JsonDocument& doc, JsonArrayConst& 
   g_unbound = false;
   const std::string url = std::string(API_BASE) + path;
   std::string body;
-  int status = logGet(log, url.c_str(), g_authorization, "sync", &body, 32 * 1024);
-  if (status == 401 || status == 403) {
-    const std::string token = requestDeviceToken(log);
-    if (!token.empty()) {
-      g_authorization = token;
-      status = logGet(log, url.c_str(), g_authorization, "sync retry", &body, 32 * 1024);
-    }
-  }
+  const int status = authedGet(log, url.c_str(), "sync", &body, 32 * 1024);
   if (status == 401 || status == 403) {
     g_unbound = true;
     log.println("token refused and no new one: device is not bound; bind it again");
@@ -856,12 +932,6 @@ void probe() {
              static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()));
   logNvsKeys(log);
   setTlsInPsram(true);
-  // Tests whether the server links the device by its MAC alone, which is
-  // what binding from this firmware would rely on.
-  std::string macToken = requestDeviceToken(log);
-  log.flush();
-
-  std::string token;
   std::string userInfo;
   if (readUserInfo(userInfo, log)) {
     JsonDocument doc;
@@ -871,39 +941,25 @@ void probe() {
     } else {
       log.println("userInfo layout:");
       logJsonShape(log, doc.as<JsonVariantConst>(), "", 0);
-      token = findString(doc.as<JsonVariantConst>(), "accessToken");
-      if (token.empty()) token = findString(doc.as<JsonVariantConst>(), "token");
     }
     userInfo.clear();
   } else {
     log.println("No saved binding found.");
   }
-  if (token.empty() && !macToken.empty()) {
-    log.println("Using the token from /users/deviceToken.");
-    token = macToken;
-  }
-  if (token.empty()) {
-    log.println("No token in userInfo.");
+  if (!ensureAuthorization(log)) {
+    log.println("No token: bind the device first.");
     log.close();
     return;
   }
-  log.printf("token: %u chars\n", static_cast<unsigned>(token.size()));
-  g_status.bound = true;
   log.flush();
 
-  // The stock firmware's header format is unknown: try the raw token, then Bearer.
   std::string body;
-  g_authorization = token;
-  int status = logGet(log, PUSH_LIST_URL, g_authorization, "raw", &body);
-  if (status == 401 || status == 403) {
-    g_authorization = "Bearer " + token;
-    status = logGet(log, PUSH_LIST_URL, g_authorization, "bearer", &body);
-  }
+  const int status = authedGet(log, PUSH_LIST_URL, "push list", &body);
   g_status.lastHttp = status;
   if (status == 200) handlePushList(log, body);
   for (const char* path : EXTRA_GETS) {
     const std::string url = std::string(API_BASE) + path;
-    logGet(log, url.c_str(), g_authorization, "extra");
+    authedGet(log, url.c_str(), "extra", nullptr);
   }
   log.close();
   LOG_INF("TILES", "probe written to %s", LOG_PATH);
@@ -916,51 +972,9 @@ bool finishBinding() {
   HalFile log = openLog();
   if (!log) return false;
   setTlsInPsram(true);
-  const std::string token = requestDeviceToken(log);
-  if (token.empty()) {
-    log.close();
-    return false;
-  }
-  std::string body;
-  const std::string url = std::string(API_BASE) + "/users/me";
-  const int status = logGet(log, url.c_str(), token, "me", &body, 16 * 1024);
-  JsonDocument reply;
-  if (status != 200 || deserializeJson(reply, body) || (reply["result_code"] | -1) != 0 ||
-      !reply["data"].is<JsonObject>()) {
-    log.println("bind: /users/me did not return the account");
-    log.close();
-    return false;
-  }
-  // The stock userInfo is the /users/me data plus accessToken and tokenExpiredAt.
-  JsonDocument info;
-  info.set(reply["data"]);
-  info["accessToken"] = token;
-  if (!reply["tokenExpiredAt"].isNull()) info["tokenExpiredAt"] = reply["tokenExpiredAt"];
-  std::string userInfo;
-  serializeJson(info, userInfo);
-  const std::string deviceId = findString(info.as<JsonVariantConst>(), "id");
-  const char* devId = info["device"]["id"] | deviceId.c_str();
-  const char* secret = info["device"]["secretHex"] | "";
-
-  nvs_handle_t handle;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-  if (err == ESP_OK) {
-    err = nvs_set_str(handle, NVS_USER_INFO, userInfo.c_str());
-    if (err == ESP_OK) err = nvs_set_str(handle, "token", token.c_str());
-    if (err == ESP_OK) err = nvs_set_str(handle, "deviceId", devId);
-    if (err == ESP_OK && *secret) err = nvs_set_str(handle, "secretHex", secret);
-    if (err == ESP_OK) err = nvs_set_u32(handle, "tokenLastAt", static_cast<uint32_t>(time(nullptr)));
-    if (err == ESP_OK) err = nvs_commit(handle);
-    nvs_close(handle);
-  }
-  log.printf("bind: saved binding (userInfo %u bytes, device %s, secret %u chars): %s\n",
-             static_cast<unsigned>(userInfo.size()), devId, static_cast<unsigned>(strlen(secret)),
-             esp_err_to_name(err));
+  const bool ok = refreshToken(log);
   log.close();
-  if (err != ESP_OK) return false;
-  g_authorization = token;
-  g_status.bound = true;
-  return true;
+  return ok;
 }
 
 SyncResult syncTodos(std::vector<applists::TodoItem>& items) {
@@ -1005,7 +1019,7 @@ void poll() {
   if (!log) return;
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;
-  g_status.lastHttp = logGet(log, PUSH_LIST_URL, g_authorization, "poll", &body);
+  g_status.lastHttp = authedGet(log, PUSH_LIST_URL, "poll", &body);
   if (g_status.lastHttp == 200) handlePushList(log, body);
   log.close();
 }
