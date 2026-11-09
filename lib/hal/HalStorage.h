@@ -24,6 +24,8 @@ class HalStorage {
   HalStorage();
   bool begin();
   bool ready() const;
+  // Free space on the card in bytes (used space is cached for 20 s).
+  uint64_t freeBytes();
   // Stop the SD card for deep sleep: unmount, stop the SDMMC host, and release
   // the bus pads (no-op on SPI boards). Call only after all file users have
   // stopped; open HalFiles become invalid. A deep-sleep wake resets the MCU and

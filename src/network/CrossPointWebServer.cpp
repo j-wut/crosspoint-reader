@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "FirmwareFlasher.h"
@@ -48,8 +49,10 @@
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
+#include "TilesCloud.h"
 #include "WifiPowerSaveGuard.h"
 #include "apps/AppLists.h"
+#include "apps/Wallpaper.h"
 #include "html/AppsPageHtml.generated.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
@@ -364,14 +367,6 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/files", HTTP_GET, [](S& s) { s.handleFileListData(); }, nullptr},
         {"/download", HTTP_GET, [](S& s) { s.handleDownload(); }, nullptr},
         {"/upload", HTTP_POST, [](S& s) { s.handleUploadPost(s.upload); }, [](S& s) { s.handleUpload(s.upload); }},
-        // BOOX Tiles app "Import File" checks the reader with HEAD /ping before it uploads.
-        {"/ping", HTTP_GET, [](S& s) { s.server->send(200, "text/plain", "pong"); }, nullptr},
-        {"/ping", HTTP_HEAD,
-         [](S& s) {
-           s.server->setContentLength(4);  // HEAD sends the GET length without a body
-           s.server->send(200, "text/plain", "");
-         },
-         nullptr},
         {"/mkdir", HTTP_POST, [](S& s) { s.handleCreateFolder(); }, nullptr},
         {"/rename", HTTP_POST, [](S& s) { s.handleRename(); }, nullptr},
         {"/move", HTTP_POST, [](S& s) { s.handleMove(); }, nullptr},
@@ -495,9 +490,10 @@ void CrossPointWebServer::begin() {
   // Collect WebDAV headers and register handler
   // If-None-Match is collected so static pages and plugin files can answer conditional GETs with 304,
   // and Host for the captive-portal check
-  const char* collectedHeaders[] = {"Depth",      "Destination", "Overwrite",     "If",
-                                    "Lock-Token", "Timeout",     "If-None-Match", "Host"};
-  server->collectHeaders(collectedHeaders, 8);
+  const char* collectedHeaders[] = {"Depth",   "Destination",   "Overwrite", "If",           "Lock-Token",
+                                    "Timeout", "If-None-Match", "Host",      "Content-Type", "Content-Length",
+                                    "User-Agent"};
+  server->collectHeaders(collectedHeaders, 11);
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -583,6 +579,35 @@ void CrossPointWebServer::abortWsUpload(const char* tag) {
   wsLastProgressSent = 0;
 }
 
+static String uploadWritePath(const CrossPointWebServer::UploadState& state);
+
+namespace {
+// Remove "<name>.part" (uploads) and "<name>.tmp" (cloud downloads) left in
+// the transfer folders by a transfer that was cut off.
+void removeStaleTransferFiles() {
+  for (const char* dirPath : {"/", wallpaper::DIR, SdCardFontRegistry::FONTS_DIR_VISIBLE}) {
+    HalFile dir = Storage.open(dirPath);
+    if (!dir || !dir.isDirectory()) continue;
+    std::vector<String> stale;
+    char name[256];
+    for (HalFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
+      if (file.isDirectory()) continue;
+      file.getName(name, sizeof(name));
+      const String entry = name;
+      if (entry.endsWith(".part") || entry.endsWith(".tmp")) stale.push_back(entry);
+    }
+    dir.close();
+    for (const String& entry : stale) {
+      String path = dirPath;
+      if (!path.endsWith("/")) path += "/";
+      path += entry;
+      const bool removed = Storage.remove(path.c_str());
+      tilescloud::logLine("removed stale transfer file %s: %d", path.c_str(), removed);
+    }
+  }
+}
+}  // namespace
+
 void CrossPointWebServer::stop() {
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
@@ -609,6 +634,18 @@ void CrossPointWebServer::stop() {
   }
 
   closeDiscoverySocket();
+
+  // An upload cut off by leaving File Transfer: close and drop its partial file.
+  if (upload.file) {
+    upload.file.close();
+    const String partial = uploadWritePath(upload);
+    const bool removed = Storage.remove(partial.c_str());
+    tilescloud::logLine("upload cut off at %u bytes; removed %s: %d", static_cast<unsigned>(upload.size),
+                        partial.c_str(), removed);
+  }
+  upload.buffer.reset();
+  upload.bufferPos = 0;
+  removeStaleTransferFiles();
 
   // Brief delay to allow any in-flight handleClient() calls to complete
   delay(20);
@@ -758,14 +795,6 @@ void CrossPointWebServer::handleJszip() const {
 // one app slot (partitions_picco.csv), so it cannot flash itself.
 static bool canUpdateFirmware() { return !BoardConfig::isPicco(); }
 
-// The BOOX Tiles app uploads with ?fileType= instead of ?path=, like the stock
-// Picco firmware: 0 books, 1 images, 2 fonts.
-static String fileTypeUploadDir(const String& fileType) {
-  if (fileType == "1") return "/sleep";
-  if (fileType == "2") return SdCardFontRegistry::FONTS_DIR_VISIBLE;
-  return "/";
-}
-
 void CrossPointWebServer::handleNotFound() const {
   // CORS preflight: routes are registered per-method, so OPTIONS requests land
   // here. The Access-Control-Allow-* headers are added by enableCORS().
@@ -774,6 +803,7 @@ void CrossPointWebServer::handleNotFound() const {
     return;
   }
 
+  tilescloud::logLine("-> 404 %s", server->uri().c_str());
   String message = "404 Not Found\n\n";
   message += "URI: " + server->uri() + "\n";
   server->send(404, "text/plain", message);
@@ -1086,6 +1116,16 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Reset watchdog - this is the critical 1% crash point
     resetTaskWatchdogIfSubscribed();
 
+    // An earlier upload that never finished still holds its file: drop it so
+    // this attempt starts clean.
+    if (state.file) {
+      state.file.close();
+      const String partial = uploadWritePath(state);
+      const bool removed = Storage.remove(partial.c_str());
+      tilescloud::logLine("earlier upload left open at %u bytes; removed %s: %d", static_cast<unsigned>(state.size),
+                          partial.c_str(), removed);
+    }
+
     state.fileName = upload.filename;
     state.size = 0;
     state.success = false;
@@ -1098,8 +1138,11 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     writeCount = 0;
     state.buffer.reset();
 
+    tilescloud::logLine("upload start: field=%s file=%s type=%s", upload.name.c_str(), upload.filename.c_str(),
+                        upload.type.c_str());
     if (!FsHelpers::isSafePathComponent(state.fileName)) {
       state.error = "Invalid file name";
+      tilescloud::logLine("upload rejected: unsafe file name");
       LOG_DBG("WEB", "[UPLOAD] Rejected unsafe filename: %s", state.fileName.c_str());
       return;
     }
@@ -1107,13 +1150,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Get upload path from query parameter (defaults to root if not specified)
     // Note: We use query parameter instead of form data because multipart form
     // fields aren't available until after file upload completes
-    bool fileTypeUpload = false;
     if (server->hasArg("path")) {
       state.path = normalizeWebPath(server->arg("path"));
-    } else if (server->hasArg("fileType")) {
-      fileTypeUpload = true;
-      state.path = fileTypeUploadDir(server->arg("fileType"));
-      if (!Storage.exists(state.path.c_str())) Storage.mkdir(state.path.c_str());
     } else {
       state.path = "/";
     }
@@ -1133,9 +1171,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     resetTaskWatchdogIfSubscribed();
     if (Storage.exists(filePath.c_str())) {
       const String overwrite = server->arg("overwrite");
-      // Like the stock Picco firmware, a BOOX Tiles app upload replaces the old copy.
-      const bool replace = overwrite == "1" || overwrite == "true" || fileTypeUpload;
-      if (!replace) {
+      if (overwrite != "1" && overwrite != "true") {
         state.error = "File already exists: " + state.fileName;
         LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
         return;
@@ -1147,8 +1183,10 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         return;
       }
       existing.close();
-      state.staged = true;
     }
+    // Write to "<file>.part" and rename it at the end, so a cut-off upload
+    // never leaves a partial file under the real name.
+    state.staged = true;
 
     // The buffer spans upload callbacks; keep it off the task stack and release it at the end.
     state.buffer = makeUniqueNoThrow<uint8_t[]>(UploadState::UPLOAD_BUFFER_SIZE);
@@ -1167,6 +1205,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       return;
     }
     resetTaskWatchdogIfSubscribed();
+    tilescloud::logLine("upload writing %s", uploadWritePath(state).c_str());
 
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", uploadWritePath(state).c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -1199,6 +1238,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       }
 
       state.size += upload.currentSize;
+      if (state.size == upload.currentSize || state.size / 65536 != (state.size - upload.currentSize) / 65536) {
+        tilescloud::logLine("upload progress: %u bytes", static_cast<unsigned>(state.size));
+      }
 
       // Log progress every 100KB
       if (state.size - lastLoggedSize >= 102400) {
@@ -1210,7 +1252,18 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       }
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (!server->client().connected()) return;
+    if (!server->client().connected()) {
+      // The sender left before the end: drop the partial file.
+      state.buffer.reset();
+      if (state.file) {
+        state.file.close();
+        removeUploadedFile(state);
+      }
+      state.error = "Upload aborted";
+      tilescloud::logLine("upload end: client disconnected after %u bytes, partial file removed",
+                          static_cast<unsigned>(state.size));
+      return;
+    }
     if (state.file) {
       // Flush any remaining buffered data
       if (!flushUploadBuffer(state)) {
@@ -1257,6 +1310,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         if (state.path == SdCardFontRegistry::FONTS_DIR_VISIBLE) sdFontSystem.markRegistryDirty();
       }
     }
+    tilescloud::logLine("upload end: %s/%s %u bytes, error=%s", state.path.c_str(), state.fileName.c_str(),
+                        static_cast<unsigned>(state.size), state.error.c_str());
     state.buffer.reset();
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     state.bufferPos = 0;  // Discard buffered data
@@ -1267,6 +1322,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     }
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
+    tilescloud::logLine("upload aborted: %s, %u bytes", state.fileName.c_str(), static_cast<unsigned>(state.size));
   }
 }
 
@@ -1295,6 +1351,8 @@ void CrossPointWebServer::handleFirmwareFlash() {
 }
 
 void CrossPointWebServer::handleUploadPost(UploadState& state) const {
+  tilescloud::logLine("upload reply: success=%d error=%s raw body=%u bytes", state.success, state.error.c_str(),
+                      static_cast<unsigned>(server->arg("plain").length()));
   if (state.success) {
     server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {

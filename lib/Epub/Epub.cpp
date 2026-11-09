@@ -8,6 +8,8 @@
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <OpubFile.h>
+#include <OpubToEpub.h>
 #include <PngToBmpConverter.h>
 #include <Txt.h>
 #include <Utf8.h>
@@ -27,6 +29,14 @@
 
 Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
   cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
+  // A BOOX .opub is read through an EPUB converted into its cache folder.
+  zipPath = opub::hasOpubExtension(this->filepath.c_str()) ? cachePath + "/opub.epub" : this->filepath;
+}
+
+bool Epub::prepareSource() const {
+  if (zipPath == filepath) return true;
+  setupCacheDir();
+  return opub::ensureEpub(filepath, zipPath);
 }
 
 bool Epub::findContentOpfFile(std::string* contentOpfFile, ZipFile* sharedZip) const {
@@ -246,7 +256,7 @@ bool Epub::parseTocNavFile() const {
 
 void Epub::discoverCssFilesFromZip() {
   const std::string& opfDir = contentBasePath;
-  ZipFile zf(filepath);
+  ZipFile zf(zipPath);
 
   if (!zf.enumerateFilePaths([&](std::string_view filePath) {
         if (!opfDir.empty() && filePath.find(opfDir) != 0) {
@@ -307,7 +317,7 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
     std::sort(dedupEntries.get(), dedupEntries.get() + cssFiles.size(),
               [](const CssDedupEntry& lhs, const CssDedupEntry& rhs) { return lhs.pathHash < rhs.pathHash; });
 
-    ZipFile(filepath).enumerateFileEntries([&](std::string_view entryPath, uint32_t crc32, uint32_t compressedSize) {
+    ZipFile(zipPath).enumerateFileEntries([&](std::string_view entryPath, uint32_t crc32, uint32_t compressedSize) {
       if (!FsHelpers::hasCssExtension(entryPath)) {
         return;
       }
@@ -448,7 +458,7 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
 // user-presentable reason.
 bool Epub::openProtection() {
   std::string err;
-  decryptor = freeink::content::openProtectedBook(filepath, err);
+  decryptor = freeink::content::openProtectedBook(zipPath, err);
   if (!err.empty()) {
     LOG_ERR("EBP", "protected content unavailable: %s", err.c_str());
     protectionError = err;
@@ -463,6 +473,7 @@ bool Epub::openProtection() {
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
+  if (!prepareSource()) return false;
   if (!openProtection()) return false;
 
   // Initialize spine/TOC cache
@@ -621,7 +632,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Build final book.bin
   const uint32_t buildStart = millis();
-  if (!bookMetadataCache->buildBookBin(filepath, bookMetadata)) {
+  if (!bookMetadataCache->buildBookBin(zipPath, bookMetadata)) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
   }
@@ -671,7 +682,8 @@ bool Epub::loadMetadata(std::string& title, std::string& author) {
   }
   metadataCache.reset();
 
-  ZipFile zip(filepath);
+  if (!prepareSource()) return false;
+  ZipFile zip(zipPath);
   if (!zip.open()) {
     LOG_DBG("EBP", "Could not open ePub for package metadata: %s", filepath.c_str());
     return false;
@@ -690,7 +702,8 @@ bool Epub::loadMetadata(std::string& title, std::string& author) {
 bool Epub::loadSyncMetadata(SyncMetadata& metadata) {
   metadata = {};
 
-  ZipFile zip(filepath);
+  if (!prepareSource()) return false;
+  ZipFile zip(zipPath);
   if (!zip.open()) {
     LOG_DBG("EBP", "Could not open ePub for sync metadata: %s", filepath.c_str());
     return false;
@@ -965,9 +978,10 @@ bool Epub::generateThumbBmpFromSource(int height) {
     setupCacheDir();
     return generateThumbBmpForCover(height, companionCover);
   }
+  if (!prepareSource()) return false;
   // Parser input and metadata outlive parsing but exceed the small task stack budget.
   auto metadata = makeUniqueNoThrow<BookMetadataCache::BookMetadata>();
-  auto zip = makeUniqueNoThrow<ZipFile>(filepath);
+  auto zip = makeUniqueNoThrow<ZipFile>(zipPath);
   if (!metadata || !zip) {
     LOG_ERR("EBP", "OOM: cover metadata");
     return false;
@@ -1108,7 +1122,7 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
     return content;
   }
 
-  const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
+  const auto content = ZipFile(zipPath).readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
     return nullptr;
@@ -1141,7 +1155,7 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
     return true;
   }
 
-  return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
+  return ZipFile(zipPath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
 }
 
 bool Epub::extractItemToFile(const std::string& itemHref, const std::string& destPath) const {
@@ -1170,7 +1184,7 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
     return false;
   }
   const std::string path = FsHelpers::normalisePath(itemHref);
-  return ZipFile(filepath).getInflatedFileSize(path.c_str(), size);
+  return ZipFile(zipPath).getInflatedFileSize(path.c_str(), size);
 }
 
 int Epub::getSpineItemsCount() const {

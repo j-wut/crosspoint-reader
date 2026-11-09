@@ -1,6 +1,5 @@
 #include "CrossPointWebServerActivity.h"
 
-#include <BoardConfig.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <FontCacheManager.h>
@@ -14,10 +13,15 @@
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
+#include "TilesBindActivity.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/TilesCloud.h"
+#include "network/boox/BooxDiag.h"
+#include "network/boox/BooxLan.h"
+#include "network/boox/BooxSd.h"
 #include "util/PluginEvents.h"
 #include "util/QrUtils.h"
 #include "util/TaskWatchdog.h"
@@ -48,11 +52,17 @@ void restartMdns(const char* hostname, const char* tag) {
   MDNS.end();
   if (MDNS.begin(hostname)) {
     LOG_DBG(tag, "mDNS started: http://%s.local/", hostname);
-    // The BOOX Tiles app looks for the stock Picco firmware's service.
-    if (BoardConfig::isPicco()) MDNS.addService("nanoreader", "tcp", 80);
   } else {
     LOG_DBG(tag, "WARNING: mDNS failed to start");
   }
+}
+
+bool isBooxLan(const NetworkMode mode) { return mode == NetworkMode::BOOX_LAN || mode == NetworkMode::BOOX_LAN_SDFAT; }
+bool isBooxSdFat(const NetworkMode mode) {
+  return mode == NetworkMode::BOOX_CLOUD_SDFAT || mode == NetworkMode::BOOX_LAN_SDFAT;
+}
+bool isBooxMode(const NetworkMode mode) {
+  return isBooxLan(mode) || mode == NetworkMode::BOOX_CLOUD || mode == NetworkMode::BOOX_CLOUD_SDFAT;
 }
 
 // 0..4 bars from RSSI (dBm), with 3 dBm hysteresis on currentBars to suppress flicker.
@@ -116,6 +126,10 @@ void CrossPointWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+  // Stop the server before the restart below so a cut-off upload's partial
+  // file is closed and removed.
+  if (webServer) webServer->stop();
+  booxlan::stop();
   stopDnsServer();
   MDNS.end();
 
@@ -124,6 +138,8 @@ void CrossPointWebServerActivity::onExit() {
   // session in place, so re-read event subscriptions here.
   pluginevents::refreshSubscriptions();
 
+  tilescloud::logLine("file transfer closed, restarting: %d", WiFi.getMode() != WIFI_MODE_NULL);
+  tilescloud::logRecentDeviceLog("file transfer closed");
   // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     if (isApMode) {
@@ -153,8 +169,18 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   }
 
   const char* modeName = "Join Network";
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
+  if (mode == NetworkMode::BOOX_CLOUD) {
+    modeName = "BOOX Cloud";
+  } else if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";
+  } else if (mode == NetworkMode::BOOX_BIND) {
+    modeName = "Bind BOOX Tiles";
+  } else if (mode == NetworkMode::BOOX_LAN) {
+    modeName = "BOOX LAN";
+  } else if (mode == NetworkMode::BOOX_CLOUD_SDFAT) {
+    modeName = "BOOX Cloud (SdFat)";
+  } else if (mode == NetworkMode::BOOX_LAN_SDFAT) {
+    modeName = "BOOX LAN (SdFat)";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
 #if FREEINK_CAP_USB_MSC
@@ -174,24 +200,29 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
-    startActivityForResult(
-        std::make_unique<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
-          state = WebServerActivityState::MODE_SELECTION;
+  if (mode == NetworkMode::CONNECT_CALIBRE || mode == NetworkMode::BOOX_BIND) {
+    std::unique_ptr<Activity> next;
+    if (mode == NetworkMode::BOOX_BIND) {
+      next = std::make_unique<TilesBindActivity>(renderer, mappedInput);
+    } else {
+      next = std::make_unique<CalibreConnectActivity>(renderer, mappedInput);
+    }
+    startActivityForResult(std::move(next), [this](const ActivityResult& result) {
+      state = WebServerActivityState::MODE_SELECTION;
 
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
+      startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 onGoHome();
+                               } else {
+                                 onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                               }
+                             });
+    });
     return;
   }
 
-  if (mode == NetworkMode::JOIN_NETWORK) {
+  if (mode == NetworkMode::JOIN_NETWORK || isBooxMode(mode)) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     WiFi.mode(WIFI_STA);
@@ -218,6 +249,12 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) {
   LOG_DBG("WEBACT", "WifiSelectionActivity completed, connected=%d", connected);
 
+  if (connected && isBooxMode(networkMode)) {
+    isApMode = false;
+    startBoox();
+    return;
+  }
+
   if (connected) {
     // Get connection info before exiting subactivity
     isApMode = false;
@@ -240,6 +277,58 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
                              }
                            });
   }
+}
+
+void CrossPointWebServerActivity::startBoox() {
+  const bool lan = isBooxLan(networkMode);
+  const booxsd::Backend backend = isBooxSdFat(networkMode) ? booxsd::Backend::SdFat : booxsd::Backend::Stock;
+  // Mount the card, and keep every log line of it for the card log.
+  booxCapture = std::make_unique<booxdiag::Capture>();
+  booxdiag::logSystemState(lan ? "BOOX LAN start" : "BOOX Cloud start");
+  booxdiag::logPowerState(lan ? "BOOX LAN start" : "BOOX Cloud start");
+  booxSdFailed = !booxsd::mount(backend);
+  if (!booxSdFailed && lan) booxLanFailed = !booxlan::start();
+  if (booxdiag::LogFile log = booxdiag::openLog()) {
+    log.printf("\n=== [%lu s] %s, %s, %s, SD %s, IP %s ===\n", millis() / 1000, lan ? "BOOX LAN" : "BOOX Cloud",
+               booxsd::backendName(backend), CROSSPOINT_VERSION, booxSdFailed ? "mount FAILED" : "mounted",
+               connectedIP.c_str());
+    booxdiag::Capture::dumpAndReset(log);
+    log.close();
+  }
+  // Cloud downloads keep their own capture; the LAN server keeps this one
+  // and writes it to the card log after each upload.
+  if (!lan) booxCapture.reset();
+
+  lastWifiBars = barsForRssi(WiFi.RSSI(), 0);
+  if (lan) {
+    state = WebServerActivityState::LAN_RUNNING;
+  } else {
+    state = WebServerActivityState::CLOUD_RUNNING;
+    cloudCheckDue = !booxSdFailed;
+  }
+  requestUpdate();
+}
+
+void CrossPointWebServerActivity::loopLan() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
+    onGoHome();
+    return;
+  }
+  bool repaint = false;
+  const uint32_t version = booxlan::statusVersion();
+  if (version != lanStatusVersion) {
+    lanStatusVersion = version;
+    repaint = true;
+  }
+  if (millis() - lastLanWifiCheck > 2000) {
+    lastLanWifiCheck = millis();
+    const int bars = WiFi.status() == WL_CONNECTED ? barsForRssi(WiFi.RSSI(), lastWifiBars) : 0;
+    if (bars != lastWifiBars) {
+      lastWifiBars = bars;
+      repaint = true;
+    }
+  }
+  if (repaint) requestUpdate();
 }
 
 void CrossPointWebServerActivity::startAccessPoint() {
@@ -346,7 +435,44 @@ void CrossPointWebServerActivity::startWebServer() {
   }
 }
 
+void CrossPointWebServerActivity::loopCloud() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
+    onGoHome();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) cloudCheckDue = true;
+  if (WiFi.status() == WL_CONNECTED && millis() - lastCloudCheckAt > 60000) cloudCheckDue = true;
+  if (booxSdFailed || !cloudCheckDue || WiFi.status() != WL_CONNECTED) return;
+
+  // Show "Checking" first; the check blocks this loop for a few seconds.
+  if (!cloudChecking) {
+    cloudChecking = true;
+    requestUpdate();
+    return;
+  }
+  resetTaskWatchdogIfSubscribed();
+  if (!cloudProbed) {
+    tilescloud::probe();  // reads the binding, then checks the push list
+    cloudProbed = true;
+  } else {
+    tilescloud::poll();
+  }
+  lastCloudCheckAt = millis();
+  cloudCheckDue = false;
+  cloudChecking = false;
+  lastWifiBars = barsForRssi(WiFi.RSSI(), lastWifiBars);
+  requestUpdate();
+}
+
 void CrossPointWebServerActivity::loop() {
+  if (state == WebServerActivityState::CLOUD_RUNNING) {
+    loopCloud();
+    return;
+  }
+  if (state == WebServerActivityState::LAN_RUNNING) {
+    loopLan();
+    return;
+  }
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
     // Handle DNS requests for captive portal (AP mode only)
@@ -456,6 +582,18 @@ void CrossPointWebServerActivity::loop() {
 void CrossPointWebServerActivity::render(RenderLock&&) {
   // Only render our own UI when server is running
   // Subactivities handle their own rendering
+  if (state == WebServerActivityState::CLOUD_RUNNING) {
+    renderer.clearScreen();
+    renderCloudRunning();
+    renderer.displayBuffer();
+    return;
+  }
+  if (state == WebServerActivityState::LAN_RUNNING) {
+    renderer.clearScreen();
+    renderLanRunning();
+    renderer.displayBuffer();
+    return;
+  }
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
     const auto& metrics = UITheme::getInstance().getMetrics();
@@ -552,6 +690,100 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void CrossPointWebServerActivity::renderCloudRunning() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 isBooxSdFat(networkMode) ? tr(STR_BOOX_CLOUD_SDFAT) : tr(STR_BOOX_CLOUD), nullptr);
+  const int subHeaderTop = metrics.topPadding + metrics.headerHeight;
+  GUI.drawSubHeader(renderer, Rect{0, subHeaderTop, pageWidth, metrics.tabBarHeight}, WiFi.SSID().c_str());
+  renderWifiIndicator(subHeaderTop);
+
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+  int y = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing * 4;
+  const auto& st = tilescloud::status();
+  char line[64];
+  if (booxSdFailed) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOX_SD_FAILED), true, EpdFontFamily::BOLD);
+  } else if (cloudChecking || !cloudProbed) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_CHECKING), true, EpdFontFamily::BOLD);
+  } else if (!st.bound) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_NOT_BOUND), true, EpdFontFamily::BOLD);
+  } else if (st.lastHttp != 200) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_ERROR), st.lastHttp);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true, EpdFontFamily::BOLD);
+  } else if (st.waiting == 0 && st.received == 0) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_CLOUD_NO_NEW), true, EpdFontFamily::BOLD);
+  }
+  y += lineHeight * 2;
+  if (st.received > 0) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_RECEIVED), st.received);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (st.failed > 0) {
+    snprintf(line, sizeof(line), tr(STR_CLOUD_FAILED), st.failed);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  for (int i = 0; i < st.attemptCount; ++i) {
+    renderer.drawCenteredText(SMALL_FONT_ID, y, st.attempts[i], true);
+    y += lineHeight;
+  }
+  if (st.bound) renderer.drawCenteredText(SMALL_FONT_ID, y + lineHeight, tr(STR_CLOUD_AUTO_HINT), true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_CHECK_NOW), "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void CrossPointWebServerActivity::renderLanRunning() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 isBooxSdFat(networkMode) ? tr(STR_BOOX_LAN_SDFAT) : tr(STR_BOOX_LAN), nullptr);
+  const int subHeaderTop = metrics.topPadding + metrics.headerHeight;
+  GUI.drawSubHeader(renderer, Rect{0, subHeaderTop, pageWidth, metrics.tabBarHeight}, connectedSSID.c_str());
+  renderWifiIndicator(subHeaderTop);
+
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+  int y = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing * 4;
+  const booxlan::Status st = booxlan::status();
+  char line[128];
+  if (booxSdFailed) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOX_SD_FAILED), true, EpdFontFamily::BOLD);
+  } else if (booxLanFailed) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_ERROR_GENERAL_FAILURE), true, EpdFontFamily::BOLD);
+  } else {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOX_LAN_READY), true, EpdFontFamily::BOLD);
+  }
+  y += lineHeight * 2;
+  const std::string url = "http://" + connectedIP + "/";
+  renderer.drawCenteredText(UI_10_FONT_ID, y, url.c_str(), true);
+  y += lineHeight;
+  const std::string host = tilescloud::mdnsHostname(AP_HOSTNAME) + ".local";
+  renderer.drawCenteredText(SMALL_FONT_ID, y, host.c_str(), true);
+  y += lineHeight * 2;
+  if (st.uploading) {
+    snprintf(line, sizeof(line), tr(STR_BOOX_RECEIVING), st.last);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (st.received > 0) {
+    snprintf(line, sizeof(line), tr(STR_BOOX_RECEIVED), st.received);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (st.failed > 0) {
+    snprintf(line, sizeof(line), tr(STR_BOOX_FAILED), st.failed);
+    renderer.drawCenteredText(UI_10_FONT_ID, y, line, true);
+    y += lineHeight;
+  }
+  if (!st.uploading && st.last[0]) renderer.drawCenteredText(SMALL_FONT_ID, y, st.last, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

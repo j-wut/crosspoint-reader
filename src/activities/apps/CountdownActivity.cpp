@@ -4,18 +4,119 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
+#include "network/TilesCloud.h"
 
 namespace fui = freeink::ui;
 
 void CountdownActivity::onEnter() {
   applists::loadCountdowns(items);
+  sortAndRefresh();
+  UiListActivity::onEnter();
+  app.on(ACTION_HEADER, &CountdownActivity::headerActionTrampoline, this);
+}
+
+int CountdownActivity::headerSlots() const { return BoardConfig::isPicco() ? 1 : 0; }
+
+void CountdownActivity::headerActionTrampoline(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<CountdownActivity*>(user);
+  if (event.value < 0 || event.value >= self->headerSlots()) return;
+  self->nav.selected = event.value;
+  self->startSync();
+}
+
+void CountdownActivity::onRowAction(const fui::ActionEvent& event) {
+  // Rows have nothing to open; a tap only moves the selection.
+  nav.selected = event.value + headerSlots();
+  requestUpdate();
+}
+
+void CountdownActivity::navigateButtons() {
+  const int ringSize = listCount() + headerSlots();
+  buttonNavigator.onNextPress(
+      [this, ringSize] { moveSelectionTo(ButtonNavigator::nextIndex(nav.selected, ringSize)); });
+  buttonNavigator.onPreviousPress(
+      [this, ringSize] { moveSelectionTo(ButtonNavigator::previousIndex(nav.selected, ringSize)); });
+  buttonNavigator.onNextContinuous([this, ringSize] {
+    moveSelectionTo(ButtonNavigator::nextPageIndex(nav.selected, ringSize, nav.inputPageRows()));
+  });
+  buttonNavigator.onPreviousContinuous([this, ringSize] {
+    moveSelectionTo(ButtonNavigator::previousPageIndex(nav.selected, ringSize, nav.inputPageRows()));
+  });
+}
+
+int CountdownActivity::itemAt(const int row) const {
+  const int index = row;
+  return index >= 0 && index < static_cast<int>(items.size()) ? index : -1;
+}
+
+void CountdownActivity::startSync() {
+  if (sync.running()) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    runSync();
+    return;
+  }
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    LOG_ERR("CDN", "OOM: Wi-Fi screen");
+    return;
+  }
+  ownsWifi = true;
+  startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
+    if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+      stopOwnWifi();
+      requestUpdate();
+      return;
+    }
+    runSync();
+  });
+}
+
+void CountdownActivity::runSync() {
+  editedDuringSync = false;
+  if (!sync.start(items, tilescloud::syncCountdowns)) LOG_ERR("CDN", "Sync task not started");
+  requestUpdate();
+}
+
+void CountdownActivity::stopOwnWifi() {
+  if (!ownsWifi) return;
+  ownsWifi = false;
+  // The Picco has PSRAM, so Wi-Fi turns off in place, as in the Weather app.
+  WiFi.disconnect(false);
+  WiFi.mode(WIFI_OFF);
+}
+
+void CountdownActivity::onExit() {
+  stopOwnWifi();
+  UiListActivity::onExit();
+}
+
+void CountdownActivity::activateIndex(int) {}
+
+bool CountdownActivity::handleCustomInput() {
+  std::vector<applists::CountdownItem> synced;
+  tilescloud::SyncResult result;
+  if (!sync.take(synced, result)) return false;
+  stopOwnWifi();
+  // An edit made meanwhile wins; sync again to pick up the cloud list.
+  if (result == tilescloud::SyncResult::Ok && !editedDuringSync) {
+    items = std::move(synced);
+    if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
+    sortAndRefresh();
+  }
+  requestUpdate();
+  return false;
+}
+
+void CountdownActivity::sortAndRefresh() {
   // Soonest date first; past dates sort before today, so move them last.
   std::sort(items.begin(), items.end(), [](const applists::CountdownItem& a, const applists::CountdownItem& b) {
     int da = 0;
@@ -27,7 +128,6 @@ void CountdownActivity::onEnter() {
     return a.day < b.day;
   });
   refreshRows();
-  UiListActivity::onEnter();
 }
 
 const char* CountdownActivity::headerTitle() const { return tr(STR_APP_COUNTDOWN); }
@@ -57,40 +157,51 @@ void CountdownActivity::refreshRows() {
   }
 }
 
-void CountdownActivity::deleteRow(const int index) {
-  if (index < 0 || index >= listCount()) return;
+void CountdownActivity::deleteRow(const int row) {
+  const int index = itemAt(row);
+  if (index < 0) return;
   items.erase(items.begin() + index);
+  if (sync.running()) editedDuringSync = true;
   if (!applists::saveCountdowns(items)) LOG_ERR("CDN", "Save failed");
   refreshRows();
-  if (nav.selected >= listCount()) moveSelectionTo(std::max(0, listCount() - 1));
+  const int ringSize = listCount() + headerSlots();
+  if (nav.selected >= ringSize) moveSelectionTo(std::max(0, ringSize - 1));
   requestUpdate();
 }
 
-void CountdownActivity::promptDelete(const int index) {
-  if (index < 0 || index >= listCount()) return;
+void CountdownActivity::promptDelete(const int row) {
+  const int index = itemAt(row);
+  if (index < 0) return;
   auto confirmation =
       makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_ITEM_CONFIRM), items[index].title);
   if (!confirmation) {
     LOG_ERR("CDN", "OOM: delete confirmation");
     return;
   }
-  startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
-    if (!result.isCancelled) deleteRow(index);
+  startActivityForResult(std::move(confirmation), [this, row](const ActivityResult& result) {
+    if (!result.isCancelled) deleteRow(row);
   });
 }
 
 bool CountdownActivity::handleButtons() {
-  // Rows have nothing to open, so Confirm offers delete; a tap still does nothing.
+  // Item rows have nothing to open, so Confirm offers delete; a tap still does
+  // nothing. On the Sync button Confirm syncs.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    promptDelete(nav.selected);
+    if (nav.selected < headerSlots()) {
+      startSync();
+    } else if (itemAt(nav.selected - headerSlots()) >= 0) {
+      promptDelete(nav.selected - headerSlots());
+    }
     return true;
   }
   return UiListActivity::handleButtons();
 }
 
 void CountdownActivity::drawFooter() {
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), items.empty() ? "" : tr(STR_DELETE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(
+      tr(STR_BACK),
+      nav.selected < headerSlots() ? tr(STR_SELECT) : (itemAt(nav.selected - headerSlots()) >= 0 ? tr(STR_DELETE) : ""),
+      tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
@@ -103,7 +214,29 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
       static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  auto hint = screen.theme().smallText;
+  const auto& theme = screen.theme();
+  if (headerSlots() > 0) {
+    // First row: the Sync button.
+    const fui::Rect band = screen.takeTop(theme.rowHeight, static_cast<int16_t>(metrics.verticalSpacing));
+    const char* syncStatus = sync.statusText();
+    fui::ButtonProps button;
+    button.label = syncStatus ? syncStatus : tr(STR_CLOUD_SYNC_NOW);
+    button.action = ACTION_HEADER;
+    button.value = 0;
+    button.inputMask = fui::InputTouch;
+    button.text = theme.bodyText;
+    button.text.align = fui::TextAlign::Center;
+    // Outlined, rounded button, as on the book details page.
+    button.styles = theme.button;
+    button.styles.normal.border = fui::Paint::solid(fui::Color::Black);
+    button.styles.normal.borderWidth = 1;
+    button.radius = theme.controlRadius;
+    if (!BoardConfig::hasTouch() && nav.selected == 0) button.state = fui::StateSelected;
+    screen.button(button, band);
+  }
+
+  // Then the message row, then the items.
+  auto hint = theme.smallText;
   hint.align = fui::TextAlign::Center;
   hint.maxLines = 3;
   const char* message = items.empty() ? tr(STR_COUNTDOWN_EMPTY_HINT) : clockSet ? nullptr : tr(STR_COUNTDOWN_NO_CLOCK);
@@ -117,7 +250,7 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
   }
 
   rows.clear();
-  rows.reserve(items.size());
+  rows.reserve(listCount());
   for (size_t i = 0; i < items.size(); ++i) {
     fui::ListItem row;
     row.label = items[i].title.c_str();
@@ -134,6 +267,8 @@ void CountdownActivity::buildScreen(UiScreen& screen) {
 #if FREEINK_CAP_TOUCH
   configureSwipeDelete(screen, props);
 #endif
-  syncListViewport(screen, props);
+  syncListViewport(screen, props, headerSlots());
+  // Touch screens show no selection.
+  if (BoardConfig::hasTouch()) props.selectedIndex = -1;
   screen.list(props);
 }

@@ -23,6 +23,7 @@
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 #include <time.h>
 
@@ -46,6 +47,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/FirmwareFlasher.h"
+#include "network/TilesCloud.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "platform/VendorRecovery.h"
 #include "platform/WakeTrace.h"
@@ -697,6 +699,15 @@ void setup() {
 #endif
 #endif
 
+  // Picco test builds: keep the last session's log across a reset that is not
+  // a power-on or a wake, for /tiles-cloud-log.txt. A plain boot clears it below.
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  std::string previousLogs;
+  if (BoardConfig::isPicco() && resetReason != ESP_RST_POWERON && resetReason != ESP_RST_DEEPSLEEP &&
+      !sanitizeLogHead()) {
+    previousLogs = getLastLogs();
+  }
+
   HalSystem::begin();
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
@@ -765,6 +776,11 @@ void setup() {
   }
 
   HalSystem::checkPanic();
+  if (BoardConfig::isPicco()) {
+    tilescloud::logBoot(static_cast<int>(resetReason), previousLogs);
+    previousLogs.clear();
+    previousLogs.shrink_to_fit();
+  }
 
   const bool stateLoaded = APP_STATE.loadFromFile();
   const bool loadedShowBootScreen = APP_STATE.showBootScreen;

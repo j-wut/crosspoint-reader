@@ -16,7 +16,6 @@ the IP address shown on the device screen.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/` | Home/status page |
-| `GET`, `HEAD` | `/ping` | Returns `pong` (`text/plain`). The BOOX Tiles app checks it before an upload |
 | `GET` | `/files` | File manager page |
 | `GET` | `/settings` | Web settings page |
 | `GET` | `/fonts` | SD-card font manager page |
@@ -136,7 +135,6 @@ Query parameters:
 |-----------|----------|---------|-------------|
 | `path` | No | `/` | Destination directory |
 | `overwrite` | No | off | `1` or `true` replaces a file with the same name |
-| `fileType` | No | - | BOOX Tiles app upload, used when `path` is missing: `1` saves to `/sleep`, `2` to `/fonts`, any other value to `/`. The folder is created if needed, and a file with the same name is replaced |
 
 Successful response:
 
@@ -146,7 +144,7 @@ File uploaded successfully: mybook.epub
 
 Notes:
 
-- Without `overwrite` or `fileType`, an existing file with the same name is kept and the
+- Without `overwrite`, an existing file with the same name is kept and the
   request fails with `400` "File already exists: <name>".
 - With `overwrite`, the upload is written to `<name>.part` and replaces the
   existing file only when it is complete, so a failed upload keeps the old file.
@@ -568,9 +566,9 @@ The final field is the WebSocket upload port.
 ### Station Mode (STA)
 
 - Device joins an existing 2.4 GHz Wi-Fi network.
-- `crosspoint.local` is advertised with mDNS when available. On the BOOX Picco,
-  File Transfer also advertises `_nanoreader._tcp` on port 80 (in both modes) for
-  the BOOX Tiles app.
+- `crosspoint.local` is advertised with mDNS when available. The BOOX Tiles
+  app's Import File is served by the separate BOOX LAN mode on the Picco, not
+  by this server.
 - `/api/status` returns `"mode": "STA"` and RSSI in dBm.
 
 ### Access Point Mode (AP)

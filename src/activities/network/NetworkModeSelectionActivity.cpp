@@ -60,9 +60,38 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.actionValue = static_cast<int16_t>(i);
     rowItems_[i] = item;
   }
+  if (BoardConfig::isPicco()) {
+    fui::ListItem item;
+    item.label = tr(STR_BOOX_CLOUD);
+    item.subtitle = tr(STR_BOOX_CLOUD_DESC);
+    item.icon = listIconFor(UIIcon::Wifi, 32);
+    item.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 1);
+    rowItems_[MENU_ITEM_COUNT + 1] = item;
+    fui::ListItem bind;
+    bind.label = tr(STR_BIND_TITLE);
+    bind.subtitle = tr(STR_BIND_DESC);
+    bind.icon = listIconFor(UIIcon::Wifi, 32);
+    bind.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT);
+    rowItems_[MENU_ITEM_COUNT] = bind;
+    fui::ListItem lan;
+    lan.label = tr(STR_BOOX_LAN);
+    lan.subtitle = tr(STR_BOOX_LAN_DESC);
+    lan.icon = listIconFor(UIIcon::Wifi, 32);
+    lan.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 2);
+    rowItems_[MENU_ITEM_COUNT + 2] = lan;
+    fui::ListItem cloudSdFat = item;
+    cloudSdFat.label = tr(STR_BOOX_CLOUD_SDFAT);
+    cloudSdFat.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 3);
+    rowItems_[MENU_ITEM_COUNT + 3] = cloudSdFat;
+    fui::ListItem lanSdFat = lan;
+    lanSdFat.label = tr(STR_BOOX_LAN_SDFAT);
+    lanSdFat.actionValue = static_cast<int16_t>(MENU_ITEM_COUNT + 4);
+    rowItems_[MENU_ITEM_COUNT + 4] = lanSdFat;
+    itemCount_ = MENU_ITEM_COUNT + 5;
+  }
 }
 
-int NetworkModeSelectionActivity::listCount() const { return MENU_ITEM_COUNT; }
+int NetworkModeSelectionActivity::listCount() const { return itemCount_; }
 
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
@@ -72,7 +101,13 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  onModeSelected(static_cast<NetworkMode>(index));
+  if (index < MENU_ITEM_COUNT) {
+    onModeSelected(static_cast<NetworkMode>(index));
+  } else {
+    constexpr NetworkMode PICCO_MODES[] = {NetworkMode::BOOX_BIND, NetworkMode::BOOX_CLOUD, NetworkMode::BOOX_LAN,
+                                           NetworkMode::BOOX_CLOUD_SDFAT, NetworkMode::BOOX_LAN_SDFAT};
+    onModeSelected(PICCO_MODES[index - MENU_ITEM_COUNT]);
+  }
 }
 
 void NetworkModeSelectionActivity::navigateButtons() {
@@ -90,7 +125,7 @@ void NetworkModeSelectionActivity::buildTiles(UiScreen& screen) {
   const int count = listCount();
   tilesgrid::Tile tiles[tilesgrid::PER_PAGE];
   for (int i = 0; i < count && i < tilesgrid::PER_PAGE; i++) {
-    // Rows added after the fixed ones (BOOX Cloud on the Picco) use the cloud icon.
+    // Rows added after the fixed ones (the BOOX rows on the Picco) use the cloud icon.
     tiles[i] = {rowItems_[i].label, i < MENU_ITEM_COUNT ? menuTileIcons[i] : &icon_app_cloud_48};
   }
   tilesgrid::draw(screen, tiles, std::min(count, tilesgrid::PER_PAGE), nav.selected, ACTION_ROW);
@@ -111,7 +146,7 @@ void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   // repaint.
   fui::ListProps props;
   props.items = rowItems_;
-  props.count = static_cast<uint16_t>(MENU_ITEM_COUNT);
+  props.count = static_cast<uint16_t>(itemCount_);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.subtitleText = screen.theme().smallText;

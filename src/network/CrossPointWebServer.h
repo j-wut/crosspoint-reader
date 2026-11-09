@@ -38,8 +38,8 @@ class CrossPointWebServer {
     size_t size = 0;
     bool success = false;
     String error = "";
-    // Overwriting an existing file: data goes to "<file>.part", which replaces
-    // the file only after the whole upload is written.
+    // Data goes to "<file>.part", which becomes (or replaces) the file only
+    // after the whole upload is written.
     bool staged = false;
 
     // Upload write buffer - batches small writes into larger SD card operations
