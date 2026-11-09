@@ -53,4 +53,14 @@ LogFile openLog();
 // PSRAM, heap integrity, Wi-Fi, battery, stack.
 void logSystemState(const char* when);
 
+// One line with the power side of a transfer: Wi-Fi power save and TX power
+// limit, CPU clock, the SD/panel rail enable, frontlight, USB and battery.
+void logPowerState(const char* when);
+
+// Ring of the last SD write times, printed after a failed write to show
+// whether the card slowed down first.
+void noteWrite(size_t offset, size_t len, uint32_t ms, bool ok);
+void resetWrites();
+void logWrites(const char* when);
+
 }  // namespace booxdiag

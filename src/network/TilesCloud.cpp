@@ -50,6 +50,8 @@ constexpr size_t BODY_CAP = 6 * 1024;
 constexpr const char* NVS_NAMESPACE = "user_cred";
 constexpr const char* NVS_USER_INFO = "userInfo";
 constexpr const char* API_BASE = "https://push.boox.com/api/v2/nano";
+// A push list reply with 10 items is larger than BODY_CAP. Lands in PSRAM.
+constexpr size_t PUSH_LIST_CAP = 64 * 1024;
 constexpr const char* PUSH_LIST_URL = "https://push.boox.com/api/v2/nano/push/list?limit=10&offset=0";
 // Read-only endpoints the stock firmware uses, logged for later work.
 constexpr const char* EXTRA_GETS[] = {"/todo", "/countdownDay", "/statistics/summary"};
@@ -216,7 +218,8 @@ int logGet(Print& out, const char* url, const std::string& authorization, const 
   http.end();
   out.printf("[%s] GET %s -> %d, %u bytes%s\n", label, url, status, static_cast<unsigned>(body.size()),
              body.size() >= cap ? " (cut)" : "");
-  out.println(body.c_str());
+  // The log keeps the first BODY_CAP bytes; the caller gets the whole reply.
+  out.println(body.substr(0, BODY_CAP).c_str());
   if (bodyOut) *bodyOut = std::move(body);
   return status;
 }
@@ -427,6 +430,8 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     d.sdResult = "no PSRAM buffer";
     return d;
   }
+  booxdiag::resetWrites();
+  booxdiag::logPowerState("download start");
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
   mbedtls_sha256_starts(&sha, 0);
@@ -451,6 +456,7 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
     const unsigned long writeStart = millis();
     const size_t wrote = file.write(buf, n);
     const unsigned long writeMs = millis() - writeStart;
+    booxdiag::noteWrite(d.written, n, writeMs, wrote == static_cast<size_t>(n));
     writeMsTotal += writeMs;
     writeMsMax = std::max(writeMsMax, writeMs);
     if (writeMs > 300) {
@@ -498,6 +504,11 @@ StockDownload stockDownload(const std::string& url, const std::string& dest, con
 
   static char sdMsg[48];
   if (!writeOk) {
+    booxdiag::logWrites("SD write failed");
+    booxdiag::logPowerState("SD write failed");
+    // The card stops answering after this; mount it again so the .tmp file can
+    // be removed and the log written.
+    booxsd::remount("SD write failed");
     snprintf(sdMsg, sizeof(sdMsg), "write failed at %u", static_cast<unsigned>(d.written));
     d.sdResult = sdMsg;
   } else if (!d.netOk) {
@@ -532,9 +543,16 @@ const char* pushDir(const std::string& name) {
 // and report it as received.
 void handlePushList(booxdiag::LogFile& out, const std::string& body) {
   JsonDocument doc;
-  if (deserializeJson(doc, body)) return;
+  if (const DeserializationError err = deserializeJson(doc, body)) {
+    out.printf("push list: JSON error %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(body.size()));
+    return;
+  }
   JsonArrayConst list = doc["data"]["list"].as<JsonArrayConst>();
-  if (list.isNull()) return;
+  if (list.isNull()) {
+    out.println("push list: no data.list");
+    return;
+  }
+  out.printf("push list: %u items\n", static_cast<unsigned>(list.size()));
   g_status.waiting = static_cast<int>(list.size());
   std::vector<std::string> reported;
   for (JsonObjectConst item : list) {
@@ -1009,7 +1027,7 @@ void probe() {
   log.flush();
 
   std::string body;
-  const int status = authedGet(log, PUSH_LIST_URL, "push list", &body);
+  const int status = authedGet(log, PUSH_LIST_URL, "push list", &body, PUSH_LIST_CAP);
   g_status.lastHttp = status;
   if (status == 200) handlePushList(log, body);
   for (const char* path : EXTRA_GETS) {
@@ -1074,7 +1092,7 @@ void poll() {
   if (!log) LOG_ERR("TILES", "cannot open %s; checking without the card log", LOG_PATH);
   log.printf("\n--- poll, uptime %lu s, heap %u\n", millis() / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
   std::string body;
-  g_status.lastHttp = authedGet(log, PUSH_LIST_URL, "poll", &body);
+  g_status.lastHttp = authedGet(log, PUSH_LIST_URL, "poll", &body, PUSH_LIST_CAP);
   if (g_status.lastHttp == 200) handlePushList(log, body);
   log.close();
 }

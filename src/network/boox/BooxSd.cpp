@@ -188,6 +188,24 @@ void unmount() {
   LOG_INF("BOOXSD", "unmounted");
 }
 
+bool remount(const char* why) {
+  const Backend backend = g_backend;
+  bool ok;
+  if (backend == Backend::SdFat) {
+    Storage.prepareForDeepSleep();
+    ok = Storage.begin();
+    g_mounted = ok;
+  } else {
+    unmount();
+    // Stock waits 80 ms between mount attempts.
+    delay(80);
+    ok = mount(backend);
+  }
+  LOG_ERR("BOOXSD", "remount after %s on %s: %s", why, backendName(backend), ok ? "ok" : "FAILED");
+  logState("after remount");
+  return ok;
+}
+
 bool mounted() { return g_mounted; }
 Backend backend() { return g_backend; }
 bool stockMounted() { return g_mounted && g_backend == Backend::Stock; }

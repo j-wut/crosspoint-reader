@@ -33,6 +33,9 @@ class File {
 // Select the stack and mount the card. Logs every step.
 bool mount(Backend backend);
 void unmount();
+// Unmount and mount again on the same stack, so the log can still be written
+// after the card stopped answering. Logs the result.
+bool remount(const char* why);
 bool mounted();
 Backend backend();
 // True while the stock stack holds the card (SdFat is shut down).

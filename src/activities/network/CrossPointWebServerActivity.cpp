@@ -285,6 +285,7 @@ void CrossPointWebServerActivity::startBoox() {
   // Mount the card, and keep every log line of it for the card log.
   booxCapture = std::make_unique<booxdiag::Capture>();
   booxdiag::logSystemState(lan ? "BOOX LAN start" : "BOOX Cloud start");
+  booxdiag::logPowerState(lan ? "BOOX LAN start" : "BOOX Cloud start");
   booxSdFailed = !booxsd::mount(backend);
   if (!booxSdFailed && lan) booxLanFailed = !booxlan::start();
   if (booxdiag::LogFile log = booxdiag::openLog()) {

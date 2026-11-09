@@ -103,6 +103,7 @@ SemaphoreHandle_t g_uploadLock = nullptr;
 TaskHandle_t g_writerTask = nullptr;
 volatile int g_pending = 0;
 volatile bool g_writeFailed = false;
+volatile size_t g_writeOffset = 0;
 booxsd::File g_file;
 std::string g_path;
 // Writer statistics, for the log.
@@ -137,6 +138,8 @@ void writerTask(void*) {
       const unsigned long start = millis();
       const size_t written = g_file.write(item.data, item.len);
       const uint32_t ms = millis() - start;
+      booxdiag::noteWrite(g_writeOffset, item.len, ms, written == item.len);
+      g_writeOffset = g_writeOffset + written;
       g_writeCount = g_writeCount + 1;
       g_writeMsTotal = g_writeMsTotal + ms;
       if (ms > g_writeMsMax) g_writeMsMax = ms;
@@ -422,6 +425,9 @@ esp_err_t handleUpload(httpd_req_t* req) {
     return httpd_resp_send(req, "Busy", HTTPD_RESP_USE_STRLEN);
   }
   booxdiag::logSystemState("upload start");
+  booxdiag::logPowerState("upload start");
+  booxdiag::resetWrites();
+  g_writeOffset = 0;
   const unsigned long start = millis();
   Upload up;
   const size_t total = req->content_len;
@@ -477,6 +483,14 @@ esp_err_t handleUpload(httpd_req_t* req) {
     LOG_INF("BOOXLAN", "close took %lu ms", millis() - closeStart);
   }
   if (!up.error && g_writeFailed) up.error = "SD write failed";
+  if (g_writeFailed) {
+    booxdiag::logWrites("SD write failed");
+    booxdiag::logPowerState("SD write failed");
+    booxdiag::logSystemState("SD write failed");
+    // The card stops answering after this; mount it again so the file can be
+    // removed and the log written.
+    booxsd::remount("SD write failed");
+  }
   logUploadStats(up, total, millis() - start);
 
   esp_err_t result;
@@ -512,6 +526,7 @@ esp_err_t handleUpload(httpd_req_t* req) {
   }
   g_path.clear();
   booxdiag::logSystemState("upload end");
+  booxdiag::logPowerState("upload end");
   booxsd::logState("upload end");
   // Keep the whole story on the card.
   if (booxdiag::LogFile log = booxdiag::openLog()) {

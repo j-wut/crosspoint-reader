@@ -1,12 +1,17 @@
 #include "BooxDiag.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
+#include <HalGPIO.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <HalPowerManager.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <driver/gpio.h>
 #include <esp_log.h>
+#include <esp_wifi.h>
 
 #include <algorithm>
 #include <cstdarg>
@@ -175,6 +180,64 @@ void logSystemState(const char* when) {
           static_cast<int>(WiFi.RSSI()), static_cast<int>(WiFi.status()),
           static_cast<unsigned>(powerManager.getBatteryPercentage()),
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+}
+
+void logPowerState(const char* when) {
+  wifi_ps_type_t ps = WIFI_PS_NONE;
+  const bool psOk = esp_wifi_get_ps(&ps) == ESP_OK;
+  int8_t txPower = 0;
+  const bool txOk = esp_wifi_get_max_tx_power(&txPower) == ESP_OK;
+  const int8_t rail = BoardConfig::ACTIVE.sd.powerEnable;
+  LOG_INF("BOOX", "%s: wifi ps %d, max tx %d (0.25 dBm), cpu %u MHz, sd/panel rail gpio %d = %d, light %d at %u%%, usb %d",
+          when, psOk ? static_cast<int>(ps) : -1, txOk ? static_cast<int>(txPower) : -1,
+          static_cast<unsigned>(getCpuFrequencyMhz()), rail, rail >= 0 ? gpio_get_level(static_cast<gpio_num_t>(rail)) : -1,
+          Frontlight.isOn() ? 1 : 0, static_cast<unsigned>(Frontlight.brightness()), gpio.isUsbConnected() ? 1 : 0);
+}
+
+namespace {
+struct WriteNote {
+  uint32_t atMs;
+  uint32_t offset;
+  uint32_t len;
+  uint16_t ms;
+  bool ok;
+};
+constexpr size_t WRITE_RING = 24;
+WriteNote writes[WRITE_RING];
+size_t writeCount = 0;
+portMUX_TYPE writeLock = portMUX_INITIALIZER_UNLOCKED;
+}  // namespace
+
+void noteWrite(const size_t offset, const size_t len, const uint32_t ms, const bool ok) {
+  portENTER_CRITICAL_SAFE(&writeLock);
+  writes[writeCount % WRITE_RING] = {static_cast<uint32_t>(millis()), static_cast<uint32_t>(offset),
+                                     static_cast<uint32_t>(len), static_cast<uint16_t>(std::min<uint32_t>(ms, 65535)),
+                                     ok};
+  writeCount++;
+  portEXIT_CRITICAL_SAFE(&writeLock);
+}
+
+void resetWrites() {
+  portENTER_CRITICAL_SAFE(&writeLock);
+  writeCount = 0;
+  portEXIT_CRITICAL_SAFE(&writeLock);
+}
+
+void logWrites(const char* when) {
+  WriteNote copy[WRITE_RING];
+  portENTER_CRITICAL_SAFE(&writeLock);
+  const size_t count = writeCount;
+  memcpy(copy, writes, sizeof(copy));
+  portEXIT_CRITICAL_SAFE(&writeLock);
+  const size_t first = count > WRITE_RING ? count - WRITE_RING : 0;
+  LOG_INF("BOOX", "%s: %u SD writes, last %u:", when, static_cast<unsigned>(count),
+          static_cast<unsigned>(count - first));
+  for (size_t i = first; i < count; ++i) {
+    const WriteNote& w = copy[i % WRITE_RING];
+    LOG_INF("BOOX", "  write #%u at %u ms: %u bytes at %u took %u ms %s", static_cast<unsigned>(i + 1),
+            static_cast<unsigned>(w.atMs), static_cast<unsigned>(w.len), static_cast<unsigned>(w.offset),
+            static_cast<unsigned>(w.ms), w.ok ? "ok" : "FAILED");
+  }
 }
 
 }  // namespace booxdiag
