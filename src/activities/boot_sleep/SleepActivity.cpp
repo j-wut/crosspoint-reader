@@ -764,11 +764,67 @@ void SleepActivity::onEnter() {
   }
 }
 
+// Shows a sleep screen saved by an earlier sleep: the same refreshes, without decoding the image.
+bool SleepActivity::renderCachedSleepScreen(const std::string& key) const {
+  screencache::Reader cache;
+  if (!cache.open(key, renderer)) return false;
+  const unsigned long start = millis();
+  const bool gray = cache.gray();
+  const bool absolute = gray && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  if (gray && absolute != cache.absolute()) return false;
+  // A failed first read leaves the frame for the normal path to redraw.
+  if (!cache.readLayer(0, renderer)) return false;
+  const unsigned long bwLoaded = millis();
+  if (!gray) {
+    renderer.displayBuffer(kSleepClean);
+    LOG_INF("SLP", "cached sleep screen: load %lu ms, refresh %lu ms", bwLoaded - start, millis() - bwLoaded);
+    return true;
+  }
+
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) {
+    renderer.displayBuffer(kSleepClean);
+    return true;
+  }
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return true;
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
+  const unsigned long base = millis();
+  bool ready = cache.readLayer(1, renderer);
+  if (ready) renderer.copyGrayscaleLsbBuffers();
+  ready = ready && cache.readLayer(2, renderer);
+  if (ready) renderer.copyGrayscaleMsbBuffers();
+  const unsigned long grayLoaded = millis();
+  if (ready)
+    renderer.displayGrayBuffer();
+  else
+    LOG_ERR("SLP", "Incomplete cached grayscale layers; keeping the current display");
+  renderer.setRenderMode(GfxRenderer::BW);
+  LOG_INF("SLP",
+          "cached gray sleep screen: B/W load %lu ms, base refresh %lu ms, gray load %lu ms, gray refresh %lu ms",
+          bwLoaded - start, base - bwLoaded, grayLoaded - base, millis() - grayLoaded);
+  return true;
+}
+
 bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
   std::string path;
   if (!wallpaper::screenBmp(imagePath, path)) return false;
   HalFile file;
   if (!Storage.openFileForRead("SLP", path, file)) return false;
+  const bool cropMode = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  // Everything that changes the finished sleep screen.
+  const std::string cacheKey =
+      "sleep|" + path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) + '|' +
+      std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) +
+      (cropMode ? "|c" : "|f") + (useOriginalCoverThresholds(renderer) ? "|t" : "") + "|filter" +
+      std::to_string(SETTINGS.sleepScreenCoverFilter) +
+      (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "") + "|v1";
+  if (renderCachedSleepScreen(cacheKey)) return true;
+  LOG_INF("SLP", "no cached sleep screen for %s; drawing it", path.c_str());
+  screencache::Writer capture;
+  capture.prepare(cacheKey);
   Bitmap source(file);
   if (source.parseHeaders() != BmpReaderError::Ok) return false;
   LOG_DBG("SLP", "Loading: %s", path.c_str());
@@ -798,7 +854,7 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
     if (Storage.openFileForRead("SLP", cachePath, cached)) {
       Bitmap bitmap(cached);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        renderBitmapSleepScreen(bitmap);
+        renderBitmapSleepScreen(bitmap, false, &capture);
         return true;
       }
       cached.close();
@@ -809,7 +865,7 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
 
   Bitmap bitmap(file, true, thresholds);
   if (bitmap.parseHeaders() != BmpReaderError::Ok) return false;
-  renderBitmapSleepScreen(bitmap);
+  renderBitmapSleepScreen(bitmap, false, &capture);
   return true;
 }
 
@@ -847,7 +903,9 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.displayBuffer(kSleepClean);
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground,
+                                            screencache::Writer* capture) const {
+  const unsigned long start = millis();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto placement = calculateBitmapPlacement(bitmap.getWidth(), bitmap.getHeight(), renderer);
@@ -885,6 +943,13 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
   }
 
   const bool absolute = hasGreyscale && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  // Only a screen that does not depend on what was showing before can be reused.
+  if (preserveBackground) capture = nullptr;
+  if (capture) {
+    capture->begin(renderer, hasGreyscale, absolute);
+    capture->addLayer(renderer);
+  }
+  const unsigned long bwDrawn = millis();
   const BwFrameKeeper bwFrame(renderer, hasGreyscale && !absolute);
   if (!bwFrame.ready()) {
     renderer.displayBuffer(kSleepClean);
@@ -902,9 +967,13 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   } else {
     renderer.displayBuffer(kSleepClean);
+    if (capture) capture->finish();
+    LOG_INF("SLP", "sleep bitmap %dx%d %d-bit: draw %lu ms, refresh %lu ms", bitmap.getWidth(), bitmap.getHeight(),
+            bitmap.getBpp(), bwDrawn - start, millis() - bwDrawn);
   }
 
   if (hasGreyscale) {
+    const unsigned long base = millis();
     bool ready = true;
     for (const auto plane : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
       if (bitmap.rewindToData() != BmpReaderError::Ok) {
@@ -924,16 +993,23 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
         ready = false;
         break;
       }
+      if (capture) capture->addLayer(renderer);
       if (plane == GfxRenderer::GRAYSCALE_LSB)
         renderer.copyGrayscaleLsbBuffers();
       else
         renderer.copyGrayscaleMsbBuffers();
     }
+    const unsigned long grayDrawn = millis();
     if (ready)
       renderer.displayGrayBuffer();
     else
       LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
     renderer.setRenderMode(GfxRenderer::BW);
+    if (ready && capture) capture->finish();
+    LOG_INF("SLP",
+            "sleep bitmap %dx%d %d-bit gray: draw %lu ms, base refresh %lu ms, gray draws %lu ms, gray refresh %lu ms",
+            bitmap.getWidth(), bitmap.getHeight(), bitmap.getBpp(), bwDrawn - start, base - bwDrawn, grayDrawn - base,
+            millis() - grayDrawn);
   }
 }
 
@@ -1171,10 +1247,27 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
     return false;
   }
 
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  // Only an image drawn without transparency is saved, so a cached screen never needs the old frame.
+  std::string cacheKey;
+  {
+    HalFile file;
+    if (Storage.openFileForRead("SLP", path, file)) {
+      cacheKey = "sleepopg|" + path + '|' + std::to_string(file.size()) + '|' +
+                 std::to_string(file.modificationTime()) + '|' + std::to_string(renderer.getScreenWidth()) + 'x' +
+                 std::to_string(renderer.getScreenHeight()) + (wallpaper::keepsAlpha(kind) ? "|alpha" : "") +
+                 "|filter" + std::to_string(SETTINGS.sleepScreenCoverFilter) + "|v1";
+    }
+  }
+  if (!cacheKey.empty() && renderCachedSleepScreen(cacheKey)) {
+    LOG_INF("SLP", "gallery wallpaper shown from cache kind=%u", kind);
+    return true;
+  }
+
   // Keep the retained frame's visible polarity once the driver is back to normal.
   if (frameWasInverted) renderer.invertScreen();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   releaseSdFontCachesForDecode(renderer);
+  const unsigned long start = millis();
   const wallpaper::DrawResult drawn = wallpaper::drawOpg(renderer, path, wallpaper::keepsAlpha(kind));
   if (!drawn.ok) {
     LOG_ERR("SLP", "gallery wallpaper draw failed: %s", path.c_str());
@@ -1185,8 +1278,17 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
+  if (!drawn.hasAlpha && !cacheKey.empty()) {
+    screencache::Writer capture;
+    if (capture.begin(cacheKey, renderer, false, false)) {
+      capture.addLayer(renderer);
+      capture.finish();
+    }
+  }
+  const unsigned long drawnAt = millis();
   renderer.displayBuffer(kSleepClean);
-  LOG_INF("SLP", "gallery wallpaper shown kind=%u alpha=%d", kind, drawn.hasAlpha);
+  LOG_INF("SLP", "gallery wallpaper shown kind=%u alpha=%d: draw %lu ms, refresh %lu ms", kind, drawn.hasAlpha,
+          drawnAt - start, millis() - drawnAt);
   return true;
 }
 
