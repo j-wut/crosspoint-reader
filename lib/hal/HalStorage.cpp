@@ -9,10 +9,28 @@
 #endif
 
 #include <cassert>
+#include <ctime>
 
 #define SDCard SDCardManager::getInstance()
 
 namespace {
+// Dates files from the device clock. Without it SdFat gives every file it
+// creates or changes a fixed date (January 1 of the build year).
+void fileDateTime(uint16_t* date, uint16_t* time, uint8_t* ms10) {
+  const time_t now = ::time(nullptr);
+  struct tm local;
+  localtime_r(&now, &local);
+  if (local.tm_year + 1900 < 1980) {  // clock not set; FAT dates start in 1980
+    *date = FS_DEFAULT_DATE;
+    *time = FS_DEFAULT_TIME;
+    *ms10 = 0;
+    return;
+  }
+  *date = FS_DATE(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
+  *time = FS_TIME(local.tm_hour, local.tm_min, local.tm_sec);
+  *ms10 = local.tm_sec & 1 ? 100 : 0;
+}
+
 #if FREEINK_CAP_USB_MSC
 freeink::UsbMassStorage usbMassStorage;
 #endif
@@ -33,7 +51,10 @@ HalStorage::HalStorage() {
 
 // begin() and ready() are only called from setup, no need to acquire mutex for them
 
-bool HalStorage::begin() { return SDCard.begin(); }
+bool HalStorage::begin() {
+  FsDateTime::setCallback(fileDateTime);
+  return SDCard.begin();
+}
 
 bool HalStorage::ready() const { return SDCard.ready(); }
 
