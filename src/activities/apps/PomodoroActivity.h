@@ -8,8 +8,8 @@
 
 // Focus timer: a focus session, then a break. While running, the screen shows
 // minutes and seconds left and refreshes each second, like the stock Picco
-// app. The device stays awake; when time is up the screen flashes and the
-// front light blinks.
+// app. The device stays awake on this screen; when time is up the screen
+// flashes and the front light blinks.
 class PomodoroActivity final : public Activity, private UiAppHost {
  public:
   PomodoroActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -39,12 +39,14 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   void saveState() const;
   void tickBlink();
 
-  Phase phase = Phase::Focus;
-  bool running = false;
-  bool paused = false;
-  bool timeUp = false;          // "Time's up" shown until the next button
-  uint32_t startedAt = 0;       // millis() when the current run started
-  uint32_t elapsedBefore = 0;   // ms run before the last pause
+  // The timer state is static so the timer keeps going after the screen is
+  // left, like the stock app. It is lost if the device sleeps.
+  static inline Phase phase = Phase::Focus;
+  static inline bool running = false;
+  static inline bool paused = false;
+  static inline bool timeUp = false;         // "Time's up" shown until the next button
+  static inline uint32_t startedAt = 0;      // millis() when the current run started
+  static inline uint32_t elapsedBefore = 0;  // ms run before the last pause
   uint32_t lastShownSecond = 0;
   uint8_t focusMinutes = 25;
   uint8_t breakMinutes = 5;
