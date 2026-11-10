@@ -4,7 +4,6 @@
 #include <Logging.h>
 
 #include <cstdint>
-#include <cstdio>
 #include <functional>
 
 namespace screencache {
@@ -25,28 +24,41 @@ constexpr char DIR[] = "/.crosspoint/screens";
 constexpr char VERSION[] = "v1";
 constexpr int SAMPLE_BLOCKS = 8;
 constexpr size_t SAMPLE_SIZE = 512;
+constexpr size_t WHOLE_FILE_LIMIT = 256 * 1024;
 }  // namespace
 
 std::string fileKey(const char* kind, const std::string& path) {
+  const unsigned long start = millis();
   HalFile file;
   if (!Storage.openFileForRead("SCR", path, file)) return {};
   const size_t size = file.size();
   // Files the device writes all get the same date, so a replaced file of the
-  // same size is told apart by sampled bytes (start, end and evenly between).
+  // same size is told apart by its bytes: all of a small file (screen BMPs,
+  // most .opg), or blocks from the start, end and evenly between.
   uint64_t hash = 1469598103934665603ULL;  // FNV-1a
   uint8_t block[SAMPLE_SIZE];
-  for (int i = 0; i < SAMPLE_BLOCKS; i++) {
-    const size_t span = size > SAMPLE_SIZE ? size - SAMPLE_SIZE : 0;
-    if (!file.seek(span * i / (SAMPLE_BLOCKS - 1))) return {};
+  const auto addBlock = [&]() {
     const int n = file.read(block, sizeof(block));
-    if (n < 0) return {};
     for (int j = 0; j < n; j++) {
       hash ^= block[j];
       hash *= 1099511628211ULL;
     }
+    return n;
+  };
+  if (size <= WHOLE_FILE_LIMIT) {
+    int n;
+    while ((n = addBlock()) > 0) {
+    }
+    if (n < 0) return {};
+  } else {
+    const size_t span = size - SAMPLE_SIZE;
+    for (int i = 0; i < SAMPLE_BLOCKS; i++) {
+      if (!file.seek(span * i / (SAMPLE_BLOCKS - 1)) || addBlock() < 0) return {};
+    }
   }
-  char sample[17];
-  snprintf(sample, sizeof(sample), "%016llx", static_cast<unsigned long long>(hash));
+  std::string sample(16, '0');
+  for (int i = 15; i >= 0; i--, hash >>= 4) sample[i] = "0123456789abcdef"[hash & 0xF];
+  LOG_INF("SCR", "key for %s: %zu bytes, %s, %lu ms", path.c_str(), size, sample.c_str(), millis() - start);
   return std::string(kind) + '|' + VERSION + '|' + path + '|' + std::to_string(size) + '|' +
          std::to_string(file.modificationTime()) + '|' + sample;
 }
