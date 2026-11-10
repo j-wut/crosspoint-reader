@@ -35,8 +35,10 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   // The BMP draw path also picks its thresholds by controller.
   const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
-  return file + '|' + std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) +
-         '|' + std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
+  // "png1" marks PNG screens from the preview decoder, replacing older ones.
+  return file + (FsHelpers::hasPngExtension(path) ? "|png1" : "") + '|' + std::to_string(renderer.getScreenWidth()) +
+         'x' + std::to_string(renderer.getScreenHeight()) + '|' +
+         std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
          (ssd1677 ? "|ssd1677" : "");
 }
 
@@ -184,7 +186,7 @@ bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::str
   if (!FsHelpers::hasJpgExtension(filePath)) {
     // PNG: decoded like the Gallery previews (sampled, 1-bit) at screen size.
     const unsigned long start = millis();
-    if (!wallpaper::drawFitted(renderer, filePath, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) {
+    if (!wallpaper::drawPngFitted(renderer, filePath, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) {
       return false;
     }
     LOG_INF("GAL", "png %s decoded to screen in %lu ms", filePath.c_str(), millis() - start);

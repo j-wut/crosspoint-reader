@@ -568,7 +568,9 @@ class ScreenBmp final : public Print {
   }
   void readHeader() {
     // Only the header is here; the pixel rows are still to come, so allow for them.
-    failed = !bmpLayout(header, SIZE_MAX, layout) || layout.dataOffset < THUMB_HEADER;
+    // The palette must sit inside the header bytes kept here.
+    failed = 14 + le32(header + 14) + 8 > THUMB_HEADER || !bmpLayout(header, SIZE_MAX, layout) ||
+             layout.dataOffset < THUMB_HEADER;
     headerRead = true;
     left = boxX + (boxW - layout.width) / 2;
     top = boxY + (boxH - layout.height) / 2;
@@ -586,15 +588,22 @@ class ScreenBmp final : public Print {
 };
 }  // namespace
 
-bool drawFitted(GfxRenderer& renderer, const std::string& path, const int x, const int y, const int width,
-                const int height) {
-  if (!FsHelpers::hasPngExtension(path) && !FsHelpers::hasJpgExtension(path)) return false;
+bool drawPngFitted(GfxRenderer& renderer, const std::string& path, const int x, const int y, const int width,
+                   const int height) {
+  if (!FsHelpers::hasPngExtension(path)) return false;
   HalFile in;
   if (!Storage.openFileForRead("WALL", path, in)) return false;
+  // Image size from the IHDR chunk: small images stay 1:1 instead of being scaled up.
+  uint8_t ihdr[24];
+  if (in.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !in.seek(0)) return false;
+  const auto be32 = [&ihdr](const int at) {
+    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
+  };
+  const int targetW = static_cast<int>(std::min<uint32_t>(static_cast<uint32_t>(width), be32(16)));
+  const int targetH = static_cast<int>(std::min<uint32_t>(static_cast<uint32_t>(height), be32(20)));
+  if (targetW <= 0 || targetH <= 0) return false;
   ScreenBmp screen(renderer, x, y, width, height);
-  const bool ok = FsHelpers::hasPngExtension(path)
-                      ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, screen, width, height, false)
-                      : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(in, screen, width, height, false);
+  const bool ok = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, screen, targetW, targetH, false);
   return ok && screen.drewAll();
 }
 
