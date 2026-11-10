@@ -4,6 +4,7 @@
 #include <Logging.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 
 namespace screencache {
@@ -17,10 +18,41 @@ struct Header {
   uint8_t absolute;
   uint16_t keyLength;
 };
+
+constexpr char DIR[] = "/.crosspoint/screens";
+// Bump when any drawing pipeline (decoders, dithering, gray layers) changes
+// its output, so screens saved by older firmware are not shown.
+constexpr char VERSION[] = "v1";
+constexpr int SAMPLE_BLOCKS = 8;
+constexpr size_t SAMPLE_SIZE = 512;
 }  // namespace
 
+std::string fileKey(const char* kind, const std::string& path) {
+  HalFile file;
+  if (!Storage.openFileForRead("SCR", path, file)) return {};
+  const size_t size = file.size();
+  // Files the device writes all get the same date, so a replaced file of the
+  // same size is told apart by sampled bytes (start, end and evenly between).
+  uint64_t hash = 1469598103934665603ULL;  // FNV-1a
+  uint8_t block[SAMPLE_SIZE];
+  for (int i = 0; i < SAMPLE_BLOCKS; i++) {
+    const size_t span = size > SAMPLE_SIZE ? size - SAMPLE_SIZE : 0;
+    if (!file.seek(span * i / (SAMPLE_BLOCKS - 1))) return {};
+    const int n = file.read(block, sizeof(block));
+    if (n < 0) return {};
+    for (int j = 0; j < n; j++) {
+      hash ^= block[j];
+      hash *= 1099511628211ULL;
+    }
+  }
+  char sample[17];
+  snprintf(sample, sizeof(sample), "%016llx", static_cast<unsigned long long>(hash));
+  return std::string(kind) + '|' + VERSION + '|' + path + '|' + std::to_string(size) + '|' +
+         std::to_string(file.modificationTime()) + '|' + sample;
+}
+
 std::string pathFor(const std::string& key) {
-  return "/.crosspoint/scr_" + std::to_string(std::hash<std::string>{}(key)) + ".bin";
+  return std::string(DIR) + "/scr_" + std::to_string(std::hash<std::string>{}(key)) + ".bin";
 }
 
 Writer::~Writer() {
@@ -31,9 +63,10 @@ Writer::~Writer() {
 }
 
 bool Writer::begin(const std::string& key, const GfxRenderer& renderer, const bool gray, const bool absolute) {
+  if (key.empty() || key.size() > UINT16_MAX) return false;
   path = pathFor(key);
   tmpPath = path + ".tmp";
-  if (key.size() > UINT16_MAX || !Storage.openFileForWrite("SCR", tmpPath, file)) return false;
+  if (!Storage.ensureDirectoryExists(DIR) || !Storage.openFileForWrite("SCR", tmpPath, file)) return false;
   const Header header{MAGIC, static_cast<uint32_t>(renderer.getBufferSize()), static_cast<uint8_t>(gray ? 3 : 1),
                       static_cast<uint8_t>(absolute ? 1 : 0), static_cast<uint16_t>(key.size())};
   ok = file.write(&header, sizeof(header)) == sizeof(header) && file.write(key.data(), key.size()) == key.size();
@@ -55,6 +88,7 @@ bool Writer::finish() {
 }
 
 bool Reader::open(const std::string& key, const GfxRenderer& renderer) {
+  if (key.empty()) return false;
   const std::string path = pathFor(key);
   if (!Storage.exists(path.c_str()) || !Storage.openFileForRead("SCR", path, file)) return false;
   const size_t size = renderer.getBufferSize();

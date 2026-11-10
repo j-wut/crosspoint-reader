@@ -23,7 +23,7 @@ class BmpViewerActivity final : public Activity {
   void loadSiblingImages();
   void doSetSleepCover();
   bool canSetSleepCover() const;
-  bool renderImage(screencache::Writer* capture);
+  bool renderImage(screencache::Writer* capture, const std::string& cacheKey);
   bool showCachedScreen(screencache::Reader& cache);
   void drawHints() const;
   bool saveJpegSleepCover();

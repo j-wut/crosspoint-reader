@@ -31,12 +31,14 @@ constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 17
 
 // Everything that changes the viewer's finished layers. Empty when the file cannot be read.
 std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer) {
-  HalFile file;
-  if (!Storage.openFileForRead("BMP", path, file)) return {};
+  const std::string file = screencache::fileKey("view", path);
+  if (file.empty()) return {};
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-  return "view|" + path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) + '|' +
-         std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) + '|' +
-         std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") + "|v1";
+  // The BMP draw path also picks its thresholds by controller.
+  const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
+  return file + '|' + std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) +
+         '|' + std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
+         (ssd1677 ? "|ssd1677" : "");
 }
 
 RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
@@ -140,7 +142,8 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
   }
 
   const bool absolute = cache.absolute();
-  if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return true;
+  // False lets the normal path draw the image or show the error.
+  if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return false;
   if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   const unsigned long base = millis();
   bool ready = true;
@@ -178,7 +181,7 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
   return true;
 }
 
-bool BmpViewerActivity::renderImage(screencache::Writer* capture) {
+bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::string& cacheKey) {
   const bool jpeg = FsHelpers::hasJpgExtension(filePath);
   JpegToFramebufferConverter jpegDecoder;
   PngToFramebufferConverter pngDecoder;
@@ -203,7 +206,7 @@ bool BmpViewerActivity::renderImage(screencache::Writer* capture) {
   };
 
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-  if (capture) capture->begin(viewerCacheKey(filePath, renderer), renderer, jpeg, jpeg && absolute);
+  if (capture) capture->begin(cacheKey, renderer, jpeg, jpeg && absolute);
   if (!drawImage()) return false;
   if (!jpeg) {
     if (capture) capture->finish();
@@ -294,7 +297,7 @@ void BmpViewerActivity::onEnter() {
 
   if (FsHelpers::hasPngExtension(filePath) || FsHelpers::hasJpgExtension(filePath)) {
     renderer.clearScreen();
-    if (!renderImage(&capture)) {
+    if (!renderImage(&capture, cacheKey)) {
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");

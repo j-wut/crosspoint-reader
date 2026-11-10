@@ -11,8 +11,13 @@ class GfxRenderer;
 // skips decoding and drawing the source image again.
 namespace screencache {
 
-// The cache file for `key`. The key must name everything that changes the
-// finished layers (source file, size, time, screen, settings).
+// Start of a cache key for one source file: its path, size, time and a sample
+// of its bytes, plus the cache version. Callers append the screen size and
+// every setting that changes the finished layers. Empty when the file cannot
+// be read.
+std::string fileKey(const char* kind, const std::string& path);
+
+// The cache file for `key`, in /.crosspoint/screens.
 std::string pathFor(const std::string& key);
 
 // Writes the layers as they are drawn. A file is kept only after finish().

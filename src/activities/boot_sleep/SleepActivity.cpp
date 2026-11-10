@@ -815,12 +815,14 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
   if (!Storage.openFileForRead("SLP", path, file)) return false;
   const bool cropMode = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
   // Everything that changes the finished sleep screen.
+  const std::string fileKey = screencache::fileKey("sleep", path);
   const std::string cacheKey =
-      "sleep|" + path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) + '|' +
-      std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) +
-      (cropMode ? "|c" : "|f") + (useOriginalCoverThresholds(renderer) ? "|t" : "") + "|filter" +
-      std::to_string(SETTINGS.sleepScreenCoverFilter) +
-      (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "") + "|v1";
+      fileKey.empty() ? std::string()
+                      : fileKey + '|' + std::to_string(renderer.getScreenWidth()) + 'x' +
+                            std::to_string(renderer.getScreenHeight()) + (cropMode ? "|c" : "|f") +
+                            (useOriginalCoverThresholds(renderer) ? "|t" : "") + "|filter" +
+                            std::to_string(SETTINGS.sleepScreenCoverFilter) +
+                            (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "");
   if (renderCachedSleepScreen(cacheKey)) return true;
   LOG_INF("SLP", "no cached sleep screen for %s; drawing it", path.c_str());
   screencache::Writer capture;
@@ -836,8 +838,9 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
     // Like book covers: scale and dither once into a cached screen-sized BMP, then draw it without dithering.
     const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
     // Same-sized BMPs share a byte count, so the key also needs the modification time.
+    // fileKey's sampled bytes tell apart same-sized files that share the device's default date.
     const std::string key = path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) +
-                            '|' + std::to_string(renderer.getScreenWidth()) + 'x' +
+                            '|' + fileKey + '|' + std::to_string(renderer.getScreenWidth()) + 'x' +
                             std::to_string(renderer.getScreenHeight()) + (crop ? "|c" : "|f") +
                             (thresholds ? "|t" : "");
     const std::string cachePath = "/.crosspoint/sleep_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
@@ -1249,15 +1252,11 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
 
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   // Only an image drawn without transparency is saved, so a cached screen never needs the old frame.
-  std::string cacheKey;
-  {
-    HalFile file;
-    if (Storage.openFileForRead("SLP", path, file)) {
-      cacheKey = "sleepopg|" + path + '|' + std::to_string(file.size()) + '|' +
-                 std::to_string(file.modificationTime()) + '|' + std::to_string(renderer.getScreenWidth()) + 'x' +
-                 std::to_string(renderer.getScreenHeight()) + (wallpaper::keepsAlpha(kind) ? "|alpha" : "") +
-                 "|filter" + std::to_string(SETTINGS.sleepScreenCoverFilter) + "|v1";
-    }
+  std::string cacheKey = screencache::fileKey("sleepopg", path);
+  if (!cacheKey.empty()) {
+    cacheKey += '|' + std::to_string(renderer.getScreenWidth()) + 'x' + std::to_string(renderer.getScreenHeight()) +
+                (wallpaper::keepsAlpha(kind) ? "|alpha" : "") + "|filter" +
+                std::to_string(SETTINGS.sleepScreenCoverFilter);
   }
   if (!cacheKey.empty() && renderCachedSleepScreen(cacheKey)) {
     LOG_INF("SLP", "gallery wallpaper shown from cache kind=%u", kind);
