@@ -26,6 +26,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
+#include "apps/ImageScreen.h"
 #include "apps/Wallpaper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -1244,6 +1245,7 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
   LOG_INF("SLP", "gallery wallpaper kind=%u path=%s mode=%u fromReader=%d powerOff=%d", kind, path.c_str(),
           SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader, powerOff);
   if (!wallpaper::isOpg(path)) {
+    if (renderGalleryImageScreen(kind, path)) return true;
     if (kind != wallpaper::POWER_OFF) return false;  // the normal flow draws the Gallery's BMP copy
     GUI.drawPopup(renderer, sleepPopupText());
     if (renderCustomSleepBmp(path)) return true;
@@ -1293,6 +1295,37 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
   renderer.displayBuffer(kSleepClean);
   LOG_INF("SLP", "gallery wallpaper shown kind=%u alpha=%d: draw %lu ms, refresh %lu ms", kind, drawn.hasAlpha,
           drawnAt - start, millis() - drawnAt);
+  return true;
+}
+
+// A PNG, JPEG or BMP Gallery image is shown from the image viewer's screen
+// cache, made here when missing, so it matches the full-screen view. False
+// leaves the normal flow to draw the Gallery's BMP copy.
+bool SleepActivity::renderGalleryImageScreen(const wallpaper::Kind kind, const std::string& path) const {
+  // ponytail: the cached layers cannot be inverted; this filter keeps the BMP copy path.
+  if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+    return false;
+  }
+  if (!Storage.exists(path.c_str())) {
+    LOG_ERR("SLP", "gallery image missing: %s", path.c_str());
+    return false;
+  }
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const std::string key = imagescreen::cacheKey(path, renderer);
+  if (key.empty()) return false;
+  if (renderCachedSleepScreen(key)) {
+    LOG_INF("SLP", "gallery image shown from the viewer cache kind=%u", kind);
+    return true;
+  }
+  LOG_INF("SLP", "no viewer screen for %s; drawing it", path.c_str());
+  GUI.drawPopup(renderer, sleepPopupText());
+  releaseSdFontCachesForDecode(renderer);
+  if (!imagescreen::build(renderer, path, key) || !renderCachedSleepScreen(key)) {
+    LOG_ERR("SLP", "viewer screen failed for %s", path.c_str());
+    renderer.clearScreen();
+    return false;
+  }
+  LOG_INF("SLP", "gallery image shown kind=%u", kind);
   return true;
 }
 

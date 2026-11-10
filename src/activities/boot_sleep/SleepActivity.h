@@ -33,6 +33,7 @@ class SleepActivity final : public Activity {
   void renderBlankSleepScreen() const;
   bool galleryWallpaper(wallpaper::Kind& kind, std::string& path) const;
   bool renderGalleryWallpaper(bool frameWasInverted) const;
+  bool renderGalleryImageScreen(wallpaper::Kind kind, const std::string& path) const;
 
   const char* sleepPopupText() const { return powerOff ? tr(STR_SHUTTING_DOWN) : tr(STR_ENTERING_SLEEP); }
 
