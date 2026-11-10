@@ -25,6 +25,12 @@
 #include <esp_system.h>
 #endif
 
+#if defined(ARDUINO_ARCH_ESP32) && FREEINK_DEVICE_PICCO
+#include <BoardConfig.h>
+#include <I2cBusLock.h>
+#include <Wire.h>
+#endif
+
 void addToLogRingBuffer(const char* message);  // Logging.cpp
 
 namespace {
@@ -248,6 +254,33 @@ void flush() {
 }  // namespace sleeplog
 }  // namespace
 
+// Picco: the SGM41562 charger's registers 0x00-0x0B as hex, or "-" per
+// register that did not answer. REG09 latches faults (watchdog, battery,
+// thermal) until read, so the boot read shows faults since the last read.
+// A charger that opens the battery switch cuts power without a reset reason.
+static void chargerRegisters(char* out, const size_t size) {
+  snprintf(out, size, "n/a");
+#if defined(ARDUINO_ARCH_ESP32) && FREEINK_DEVICE_PICCO
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.chargerAddr == 0) return;
+  // A BatteryMonitor read starts the bus if nothing has yet.
+  (void)BatteryMonitor().isCharging();
+  TwoWire& wire = g.i2cBus == 1 ? Wire1 : Wire;
+  size_t len = 0;
+  out[0] = '\0';
+  for (uint8_t reg = 0x00; reg <= 0x0B && len < size; reg++) {
+    const freeink::I2cBusLock busLock;
+    wire.beginTransmission(g.chargerAddr);
+    wire.write(reg);
+    const bool ok = wire.endTransmission(false) == 0 &&
+                    wire.requestFrom(g.chargerAddr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) == 1;
+    const uint8_t value = ok ? static_cast<uint8_t>(wire.read()) : 0;
+    len += ok ? snprintf(out + len, size - len, "%s%02X", reg ? " " : "", value)
+              : snprintf(out + len, size - len, "%s-", reg ? " " : "");
+  }
+#endif
+}
+
 void wakeTraceCapture() {
 #if defined(ARDUINO_ARCH_ESP32)
   capture.resetReason = static_cast<int>(esp_reset_reason());
@@ -377,6 +410,9 @@ void wakeTraceSleepLogBegin(const char* trigger, const char* activity, const boo
 #else
       0UL, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)), 0U);
 #endif
+  char regs[64];
+  chargerRegisters(regs, sizeof(regs));
+  appendWakeLog("sleep: charger regs 00-0B: %s", regs);
 }
 
 void wakeTraceSleepLogEnd() {
@@ -426,6 +462,11 @@ void wakeTraceWriteBootReport(const char* wakeReason, const bool stateLoaded, co
       static_cast<unsigned long>(freePsram));
 
   appendWakeLog("boot: run #%lu", static_cast<unsigned long>(sleepTrace.bootCount));
+  {
+    char regs[64];
+    chargerRegisters(regs, sizeof(regs));
+    appendWakeLog("boot: charger regs 00-0B: %s", regs);
+  }
   if (capture.hadTrace) {
     const SleepTrace& p = capture.previous;
     const long long now = static_cast<long long>(time(nullptr));
