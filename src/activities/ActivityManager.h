@@ -122,6 +122,8 @@ class ActivityManager {
   bool preventAutoSleep() const;
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;
+  // Name of the foreground activity, or "none".
+  const char* currentActivityName() const;
   // Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
   // a page or chapter turn from a remote. False when no book in front took the turn.
   bool isForegroundReader() const;

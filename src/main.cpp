@@ -553,8 +553,9 @@ HomeButtonAction powerHoldHomeAction() {
 // Enter deep sleep mode. powerOff then cuts the battery where the board can
 // (Picco charger ship mode); on USB power, or where it can't, it stays asleep.
 // Xteink C3 boards need nothing extra: their sleep already drops GPIO13.
-void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
+void enterDeepSleep(bool fromTimeout = false, bool powerOff = false, const char* trigger = "unspecified") {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
+  wakeTraceSleepLogBegin(trigger, activityManager.currentActivityName(), fromTimeout, powerOff);
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
 
   // Sleep may end in a power-off (battery death, latch); persist the clock
@@ -566,7 +567,9 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
   wakeTraceStage(SleepStage::Started);
   const bool bluetoothStopped = bleturner::beforeSleep(2000);
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
+  wakeTraceStage(SleepStage::BluetoothStopped);
   deliverSleepPluginEvents(bluetoothStopped);
+  wakeTraceStage(SleepStage::PluginEventsSent);
 
   const bool isQuickResumeSleep =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -588,6 +591,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
     // A stale Quick Resume frame must not replace the selected sleep screen during wake.
     Storage.remove(SLEEP_FRAME_FILE);
   }
+  wakeTraceStage(SleepStage::SleepFrameSaved);
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.
@@ -595,6 +599,7 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+  wakeTraceStage(SleepStage::WifiOff);
 
 #if FREEINK_DEVICE_PICCO
   // The I2C LED driver keeps its state through deep sleep; switch it off here
@@ -614,8 +619,10 @@ void enterDeepSleep(bool fromTimeout = false, bool powerOff = false) {
       stateSaved ? 1 : 0, SETTINGS.wakePress, SETTINGS.shortPwrBtn, millis(),
       static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()));
   halTiltSensor.deepSleep();
+  wakeTraceStage(SleepStage::TiltOff);
   display.deepSleep();
   wakeTraceStage(SleepStage::DisplayOff);
+  wakeTraceSleepLogEnd();
   Storage.prepareForDeepSleep();
   wakeTraceStage(SleepStage::StorageParked);
 
@@ -702,6 +709,7 @@ void setup() {
 #endif
 
   HalSystem::begin();
+  wakeTraceBoot(BootStage::SystemReady);
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
   const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
@@ -719,6 +727,7 @@ void setup() {
   gpio.begin();
   powerManager.begin();
   if (BoardConfig::isPicco()) markRunningAppValid();
+  wakeTraceBoot(BootStage::GpioReady);
 
   // Board TX-power ceiling. It can only be set once WiFi has started, so it is
   // applied on every STA/AP start rather than at each place that brings WiFi up.
@@ -741,6 +750,7 @@ void setup() {
   const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || BoardConfig::isMetalioEInk4() ||
                                 gpio.verifyPowerButtonWakeup();
   const unsigned long wakeCheckEndMs = millis();
+  wakeTraceBoot(BootStage::WakeChecked);
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
@@ -768,6 +778,7 @@ void setup() {
     return;
   }
 
+  wakeTraceBoot(BootStage::StorageReady);
   HalSystem::checkPanic();
 
   const bool stateLoaded = APP_STATE.loadFromFile();
@@ -817,6 +828,7 @@ void setup() {
   trustedtime::init();
   // After settings (the Debug Logging toggle) and the clock (log file names).
   debuglog::begin();
+  wakeTraceBoot(BootStage::SettingsLoaded);
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
   // Brightness and warmth are always restored. A normal wake starts with the
@@ -844,10 +856,12 @@ void setup() {
   // A rejected wake goes straight back to sleep, so it must not light up.
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn && !wakeRejected);
 
+  wakeTraceBoot(BootStage::WakeDecided);
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       if (wakeRejected) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
+        wakeTraceStage(SleepStage::RejectedWake);
         Storage.prepareForDeepSleep();
         wakeTraceStage(SleepStage::DeepSleep);
         powerManager.startDeepSleep(gpio);
@@ -918,8 +932,10 @@ void setup() {
                                                                     : "splash",
                              rebootedFromPanic);
   }
+  wakeTraceBoot(BootStage::BootReported);
 
   setupDisplayAndFonts(resume != BootResume::Splash);
+  wakeTraceBoot(BootStage::DisplayReady);
 
   switch (resume) {
     case BootResume::Silent:
@@ -1007,9 +1023,13 @@ void setup() {
   }
 
   allowSleepAt = millis() + 2000;
+  wakeTraceBoot(BootStage::SetupDone);
 }
 
 void loop() {
+  // Reaching the second pass means the first one finished.
+  static uint8_t loopPasses = 0;
+  if (loopPasses < 2 && ++loopPasses == 2) wakeTraceBoot(BootStage::FirstLoopDone);
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
@@ -1207,7 +1227,7 @@ void loop() {
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && x4ProDoubleClickPwrLight &&
       lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
     lastX4ProPowerClickAt = 0;
-    enterDeepSleep();
+    enterDeepSleep(false, false, "power double-click window");
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -1215,7 +1235,7 @@ void loop() {
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
-    enterDeepSleep(true);
+    enterDeepSleep(true, false, "inactivity timeout");
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -1237,7 +1257,7 @@ void loop() {
     // The combo's Power press skips the normal hold until it shuts down.
     if (millis() >= allowSleepAt && gpio.getPowerButtonHeldTime() >= ShutdownCombo::HOLD_MS) {
       LOG_DBG("MAIN", "Shutdown combination held %lums, shutting down", gpio.getPowerButtonHeldTime());
-      enterDeepSleep(false, true);
+      enterDeepSleep(false, true, "shutdown combo");
       return;
     }
   } else if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
@@ -1250,7 +1270,7 @@ void loop() {
     }
     if (powerHoldAction() == PowerHold::Sleep) {
       LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
-      enterDeepSleep();
+      enterDeepSleep(false, false, "power hold");
       // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
       return;
     }
@@ -1261,7 +1281,7 @@ void loop() {
 
   if (activityManager.consumePowerOffRequest()) {
     LOG_DBG("MAIN", "Power Off popup confirmed, shutting down");
-    enterDeepSleep(false, true);
+    enterDeepSleep(false, true, "power-off popup");
     return;
   }
 
@@ -1276,7 +1296,7 @@ void loop() {
       mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
       (!x4ProDoubleClickPwrLight || gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) &&
       gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
-    enterDeepSleep();
+    enterDeepSleep(false, false, "short power press");
     return;
   }
 
@@ -1287,7 +1307,7 @@ void loop() {
   if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
       millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
-    enterDeepSleep();
+    enterDeepSleep(false, false, "power click (PaperMono)");
     return;
   }
 #endif

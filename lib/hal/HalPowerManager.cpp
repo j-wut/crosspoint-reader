@@ -81,12 +81,17 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   xSemaphoreGive(modeMutex);
 }
 
+// Sleep-entry progress for the firmware's wake trace (RTC memory), so a reset
+// in the steps below can be located on the next boot. Default does nothing.
+__attribute__((weak)) void halSleepStep(const char* /*step*/) {}
+
 void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton) const {
 #if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
   // The frontlight driver and touch share I2C; turn the light off before touch
   // releases the bus. On Picco this also puts the TMA525C to sleep.
   Frontlight.setOn(false);
   gpio.prepareForDeepSleep();
+  halSleepStep("InputParked");
 #endif
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
@@ -94,6 +99,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton)
   // logSerial is the raw HWCDC reference; Serial is the MySerialImpl proxy
   // (which doesn't expose end()).
   logSerial.end();
+  halSleepStep("SerialClosed");
 #endif
 
 #if !SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -130,6 +136,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton)
     digitalWrite(pin, HIGH);
     gpio_hold_en(g);
   }
+  halSleepStep("PinsHeld");
 
   // Cut the gated peripheral rails (touch/SD/EPD on boards like the Sticky) and
   // hold the enables off through deep sleep — otherwise the GT911 and SD card
@@ -139,6 +146,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton)
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
+  halSleepStep("RailsDown");
 
 #if FREEINK_DEVICE_PAPERMONO
   // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
@@ -156,11 +164,19 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton)
 
   if (wakeOnHeldButton) {
     freeink::PowerManager::armPowerButtonWakeup();
+    halSleepStep("WakeArmed");
+    halSleepStep("EnterSleep");
     freeink::PowerManager::deepSleep();
   }
-  // Waits for the power button to be physically released (so holding it doesn't
-  // immediately wake the device again), then arms the wake source and sleeps.
-  freeink::PowerManager::deepSleepUntilPowerButton();
+  // Same steps as freeink::PowerManager::deepSleepUntilPowerButton(), split to
+  // trace them: wait for the power button to be released (so holding it
+  // doesn't wake the device again), then arm the wake source and sleep.
+  halSleepStep("WaitRelease");
+  freeink::PowerManager::waitForPowerButtonRelease();
+  freeink::PowerManager::armPowerButtonWakeup();
+  halSleepStep("WakeArmed");
+  halSleepStep("EnterSleep");
+  freeink::PowerManager::deepSleep();
 }
 
 #if FREEINK_DEVICE_PICCO
@@ -170,7 +186,7 @@ static constexpr uint64_t USB_HOLD_POLL_US = 30ULL * 1000 * 1000;
 
 bool HalPowerManager::holdWhileUsbPowered(HalGPIO& gpio, void (*onStatus)(bool charging, uint16_t percent)) const {
   if (!gpio.isUsbConnected()) return false;
-  LOG_DBG("PWR", "USB power present, holding in light sleep");
+  LOG_INF("PWR", "USB power present, holding in light sleep");
   const auto powerPin = static_cast<gpio_num_t>(BoardConfig::ACTIVE.input.power);
   // The press that requested sleep may still be down; it must not end the hold.
   while (digitalRead(powerPin) == LOW) delay(10);  // Picco power button is active-low
@@ -183,19 +199,29 @@ bool HalPowerManager::holdWhileUsbPowered(HalGPIO& gpio, void (*onStatus)(bool c
     if (static_cast<int>(charging) != lastCharging || percent != lastPercent) {
       lastCharging = charging;
       lastPercent = percent;
+      LOG_INF("PWR", "USB hold: charging=%d pct=%u", charging ? 1 : 0, percent);
       onStatus(charging, percent);
     }
     esp_sleep_enable_timer_wakeup(USB_HOLD_POLL_US);
     gpio_wakeup_enable(powerPin, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
-    esp_light_sleep_start();
+    const esp_err_t slept = esp_light_sleep_start();
+    // Timer polls are routine; log only failures and other wake causes.
+    const auto cause = esp_sleep_get_wakeup_cause();
+    if (slept != ESP_OK || cause != ESP_SLEEP_WAKEUP_TIMER) {
+      LOG_INF("PWR", "USB hold: light sleep ret=%d cause=%d", static_cast<int>(slept), static_cast<int>(cause));
+    }
     gpio_wakeup_disable(powerPin);
     // gpio_wakeup_disable() keeps the LOW_LEVEL type, and a later pinMode() would
     // enable it as an interrupt that storms while the button is held.
     gpio_set_intr_type(powerPin, GPIO_INTR_DISABLE);
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    if (digitalRead(powerPin) == LOW) return true;
+    if (digitalRead(powerPin) == LOW) {
+      LOG_INF("PWR", "USB hold ended by the power button");
+      return true;
+    }
   }
+  LOG_INF("PWR", "USB hold ended: USB unplugged");
   return false;
 }
 #endif

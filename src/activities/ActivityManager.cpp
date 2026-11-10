@@ -449,6 +449,10 @@ bool ActivityManager::isReaderActivity() const {
          (currentActivity && currentActivity->isReaderActivity());
 }
 
+const char* ActivityManager::currentActivityName() const {
+  return currentActivity ? currentActivity->name.c_str() : "none";
+}
+
 bool ActivityManager::isForegroundReader() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->isReaderActivity();
 }
