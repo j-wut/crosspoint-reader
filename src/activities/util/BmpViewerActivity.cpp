@@ -1,7 +1,6 @@
 #include "BmpViewerActivity.h"
 
 #include <Bitmap.h>
-#include <BmpToBmpConverter.h>
 #include <BoardConfig.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
 #include <FsHelpers.h>
@@ -10,12 +9,12 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
-#include <PngToBmpConverter.h>
 
 #include <algorithm>
 
 #include "CrossPointSettings.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "apps/ImageScreen.h"
 #include "apps/Wallpaper.h"
 #include "components/HeaderBackTapTarget.h"
 #include "components/UITheme.h"
@@ -29,89 +28,7 @@ constexpr char TRANSPARENT_SLEEP_ROOT_BMP[] = "/sleep-overlay.bmp";
 constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
 constexpr size_t COPY_BUFFER_SIZE = 2048;
 constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0};
-constexpr char SCALED_VIEW_BMP[] = "/.crosspoint/view_scaled.bmp";
-
-// PNG size from the IHDR chunk.
-bool pngSize(HalFile& in, int& width, int& height) {
-  uint8_t ihdr[24];
-  if (in.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !in.seek(0)) return false;
-  const auto be32 = [&ihdr](const int at) {
-    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
-  };
-  if (be32(16) > 8192 || be32(20) > 8192) return false;
-  width = static_cast<int>(be32(16));
-  height = static_cast<int>(be32(20));
-  return width > 0 && height > 0;
-}
-
-// Writes the image to SCALED_VIEW_BMP as a 2-bit BMP: shrunk to fit width x height
-// when larger (never enlarged), then dithered. PNGs are always converted; BMPs only
-// when they need shrinking. False when no copy is needed or it fails.
-bool writeScaledImage(const std::string& path, const int width, const int height, const bool originalThresholds) {
-  const bool png = FsHelpers::hasPngExtension(path);
-  HalFile in;
-  if (!Storage.openFileForRead("BMP", path, in)) return false;
-  int sourceWidth = 0;
-  int sourceHeight = 0;
-  if (png) {
-    if (!pngSize(in, sourceWidth, sourceHeight)) return false;
-  } else {
-    Bitmap source(in);
-    if (source.parseHeaders() != BmpReaderError::Ok) return false;
-    sourceWidth = source.getWidth();
-    sourceHeight = source.getHeight();
-  }
-  const bool shrink = sourceWidth > width || sourceHeight > height;
-  if (!png && !shrink) return false;
-  const int targetWidth = shrink ? width : sourceWidth;
-  const int targetHeight = shrink ? height : sourceHeight;
-  const unsigned long start = millis();
-  HalFile out;
-  if (!Storage.openFileForWrite("BMP", SCALED_VIEW_BMP, out)) return false;
-  bool ok = png ? PngToBmpConverter::pngFileToBmpStreamWithSize(in, out, targetWidth, targetHeight, false,
-                                                                originalThresholds)
-                : BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, targetWidth, targetHeight, false,
-                                                                originalThresholds);
-  ok = out.close() && ok;
-  if (!ok) Storage.remove(SCALED_VIEW_BMP);
-  LOG_INF("BMP", "converted %s %dx%d to fit %dx%d: %s, %lu ms", path.c_str(), sourceWidth, sourceHeight, targetWidth,
-          targetHeight, ok ? "ok" : "failed", millis() - start);
-  return ok;
-}
-
-// Removes the scaled copy once the viewer is done with it.
-struct ScaledBmpCleanup {
-  bool active = false;
-  ~ScaledBmpCleanup() {
-    if (active) Storage.remove(SCALED_VIEW_BMP);
-  }
-};
-
-// Everything that changes the viewer's finished layers. Empty when the file cannot be read.
-std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer) {
-  const std::string file = screencache::fileKey("view", path);
-  if (file.empty()) return {};
-  const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-  // The BMP draw path also picks its thresholds by controller.
-  const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
-  // "fit4" marks screens shrunk (never enlarged) before dithering, replacing older ones.
-  return file + "|fit4|" + std::to_string(renderer.getScreenWidth()) +
-         'x' + std::to_string(renderer.getScreenHeight()) + '|' +
-         std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
-         (ssd1677 ? "|ssd1677" : "");
-}
-
-RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
-  const float scale = std::min({static_cast<float>(renderer.getScreenWidth()) / dimensions.width,
-                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height, 1.0f});
-  const int width = std::max(1, std::min(renderer.getScreenWidth(), static_cast<int>(dimensions.width * scale)));
-  const int height = std::max(1, std::min(renderer.getScreenHeight(), static_cast<int>(dimensions.height * scale)));
-  RenderConfig config{(renderer.getScreenWidth() - width) / 2, (renderer.getScreenHeight() - height) / 2, width,
-                      height};
-  config.useExactDimensions = true;
-  return config;
-}
-
+constexpr int OVERLAY_ARROW_H = 44;
 bool overlaySleepMode() {
   const uint8_t mode = SETTINGS.sleepScreen;
   return mode == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM ||
@@ -189,13 +106,16 @@ void BmpViewerActivity::drawHints() const {
 }
 
 // Same sequence as a first draw, with the image layers read from the cache.
-bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
+// The bars go into every layer, so the grays under them stay gray.
+bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache, bool withOverlay) {
+  withOverlay = withOverlay || keepOverlay;
   const unsigned long start = millis();
   if (!cache.readLayer(0, renderer)) return false;
   drawHints();
+  if (withOverlay) drawOverlayContent();
   const unsigned long bwLoaded = millis();
   if (!cache.gray()) {
-    showFrame();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     LOG_INF("GAL", "cached screen %s: load %lu ms, refresh %lu ms", filePath.c_str(), bwLoaded - start,
             millis() - bwLoaded);
     return true;
@@ -215,6 +135,7 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
     }
     renderer.setRenderMode(mode);
     drawHints();
+    if (withOverlay) drawOverlayGrayPlane(absolute);
     if (mode == GfxRenderer::GRAYSCALE_LSB) {
       renderer.copyGrayscaleLsbBuffers();
     } else {
@@ -233,65 +154,12 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
     ready = false;
   }
   drawHints();
+  if (withOverlay) drawOverlayContent();
   renderer.cleanupGrayscaleWithFrameBuffer();
-  if (ready && keepOverlay) drawOverlay();
   if (!ready) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   LOG_INF("GAL", "cached gray screen %s: B/W load %lu ms, base refresh %lu ms, gray load %lu ms, gray refresh %lu ms",
           filePath.c_str(), bwLoaded - start, base - bwLoaded, grayLoaded - base, grayShown - grayLoaded);
   return true;
-}
-
-bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::string& cacheKey) {
-  JpegToFramebufferConverter decoder;
-  ImageDimensions dimensions;
-  if (!decoder.getDimensions(filePath, dimensions)) return false;
-  if (dimensions.width <= 0 || dimensions.height <= 0) return false;
-
-  const auto config = fitImage(dimensions, renderer);
-  const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
-  const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
-                       currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
-                                            hasPrevious ? "<" : "", hasNext ? ">" : "");
-  const auto drawImage = [&]() {
-    if (!decoder.decodeToFramebuffer(filePath, renderer, config)) return false;
-    // The cached layers hold the image only; hints are drawn fresh.
-    if (capture) capture->addLayer(renderer);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    return true;
-  };
-
-  const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-  if (capture) capture->begin(cacheKey, renderer, true, absolute);
-  if (!drawImage()) return false;
-
-  if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return false;
-  if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
-  bool ready = true;
-  // ponytail: decode each plane; add a pixel cache if large-image latency needs it.
-  for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
-    renderer.clearScreen(absolute ? 0xFF : 0x00);
-    renderer.setRenderMode(mode);
-    if (!drawImage()) {
-      ready = false;
-      break;
-    }
-    if (mode == GfxRenderer::GRAYSCALE_LSB) {
-      renderer.copyGrayscaleLsbBuffers();
-    } else {
-      renderer.copyGrayscaleMsbBuffers();
-    }
-  }
-  if (ready) renderer.displayGrayBuffer();
-  if (ready && capture) capture->finish();
-  capture = nullptr;
-
-  renderer.setRenderMode(GfxRenderer::BW);
-  renderer.clearScreen();
-  if (!drawImage()) ready = false;
-  renderer.cleanupGrayscaleWithFrameBuffer();
-  if (ready && keepOverlay) drawOverlay();
-  return ready;
 }
 
 void BmpViewerActivity::onEnter() {
@@ -303,191 +171,28 @@ void BmpViewerActivity::onEnter() {
     loadSiblingImages();
   }
 
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const std::string cacheKey = viewerCacheKey(filePath, renderer);
-  if (!cacheKey.empty()) {
+  const std::string cacheKey = imagescreen::cacheKey(filePath, renderer);
+  screenKey = cacheKey;
+  {
     screencache::Reader cache;
-    if (cache.open(cacheKey, renderer) && showCachedScreen(cache)) return;
+    if (!cacheKey.empty() && cache.open(cacheKey, renderer) && showCachedScreen(cache)) return;
   }
-  screencache::Writer capture;
   if (!cacheKey.empty()) LOG_INF("GAL", "no cached screen for %s; drawing it", filePath.c_str());
 
+  // Drawn into the screen cache first, then shown from it like a cached screen,
+  // so the sleep screen shows exactly the same layers.
   Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-  GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
-  if (wallpaper::isOpg(filePath)) {
-    // Straight from the file into the frame buffer; no converted copy.
-    const unsigned long start = millis();
-    renderer.clearScreen();
-    const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
-    if (ok && capture.begin(cacheKey, renderer, false, false)) {
-      capture.addLayer(renderer);
-      capture.finish();
-    }
-    if (ok) {
-      const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
-      const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
-                           currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", hasPrevious ? "<" : "", hasNext ? ">" : "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    } else {
-      renderer.clearScreen();
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
-    }
-    const unsigned long drawn = millis();
-    if (ok) {
-      showFrame();
-    } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
-    LOG_INF("GAL", "opg %s: draw %lu ms, refresh %lu ms", filePath.c_str(), drawn - start, millis() - drawn);
+  GUI.fillPopupProgress(renderer, popupRect, 20);
+  screencache::Reader built;
+  if (imagescreen::build(renderer, filePath, cacheKey) && built.open(cacheKey, renderer) && showCachedScreen(built)) {
     return;
   }
-
-  if (FsHelpers::hasJpgExtension(filePath)) {
-    renderer.clearScreen();
-    if (!renderImage(&capture, cacheKey)) {
-      renderer.clearScreen();
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
-    return;
-  }
-
-  const bool originalThresholds = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
-                                  display.getController() == HalDisplay::Controller::SSD1677;
-  // Shrink if needed, then dither; the original is drawn if that fails.
-  ScaledBmpCleanup scaled;
-  scaled.active = writeScaledImage(filePath, pageWidth, pageHeight, originalThresholds);
-  const std::string drawPath = scaled.active ? std::string(SCALED_VIEW_BMP) : filePath;
-  if (!scaled.active && FsHelpers::hasPngExtension(filePath)) {
-    renderer.clearScreen();
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    return;
-  }
-
-  HalFile file;
-  // 1. Open the BMP file
-  if (Storage.openFileForRead("BMP", drawPath, file)) {
-    Bitmap bitmap(file, true, originalThresholds);
-
-    // 2. Parse headers to get dimensions
-    if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-      int x, y;
-
-      // Centre the image; one that does not fit is shrunk, keeping its aspect ratio.
-      if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
-        float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
-        const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
-
-        if (ratio > screenRatio) {
-          // Wider than screen
-          x = 0;
-          y = std::round((static_cast<float>(pageHeight) - static_cast<float>(pageWidth) / ratio) / 2);
-        } else {
-          // Taller than screen
-          x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
-          y = 0;
-        }
-      } else {
-        x = (pageWidth - bitmap.getWidth()) / 2;
-        y = (pageHeight - bitmap.getHeight()) / 2;
-      }
-
-      // 4. Prepare Rendering
-      bool hasPrevious = (siblingImages.size() > 1 && currentImageIndex > 0);
-      bool hasNext = (siblingImages.size() > 1 && currentImageIndex != -1 &&
-                      currentImageIndex < static_cast<int>(siblingImages.size()) - 1);
-
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
-                                                (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
-
-      GUI.fillPopupProgress(renderer, popupRect, 50);
-
-      renderer.clearScreen();
-      if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
-        renderer.clearScreen();
-        renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-        return;
-      }
-      const bool absoluteGray =
-          bitmap.hasGreyscale() && renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-      if (capture.begin(cacheKey, renderer, bitmap.hasGreyscale(), absoluteGray)) capture.addLayer(renderer);
-
-      // Draw UI hints on the base layer
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      if (bitmap.hasGreyscale()) {
-        const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-        if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return;
-        if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
-        bool planesReady = true;
-        for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
-          if (bitmap.rewindToData() != BmpReaderError::Ok) {
-            LOG_ERR("BMP", "Failed to rewind bitmap for grayscale rendering");
-            planesReady = false;
-            break;
-          }
-          renderer.clearScreen(absolute ? 0xFF : 0x00);
-          renderer.setRenderMode(mode);
-          if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
-            planesReady = false;
-            break;
-          }
-          capture.addLayer(renderer);
-          GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-          if (mode == GfxRenderer::GRAYSCALE_LSB) {
-            renderer.copyGrayscaleLsbBuffers();
-          } else {
-            renderer.copyGrayscaleMsbBuffers();
-          }
-        }
-        if (planesReady) renderer.displayGrayBuffer();
-        if (planesReady) capture.finish();
-
-        // Rebuild the BW framebuffer for popups and subsequent differential updates.
-        renderer.setRenderMode(GfxRenderer::BW);
-        renderer.clearScreen();
-        if (bitmap.rewindToData() != BmpReaderError::Ok ||
-            !renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
-          LOG_ERR("BMP", "Failed to rewind bitmap to restore the BW framebuffer");
-          renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-          planesReady = false;
-        }
-        GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-        renderer.cleanupGrayscaleWithFrameBuffer();
-        if (planesReady && keepOverlay) drawOverlay();
-        if (!planesReady) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      } else {
-        capture.finish();
-        showFrame();
-      }
-
-    } else {
-      // Handle file parsing error
-      renderer.clearScreen();
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_INVALID_BMP_FILE));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
-
-    file.close();
-  } else {
-    // Handle file open error
-    renderer.clearScreen();
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-  }
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2,
+                            FsHelpers::hasBmpExtension(filePath) ? tr(STR_INVALID_BMP_FILE) : tr(STR_FILE_OPEN_FAILED));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
 void BmpViewerActivity::onExit() {
@@ -510,7 +215,7 @@ bool BmpViewerActivity::saveJpegSleepCover() {
   JpegToFramebufferConverter decoder;
   ImageDimensions dimensions;
   if (!decoder.getDimensions(filePath, dimensions)) return false;
-  auto config = fitImage(dimensions, renderer);
+  auto config = imagescreen::fitJpeg(dimensions, renderer);
   if (SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP &&
       (dimensions.width > renderer.getScreenWidth() || dimensions.height > renderer.getScreenHeight())) {
     const float ratio = static_cast<float>(dimensions.width) / dimensions.height;
@@ -647,7 +352,7 @@ void BmpViewerActivity::drawOverlayContent() {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, name.c_str());
 
   constexpr int ARROW_W = 72;
-  constexpr int ARROW_H = 44;
+  constexpr int ARROW_H = OVERLAY_ARROW_H;
   const int footHeight = ARROW_H + 2 * metrics.verticalSpacing;
   const int footY = height - footHeight;
   renderer.fillRect(0, footY, width, footHeight, false);
@@ -675,14 +380,31 @@ void BmpViewerActivity::drawOverlayContent() {
   overlayShown = true;
 }
 
-void BmpViewerActivity::drawOverlay() {
-  drawOverlayContent();
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+// The bars in one gray plane. Absolute planes hold every pixel's level, so the
+// bars are drawn as on the B/W layer; relative planes only mark pixels to gray.
+void BmpViewerActivity::drawOverlayGrayPlane(const bool absolute) {
+  const auto mode = renderer.getRenderMode();
+  renderer.setRenderMode(GfxRenderer::BW);
+  if (absolute) {
+    drawOverlayContent();
+  } else {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int width = renderer.getScreenWidth();
+    const int footHeight = OVERLAY_ARROW_H + 2 * metrics.verticalSpacing;
+    renderer.fillRect(0, 0, width, metrics.topPadding + metrics.headerHeight, true);
+    renderer.fillRect(0, renderer.getScreenHeight() - footHeight, width, footHeight, true);
+  }
+  renderer.setRenderMode(mode);
 }
 
-// Shows the drawn image, with the bars when they were up before a page change.
-void BmpViewerActivity::showFrame() {
-  if (keepOverlay) drawOverlayContent();
+void BmpViewerActivity::drawOverlay() {
+  // A B/W refresh over a gray image turns its grays black, so gray screens are
+  // shown again from the cache with the bars in every layer.
+  if (!screenKey.empty()) {
+    screencache::Reader cache;
+    if (cache.open(screenKey, renderer) && cache.gray() && showCachedScreen(cache, true)) return;
+  }
+  drawOverlayContent();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 

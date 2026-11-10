@@ -1,6 +1,7 @@
 #pragma once
 #include <I18n.h>
 
+#include <functional>
 #include <string>
 
 #include "activities/Activity.h"
@@ -16,6 +17,17 @@ class SleepActivity final : public Activity {
                          bool powerOff = false)
       : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout), powerOff(powerOff) {}
   void onEnter() override;
+  // True when the sleep screen on the panel has grays. The frame buffer then
+  // holds a gray plane, so a B/W refresh of it would show the wrong image.
+  static bool screenHasGray();
+  // Which frame buffer an overlay is drawn into: the B/W layer, or a gray
+  // plane (absolute planes take B/W drawing; relative planes take a filled
+  // rectangle with no gray).
+  enum class OverlayLayer { Bw, AbsolutePlane, RelativePlane };
+  // Shows the cached sleep screen again with `overlay` drawn into every
+  // layer, or without one when it is empty. False when the sleep screen on
+  // the panel was not cached.
+  static bool showAgainWith(GfxRenderer& renderer, const std::function<void(OverlayLayer)>& overlay);
 
  private:
   void renderDefaultSleepScreen() const;
@@ -33,6 +45,7 @@ class SleepActivity final : public Activity {
   void renderBlankSleepScreen() const;
   bool galleryWallpaper(wallpaper::Kind& kind, std::string& path) const;
   bool renderGalleryWallpaper(bool frameWasInverted) const;
+  bool renderGalleryImageScreen(wallpaper::Kind kind, const std::string& path) const;
 
   const char* sleepPopupText() const { return powerOff ? tr(STR_SHUTTING_DOWN) : tr(STR_ENTERING_SLEEP); }
 

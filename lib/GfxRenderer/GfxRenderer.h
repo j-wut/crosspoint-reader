@@ -405,6 +405,9 @@ class GfxRenderer {
   void displayGrayBuffer() const;
   // Active input encoding, used when drawing monochrome overlays into planes.
   bool grayPlanesAreAbsolute() const { return absoluteGrayPlanes; }
+  // Picks the plane encoding without a base refresh, for gray planes drawn
+  // only to be saved. Set it back to false before returning to BW mode.
+  void setGrayPlanesAbsolute(const bool absolute) const { absoluteGrayPlanes = absolute; }
   // B/W pass: draw 2-bit image pixels as a 2x2 ordered dither instead of
   // "any ink is black". Only for pages that get no image grayscale pass,
   // because overlay gray planes expect every gray pixel black in the base.

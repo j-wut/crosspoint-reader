@@ -26,6 +26,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
+#include "apps/ImageScreen.h"
 #include "apps/Wallpaper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -55,6 +56,17 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
   return renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Direct).supported()
              ? HalDisplay::GrayscaleMode::Direct
              : HalDisplay::GrayscaleMode::Absolute;
+}
+
+// Whether the last sleep screen shown has grays, which a B/W refresh of the
+// frame buffer would destroy: after a gray pass it holds a gray plane.
+bool sleepScreenGray = false;
+// Screen cache key of the sleep screen on the panel; empty when it was not cached.
+std::string shownSleepKey;
+
+void showSleepGray(const GfxRenderer& renderer) {
+  renderer.displayGrayBuffer();
+  sleepScreenGray = true;
 }
 
 // SSD absolute images use the new thresholds; other panels retain legacy tuning.
@@ -447,7 +459,7 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   }
   renderer.copyGrayscaleMsbBuffers();
 
-  renderer.displayGrayBuffer();
+  showSleepGray(renderer);
   renderer.setRenderMode(GfxRenderer::BW);
   return AlphaOverlayResult::Rendered;
 }
@@ -686,8 +698,44 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 
 }  // namespace
 
+bool SleepActivity::screenHasGray() { return sleepScreenGray; }
+
+bool SleepActivity::showAgainWith(GfxRenderer& renderer, const std::function<void(OverlayLayer)>& overlay) {
+  if (shownSleepKey.empty()) return false;
+  screencache::Reader cache;
+  if (!cache.open(shownSleepKey, renderer)) return false;
+  const bool gray = cache.gray();
+  const bool absolute = gray && cache.absolute();
+  if (gray && absolute != renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported()) return false;
+  if (!cache.readLayer(0, renderer)) return false;
+  if (overlay) overlay(OverlayLayer::Bw);
+  if (!gray) {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return true;
+  }
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) return false;
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return false;
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
+  // The overlay goes into both gray planes too, so the grays around it stay gray.
+  bool ready = cache.readLayer(1, renderer);
+  if (ready && overlay) overlay(absolute ? OverlayLayer::AbsolutePlane : OverlayLayer::RelativePlane);
+  if (ready) renderer.copyGrayscaleLsbBuffers();
+  ready = ready && cache.readLayer(2, renderer);
+  if (ready && overlay) overlay(absolute ? OverlayLayer::AbsolutePlane : OverlayLayer::RelativePlane);
+  if (ready) renderer.copyGrayscaleMsbBuffers();
+  if (ready) showSleepGray(renderer);
+  renderer.setRenderMode(GfxRenderer::BW);
+  return ready;
+}
+
 void SleepActivity::onEnter() {
   Activity::onEnter();
+  sleepScreenGray = false;
+  shownSleepKey.clear();
 
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -774,6 +822,7 @@ bool SleepActivity::renderCachedSleepScreen(const std::string& key) const {
   if (gray && absolute != cache.absolute()) return false;
   // A failed first read leaves the frame for the normal path to redraw.
   if (!cache.readLayer(0, renderer)) return false;
+  shownSleepKey = key;
   const unsigned long bwLoaded = millis();
   if (!gray) {
     renderer.displayBuffer(kSleepClean);
@@ -798,7 +847,7 @@ bool SleepActivity::renderCachedSleepScreen(const std::string& key) const {
   if (ready) renderer.copyGrayscaleMsbBuffers();
   const unsigned long grayLoaded = millis();
   if (ready)
-    renderer.displayGrayBuffer();
+    showSleepGray(renderer);
   else
     LOG_ERR("SLP", "Incomplete cached grayscale layers; keeping the current display");
   renderer.setRenderMode(GfxRenderer::BW);
@@ -822,7 +871,8 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
                             std::to_string(renderer.getScreenHeight()) + (cropMode ? "|c" : "|f") +
                             (useOriginalCoverThresholds(renderer) ? "|t" : "") + "|filter" +
                             std::to_string(SETTINGS.sleepScreenCoverFilter) +
-                            (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "");
+                            (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "") +
+                            "|d2";  // d2: 2-bit images are not dithered again
   if (renderCachedSleepScreen(cacheKey)) return true;
   LOG_INF("SLP", "no cached sleep screen for %s; drawing it", path.c_str());
   screencache::Writer capture;
@@ -832,11 +882,15 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
   LOG_DBG("SLP", "Loading: %s", path.c_str());
 
   const bool thresholds = useOriginalCoverThresholds(renderer);
-  const bool screenReady = source.getWidth() == renderer.getScreenWidth() &&
-                           source.getHeight() == renderer.getScreenHeight() && source.getBpp() <= 2;
+  const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  // A 2-bit image is already dithered: dithering it again loses its grays. In fit mode
+  // one that fits on screen (like the Gallery's copy) is drawn as it is, centred.
+  const bool exactSize =
+      source.getWidth() == renderer.getScreenWidth() && source.getHeight() == renderer.getScreenHeight();
+  const bool fits = source.getWidth() <= renderer.getScreenWidth() && source.getHeight() <= renderer.getScreenHeight();
+  const bool screenReady = source.getBpp() <= 2 && (exactSize || (!crop && fits));
   if (!screenReady) {
     // Like book covers: scale and dither once into a cached screen-sized BMP, then draw it without dithering.
-    const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
     // Same-sized BMPs share a byte count, so the key also needs the modification time.
     // fileKey's sampled bytes tell apart same-sized files that share the device's default date.
     const std::string key = path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) +
@@ -1004,7 +1058,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     }
     const unsigned long grayDrawn = millis();
     if (ready)
-      renderer.displayGrayBuffer();
+      showSleepGray(renderer);
     else
       LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
     renderer.setRenderMode(GfxRenderer::BW);
@@ -1084,7 +1138,7 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   }
   renderer.copyGrayscaleMsbBuffers();
 
-  renderer.displayGrayBuffer();
+  showSleepGray(renderer);
   renderer.setRenderMode(GfxRenderer::BW);
   return true;
 }
@@ -1239,6 +1293,7 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
   LOG_INF("SLP", "gallery wallpaper kind=%u path=%s mode=%u fromReader=%d powerOff=%d", kind, path.c_str(),
           SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader, powerOff);
   if (!wallpaper::isOpg(path)) {
+    if (renderGalleryImageScreen(kind, path)) return true;
     if (kind != wallpaper::POWER_OFF) return false;  // the normal flow draws the Gallery's BMP copy
     GUI.drawPopup(renderer, sleepPopupText());
     if (renderCustomSleepBmp(path)) return true;
@@ -1288,6 +1343,43 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
   renderer.displayBuffer(kSleepClean);
   LOG_INF("SLP", "gallery wallpaper shown kind=%u alpha=%d: draw %lu ms, refresh %lu ms", kind, drawn.hasAlpha,
           drawnAt - start, millis() - drawnAt);
+  return true;
+}
+
+// A PNG, JPEG or BMP Gallery image is shown from the image viewer's screen
+// cache, made here when missing, so it matches the full-screen view. False
+// leaves the normal flow to draw the Gallery's BMP copy.
+bool SleepActivity::renderGalleryImageScreen(const wallpaper::Kind kind, const std::string& path) const {
+  if (!Storage.exists(path.c_str())) {
+    LOG_ERR("SLP", "gallery image missing: %s", path.c_str());
+    return false;
+  }
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const std::string viewerKey = imagescreen::cacheKey(path, renderer);
+  if (viewerKey.empty()) return false;
+  // The B/W filters get their own file, made from the viewer screen's B/W layer.
+  const uint8_t filter = SETTINGS.sleepScreenCoverFilter;
+  const bool filtered = filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::BLACK_AND_WHITE ||
+                        filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE;
+  const std::string key = filtered ? viewerKey + "|filter" + std::to_string(filter) : viewerKey;
+  if (renderCachedSleepScreen(key)) {
+    LOG_INF("SLP", "gallery image shown from the viewer cache kind=%u filter=%u", kind, filter);
+    return true;
+  }
+  LOG_INF("SLP", "no cached screen for %s filter=%u; drawing it", path.c_str(), filter);
+  GUI.drawPopup(renderer, sleepPopupText());
+  releaseSdFontCachesForDecode(renderer);
+  bool ok = imagescreen::hasScreen(viewerKey, renderer) || imagescreen::build(renderer, path, viewerKey);
+  if (ok && filtered) {
+    ok = imagescreen::buildBw(renderer, viewerKey, key,
+                              filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE);
+  }
+  if (!ok || !renderCachedSleepScreen(key)) {
+    LOG_ERR("SLP", "viewer screen failed for %s", path.c_str());
+    renderer.clearScreen();
+    return false;
+  }
+  LOG_INF("SLP", "gallery image shown kind=%u filter=%u", kind, filter);
   return true;
 }
 

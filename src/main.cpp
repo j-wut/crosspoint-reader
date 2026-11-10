@@ -43,6 +43,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -440,17 +441,42 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
 
 #if FREEINK_DEVICE_PICCO
 // Charge strip along the bottom of the retained sleep screen.
+// True once the strip was drawn into the panel's saved gray planes, so
+// restoring those planes would not remove it.
+static bool chargeStripInPlanes = false;
 static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
   RenderLock lock;
   const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
   const int y = renderer.getScreenHeight() - h;
-  renderer.fillRect(0, y, renderer.getScreenWidth(), h, false);
+  const int w = renderer.getScreenWidth();
   char text[48];
   snprintf(text, sizeof(text), "%s  %u%%", charging ? tr(STR_CHARGING) : tr(STR_CHARGED), percent);
-  renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
-  if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h)) {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  const auto drawStrip = [&](const SleepActivity::OverlayLayer layer) {
+    if (layer == SleepActivity::OverlayLayer::RelativePlane) {
+      renderer.fillRect(0, y, w, h, true);
+      return;
+    }
+    renderer.fillRect(0, y, w, h, false);
+    renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
+  };
+  // Only the strip's rows change: a partial gray update when the panel still
+  // holds the sleep screen's gray planes.
+  drawStrip(SleepActivity::OverlayLayer::Bw);
+  if (renderer.displayRetainedGrayscaleOverlay(0, y, w, h)) {
+    LOG_INF("SLP", "charge strip: partial update (%u%%)", percent);
+    return;
   }
+  // Else, like the Gallery viewer's bars: the cached sleep screen is shown
+  // again with the strip in every layer.
+  if (SleepActivity::showAgainWith(renderer, drawStrip)) {
+    chargeStripInPlanes = true;
+    LOG_INF("SLP", "charge strip: partial update failed, cached sleep screen redrawn (%u%%)", percent);
+    return;
+  }
+  // The frame buffer of a gray sleep screen holds a gray plane, not the image.
+  const bool gray = SleepActivity::screenHasGray();
+  LOG_INF("SLP", "charge strip: retained overlay failed, gray=%d -> %s", gray, gray ? "skipped" : "B/W refresh");
+  if (!gray) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 // Shows the charge strip while the power HAL holds sleep on USB power, and
@@ -458,6 +484,7 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
 // the hold.
 static bool holdSleepWhileUsbPowered() {
   if (!gpio.isUsbConnected()) return false;
+  chargeStripInPlanes = false;
   // Keep the sleep frame so unplugging can remove the strip. 48 KB of PSRAM,
   // freed when the hold ends.
   const size_t frameSize = renderer.getBufferSize();
@@ -466,11 +493,19 @@ static bool holdSleepWhileUsbPowered() {
   const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, drawSleepChargeStrip);
   if (!buttonPressed) {
     RenderLock lock;
+    if (chargeStripInPlanes && SleepActivity::showAgainWith(renderer, nullptr)) {
+      LOG_INF("SLP", "charge strip removed: cached sleep screen shown again");
+      heap_caps_free(sleepFrame);
+      return buttonPressed;
+    }
     if (sleepFrame) memcpy(renderer.getFrameBuffer(), sleepFrame, frameSize);
     const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
     const int y = renderer.getScreenHeight() - h;
     if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h, true) && sleepFrame) {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      const bool gray = SleepActivity::screenHasGray();
+      LOG_INF("SLP", "charge strip removal: retained overlay failed, gray=%d -> %s", gray,
+              gray ? "skipped" : "B/W refresh");
+      if (!gray) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     }
   }
   heap_caps_free(sleepFrame);
