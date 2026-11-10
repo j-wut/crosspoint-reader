@@ -899,6 +899,12 @@ bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpO
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false);
 }
 
+bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, const int targetMaxWidth,
+                                                   const int targetMaxHeight, const bool crop,
+                                                   const bool originalThresholds) {
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false, crop, originalThresholds);
+}
+
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                        int targetMaxHeight, const bool crop) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, crop);

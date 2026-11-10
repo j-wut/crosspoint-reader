@@ -5,6 +5,7 @@
 
 #include "MappedInputManager.h"
 #include "activities/Activity.h"
+#include "apps/ScreenCache.h"
 #include "components/themes/BaseTheme.h"
 
 class BmpViewerActivity final : public Activity {
@@ -22,7 +23,9 @@ class BmpViewerActivity final : public Activity {
   void loadSiblingImages();
   void doSetSleepCover();
   bool canSetSleepCover() const;
-  bool renderImage();
+  bool renderImage(screencache::Writer* capture, const std::string& cacheKey);
+  bool showCachedScreen(screencache::Reader& cache);
+  void drawHints() const;
   bool saveJpegSleepCover();
   void drawOverlay();
   void drawOverlayContent();
