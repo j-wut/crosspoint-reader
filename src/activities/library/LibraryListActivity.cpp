@@ -249,8 +249,9 @@ void LibraryListActivity::activateIndex(const int index) {
 bool LibraryListActivity::deleteEligible() const { return !groupsCollapsed && (!query.empty() || !groupable()); }
 
 void LibraryListActivity::onRowLongPress(const int index) {
-  if (isRecentSort(sortOrder)) {
-    showRecentBookOptions(index);
+  // From the Bookshelf every book row gets the same menu, whatever the tab.
+  if (isRecentSort(sortOrder) || (fromBookshelf && !groupsCollapsed)) {
+    showBookOptions(index);
   } else if (deleteEligible()) {
     promptDeleteBook(index);
   } else if (!groupsCollapsed && groupable()) {
@@ -260,10 +261,11 @@ void LibraryListActivity::onRowLongPress(const int index) {
   }
 }
 
-// Recent-shelf long-press menu (button hold and touch long-press). The first
-// rows may come from RecentBooksStore; the rest are index rows sorted by
-// modification time. Only store rows can be removed from recents.
-void LibraryListActivity::showRecentBookOptions(const int entry) {
+// Book long-press menu (button hold and touch long-press). On Recent the
+// first rows may come from RecentBooksStore; the rest are index rows. Only
+// store rows can be removed from recents, except when opened from the
+// Bookshelf, where any book in recents can (as on the Bookshelf).
+void LibraryListActivity::showBookOptions(const int entry) {
   if (entry < 0 || entry >= listCount()) return;
 
   std::string path;
@@ -281,49 +283,60 @@ void LibraryListActivity::showRecentBookOptions(const int entry) {
     std::string author;
     if (ordinal == 0xFFFF || !index.readRecord(ordinal, record) || !index.readPath(record, path) ||
         !rowTextFor(entry, title, author)) {
-      LOG_ERR("LIB", "cannot resolve Recent row %d", entry);
+      LOG_ERR("LIB", "cannot resolve row %d", entry);
       return;
     }
   }
 
   // Opened from the Tiles Bookshelf, the menu matches the Bookshelf's: touch
   // boards rebuild from the header, button boards also switch layout here.
-  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT };
+  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT, GROUPS };
   const bool buttonsOnly = !mappedInput.hasTouch();
-  const char* labels[5];
-  std::array<Item, 5> items{};
+  const char* labels[6];
+  std::array<Item, 6> items{};
   int count = 0;
   const auto add = [&](const Item item, const char* label) {
     items[static_cast<size_t>(count)] = item;
     labels[count++] = label;
   };
   add(OPEN, tr(STR_OPEN));
-  if (isStoreRow) add(REMOVE_RECENT, tr(STR_REMOVE_FROM_RECENTS));
+  bool inRecents = isStoreRow;
+  if (fromBookshelf && !inRecents) {
+    const auto& books = RECENT_BOOKS.getBooks();
+    inRecents = std::any_of(books.begin(), books.end(), [&](const RecentBook& book) { return book.path == path; });
+  }
+  if (inRecents) add(REMOVE_RECENT, tr(STR_REMOVE_FROM_RECENTS));
   add(DELETE, tr(STR_DELETE));
   if (!fromBookshelf || buttonsOnly) add(REBUILD, tr(STR_LIBRARY_REBUILD));
   if (fromBookshelf && buttonsOnly) add(LAYOUT, tr(STR_SHOW_AS_GRID));
+  // Hold no longer folds Title/Author into groups here, so the menu offers it.
+  if (fromBookshelf && groupable() && query.empty()) add(GROUPS, tr(STR_SHOW_GROUPS));
   app.clearTapFlash();
-  optionPopup.show(tr(STR_LIBRARY), title.c_str(), labels, count, 0, [this, path, title, items](const int choice) {
-    swallowHeldReleases();
-    if (choice < 0) return;
-    switch (items[static_cast<size_t>(choice)]) {
-      case OPEN:
-        openBookByPath(path);
-        break;
-      case REMOVE_RECENT:
-        promptRemoveRecentBook(path, title);
-        break;
-      case DELETE:
-        promptDeleteBookByPath(path, title);
-        break;
-      case REBUILD:
-        promptRebuildIndex();
-        break;
-      case LAYOUT:
-        activityManager.goToBookshelf();
-        break;
-    }
-  });
+  optionPopup.show(tr(STR_LIBRARY), title.c_str(), labels, count, 0,
+                   [this, path, title, items, entry](const int choice) {
+                     swallowHeldReleases();
+                     if (choice < 0) return;
+                     switch (items[static_cast<size_t>(choice)]) {
+                       case OPEN:
+                         openBookByPath(path);
+                         break;
+                       case REMOVE_RECENT:
+                         promptRemoveRecentBook(path, title);
+                         break;
+                       case DELETE:
+                         promptDeleteBookByPath(path, title);
+                         break;
+                       case REBUILD:
+                         promptRebuildIndex();
+                         break;
+                       case LAYOUT:
+                         activityManager.goToBookshelf();
+                         break;
+                       case GROUPS:
+                         collapseGroups(entry);
+                         break;
+                     }
+                   });
   requestUpdate();
 }
 
@@ -776,8 +789,8 @@ bool LibraryListActivity::handleButtons() {
   if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, LONG_PRESS_MS)) {
     if (tabsFocused()) {
       if (!degraded) toggleSortDirection();
-    } else if (isRecentSort(sortOrder)) {
-      showRecentBookOptions(selectedEntry());
+    } else if (isRecentSort(sortOrder) || (fromBookshelf && !groupsCollapsed)) {
+      if (count > 0) showBookOptions(selectedEntry());
     } else if (deleteEligible()) {
       if (count > 0) promptDeleteBook(selectedEntry());
     } else if (!groupsCollapsed && groupable()) {
@@ -1068,7 +1081,7 @@ void LibraryListActivity::drawHoldHelp() const {
   const char* help = nullptr;
   if (tabsFocused() && !degraded)
     help = tr(STR_LIBRARY_HOLD_SORT);
-  else if (!tabsFocused() && isRecentSort(sortOrder) && listCount() > 0)
+  else if (!tabsFocused() && (isRecentSort(sortOrder) || fromBookshelf) && listCount() > 0)
     help = tr(STR_LIBRARY_HOLD_OPTIONS);  // recent rows: hold opens the row menu
   else if (!tabsFocused() && deleteEligible() && listCount() > 0)
     help = tr(STR_HOLD_OPEN_TO_DELETE);
