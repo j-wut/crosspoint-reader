@@ -16,6 +16,9 @@ class SleepActivity final : public Activity {
                          bool powerOff = false)
       : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout), powerOff(powerOff) {}
   void onEnter() override;
+  // True when the sleep screen on the panel has grays. The frame buffer then
+  // holds a gray plane, so a B/W refresh of it would show the wrong image.
+  static bool screenHasGray();
 
  private:
   void renderDefaultSleepScreen() const;

@@ -58,6 +58,15 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
              : HalDisplay::GrayscaleMode::Absolute;
 }
 
+// Whether the last sleep screen shown has grays, which a B/W refresh of the
+// frame buffer would destroy: after a gray pass it holds a gray plane.
+bool sleepScreenGray = false;
+
+void showSleepGray(const GfxRenderer& renderer) {
+  renderer.displayGrayBuffer();
+  sleepScreenGray = true;
+}
+
 // SSD absolute images use the new thresholds; other panels retain legacy tuning.
 bool useOriginalCoverThresholds(const GfxRenderer& renderer) {
   return renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
@@ -448,7 +457,7 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   }
   renderer.copyGrayscaleMsbBuffers();
 
-  renderer.displayGrayBuffer();
+  showSleepGray(renderer);
   renderer.setRenderMode(GfxRenderer::BW);
   return AlphaOverlayResult::Rendered;
 }
@@ -687,8 +696,11 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 
 }  // namespace
 
+bool SleepActivity::screenHasGray() { return sleepScreenGray; }
+
 void SleepActivity::onEnter() {
   Activity::onEnter();
+  sleepScreenGray = false;
 
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -799,7 +811,7 @@ bool SleepActivity::renderCachedSleepScreen(const std::string& key) const {
   if (ready) renderer.copyGrayscaleMsbBuffers();
   const unsigned long grayLoaded = millis();
   if (ready)
-    renderer.displayGrayBuffer();
+    showSleepGray(renderer);
   else
     LOG_ERR("SLP", "Incomplete cached grayscale layers; keeping the current display");
   renderer.setRenderMode(GfxRenderer::BW);
@@ -1010,7 +1022,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     }
     const unsigned long grayDrawn = millis();
     if (ready)
-      renderer.displayGrayBuffer();
+      showSleepGray(renderer);
     else
       LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
     renderer.setRenderMode(GfxRenderer::BW);
@@ -1090,7 +1102,7 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   }
   renderer.copyGrayscaleMsbBuffers();
 
-  renderer.displayGrayBuffer();
+  showSleepGray(renderer);
   renderer.setRenderMode(GfxRenderer::BW);
   return true;
 }

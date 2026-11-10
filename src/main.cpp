@@ -43,6 +43,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -448,9 +449,14 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
   char text[48];
   snprintf(text, sizeof(text), "%s  %u%%", charging ? tr(STR_CHARGING) : tr(STR_CHARGED), percent);
   renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
-  if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h)) {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  if (renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h)) {
+    LOG_INF("SLP", "charge strip shown over the retained sleep screen (%u%%)", percent);
+    return;
   }
+  // The frame buffer of a gray sleep screen holds a gray plane, not the image.
+  const bool gray = SleepActivity::screenHasGray();
+  LOG_INF("SLP", "charge strip: retained overlay failed, gray=%d -> %s", gray, gray ? "skipped" : "B/W refresh");
+  if (!gray) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 // Shows the charge strip while the power HAL holds sleep on USB power, and
@@ -470,7 +476,10 @@ static bool holdSleepWhileUsbPowered() {
     const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
     const int y = renderer.getScreenHeight() - h;
     if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h, true) && sleepFrame) {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      const bool gray = SleepActivity::screenHasGray();
+      LOG_INF("SLP", "charge strip removal: retained overlay failed, gray=%d -> %s", gray,
+              gray ? "skipped" : "B/W refresh");
+      if (!gray) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     }
   }
   heap_caps_free(sleepFrame);
