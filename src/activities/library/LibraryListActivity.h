@@ -31,7 +31,9 @@
 // indexed book so an allocation failure remains recoverable on the C3.
 class LibraryListActivity final : public UiTabListActivity {
  public:
-  LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  // fromBookshelf: opened from the Tiles Bookshelf; the list then offers a
+  // Tiles button back to it.
+  LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromBookshelf = false);
 
   void onEnter() override;
   void onExit() override;
@@ -67,6 +69,8 @@ class LibraryListActivity final : public UiTabListActivity {
   static constexpr freeink::ui::ActionId ACTION_SEARCH = ACTION_TAB_USER;
   static constexpr freeink::ui::ActionId ACTION_REBUILD = ACTION_SEARCH + 1;
   static constexpr freeink::ui::ActionId ACTION_BACK = ACTION_REBUILD + 1;
+  static constexpr freeink::ui::ActionId ACTION_TILES = ACTION_BACK + 1;
+  static constexpr freeink::ui::ActionId ACTION_LAYOUT_INDICATOR = ACTION_TILES + 1;  // painted only
 
   // Walk the card and write a fresh index. Blocking, with a popup: at ~70 books
   // it is well under a second, and it only runs when the index is missing or the
@@ -81,7 +85,7 @@ class LibraryListActivity final : public UiTabListActivity {
   void promptRebuildIndex();
   void resetAfterRebuild();
   // Recent-row long-press menu: open / remove from recents / delete / rebuild.
-  void showRecentBookOptions(int entry);
+  void showBookOptions(int entry);
   void promptRemoveRecentBook(const std::string& path, const std::string& title);
   // Long-press delete owns the gesture where grouping does not apply: the
   // Recent sort, degraded lists, and any active search result.
@@ -101,10 +105,12 @@ class LibraryListActivity final : public UiTabListActivity {
   void handleBackAction();
   static void searchActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
   static void rebuildActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
+  static void tilesActionTrampoline(const freeink::ui::ActionEvent&, void* user);
   static void backActionTrampoline(const freeink::ui::ActionEvent& event, void* user);
 
   // Data
   void applyFilter();
+  void applyQueryFilter();
   int bookRowCount() const;
   int rowFor(int entry) const;
   // fileName, when asked for, is the on-card name the row's icon derives from
@@ -112,6 +118,15 @@ class LibraryListActivity final : public UiTabListActivity {
   bool rowTextFor(int entry, std::string& title, std::string& author, std::string* fileName = nullptr);
   uint32_t titleInitialFor(int entry);
   bool buildGroupStarts();
+  // From the Bookshelf, Title/Author group headings are rows of their own:
+  // Confirm on one folds or unfolds every group. Entries then count headings
+  // and books together; these map between the two.
+  bool headerRows() const;
+  void ensureGroups();
+  int groupAtDisplay(int display) const;
+  int displayForGroup(int group) const;
+  int bookFor(int display) const;  // -1 for a heading row
+  int selectedBook() const;
   int groupForBook(int bookEntry) const;
   bool groupable() const;
 
@@ -149,6 +164,8 @@ class LibraryListActivity final : public UiTabListActivity {
   // Set when the walk finished but the sort did not, so the screen can say the
   // order is discovery order rather than silently showing a wrong one.
   bool degraded = false;
+  bool fromBookshelf = false;
+  bool groupsValid = false;  // groupStarts matches the current order and filter
 
   // Rows surviving the current query, as positions in the active sort order.
   // Empty query means no filtering and this owns no allocation, so the ordinary

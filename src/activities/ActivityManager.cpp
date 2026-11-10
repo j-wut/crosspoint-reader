@@ -314,8 +314,8 @@ void ActivityManager::goToBookshelf() {
   replaceActivity(std::move(activity));
 }
 
-void ActivityManager::goToLibrary() {
-  auto activity = makeUniqueNoThrow<LibraryListActivity>(renderer, mappedInput);
+void ActivityManager::goToLibrary(const bool fromBookshelf) {
+  auto activity = makeUniqueNoThrow<LibraryListActivity>(renderer, mappedInput, fromBookshelf);
   if (!activity) {
     LOG_ERR("ACT", "OOM: library activity");
     return;

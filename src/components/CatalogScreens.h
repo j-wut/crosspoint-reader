@@ -13,10 +13,22 @@ class GfxRenderer;
 
 // Draw the unified themed header (status band, title, rule, and a back button
 // on touch boards) and reserve the button-hint band below the content. A
-// trailing icon (e.g. search) becomes a header button.
+// trailing icon (e.g. search) becomes a header button; a second icon goes to
+// its left.
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
                          const freeink::ui::BitmapRef& trailingIcon = {},
-                         freeink::ui::ActionId trailingAction = freeink::ui::NO_ACTION);
+                         freeink::ui::ActionId trailingAction = freeink::ui::NO_ACTION,
+                         const freeink::ui::BitmapRef& adjacentIcon = {},
+                         freeink::ui::ActionId adjacentAction = freeink::ui::NO_ACTION,
+                         const freeink::ui::BitmapRef& thirdIcon = {},
+                         freeink::ui::ActionId thirdAction = freeink::ui::NO_ACTION);
+
+// A third icon button left of a header's two trailing ones (the header itself
+// draws at most two). Call right after freeink::ui::header() with the same
+// band and props; a long title under the button is painted over.
+void headerThirdTrailingButton(UiAppHost::UiScreen& screen, freeink::ui::Rect band,
+                               const freeink::ui::HeaderProps& header, const freeink::ui::BitmapRef& icon,
+                               freeink::ui::ActionId action);
 
 // One line of a centered message block; bold marks a heading line.
 struct CatalogLine {

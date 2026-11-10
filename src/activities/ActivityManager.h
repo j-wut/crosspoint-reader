@@ -93,7 +93,7 @@ class ActivityManager {
   // openSection jumps straight into one group (End = the section list).
   void goToSettings(SettingsSection openSection = SettingsSection::End);
   void goToFileBrowser(std::string path = {});
-  void goToLibrary();
+  void goToLibrary(bool fromBookshelf = false);
   void goToBookshelf();
   void goToApps();
   void goToBrowser();
