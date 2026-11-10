@@ -12,6 +12,7 @@
 
 #include <cstring>
 
+#include "DecoderAllocation.h"
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
 #include "PixelCache.h"
@@ -260,11 +261,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   ImageDimensions sourceDimensions;
   if (!validateAndStoreDimensions(info.canvasWidth, info.canvasHeight, sourceDimensions, "GIF")) return false;
 
-  const size_t freeHeap = HalMemory::getInternalHeap().freeBytes;
-  if (freeHeap < MIN_FREE_HEAP_FOR_GIF) {
-    LOG_ERR("GIF", "Not enough heap for GIF decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_GIF);
-    return false;
-  }
+  if (!decoderMemoryAvailable("GIF", MIN_FREE_HEAP_FOR_GIF)) return false;
 
   auto gif = makeUniqueNoThrow<AnimatedGIF>();
   if (!gif) {

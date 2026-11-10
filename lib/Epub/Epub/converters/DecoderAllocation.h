@@ -3,39 +3,21 @@
 #include <Logging.h>
 #include <esp_heap_caps.h>
 
-#include <cstdlib>
-#include <memory>
-#include <new>
+#include <cstddef>
 
-// Decoder objects are large (JPEGDEC ~17 KB, PNG ~42 KB). They go in the
-// default heap when it has room. Boards with PSRAM use PSRAM when the internal
-// heap is short, so a tight moment draws the image instead of an empty box.
-template <typename T>
-struct DecoderDeleter {
-  void operator()(T* p) const {
-    p->~T();
-    heap_caps_free(p);
-  }
-};
-template <typename T>
-using DecoderPtr = std::unique_ptr<T, DecoderDeleter<T>>;
-
-template <typename T>
-DecoderPtr<T> allocateDecoder(const char* tag, const size_t minFreeHeap) {
+// True when a decoder can be allocated with headroom to spare. On boards with
+// PSRAM, malloc puts blocks over SPIRAM_MALLOC_ALWAYSINTERNAL (4 KB) in PSRAM
+// first, so free PSRAM counts as well as the internal heap.
+inline bool decoderMemoryAvailable(const char* tag, const size_t needed) {
   const size_t freeHeap = ESP.getFreeHeap();
-  void* mem = freeHeap >= minFreeHeap ? malloc(sizeof(T)) : nullptr;
+  if (freeHeap >= needed) return true;
 #if defined(BOARD_HAS_PSRAM)
-  if (!mem) {
-    mem = heap_caps_malloc(sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (mem)
-      LOG_INF(tag, "Decoder in PSRAM (heap %u free, wants %u)", static_cast<unsigned>(freeHeap),
-              static_cast<unsigned>(minFreeHeap));
-  }
+  const size_t freePsram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  if (freePsram >= needed) return true;
+#else
+  const size_t freePsram = 0;
 #endif
-  if (!mem) {
-    LOG_ERR(tag, "Not enough memory for decoder (heap %u free, need %u)", static_cast<unsigned>(freeHeap),
-            static_cast<unsigned>(minFreeHeap));
-    return nullptr;
-  }
-  return DecoderPtr<T>(new (mem) T());
+  LOG_ERR(tag, "Not enough memory for decoder (heap %u, PSRAM %u free, need %u)", static_cast<unsigned>(freeHeap),
+          static_cast<unsigned>(freePsram), static_cast<unsigned>(needed));
+  return false;
 }

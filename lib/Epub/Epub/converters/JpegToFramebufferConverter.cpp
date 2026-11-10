@@ -373,11 +373,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 }  // namespace
 
 bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
-    return false;
-  }
+  if (!decoderMemoryAvailable("JPG", MIN_FREE_HEAP_FOR_JPEG)) return false;
 
   std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {
@@ -411,8 +407,13 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   cacheWritten = false;
   LOG_DBG("JPG", "Decoding JPEG: %s", imagePath.c_str());
 
-  auto jpeg = allocateDecoder<JPEGDEC>("JPG", MIN_FREE_HEAP_FOR_JPEG);
-  if (!jpeg) return false;
+  if (!decoderMemoryAvailable("JPG", MIN_FREE_HEAP_FOR_JPEG)) return false;
+
+  std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
+  if (!jpeg) {
+    LOG_ERR("JPG", "Failed to allocate JPEG decoder");
+    return false;
+  }
 
   JpegContext ctx;
   ctx.renderer = &renderer;
