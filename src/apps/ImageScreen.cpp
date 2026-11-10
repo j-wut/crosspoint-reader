@@ -195,6 +195,21 @@ bool build(GfxRenderer& renderer, const std::string& path, const std::string& ke
   return ok;
 }
 
+bool hasScreen(const std::string& key, const GfxRenderer& renderer) {
+  screencache::Reader cache;
+  return cache.open(key, renderer);
+}
+
+bool buildBw(GfxRenderer& renderer, const std::string& viewerKey, const std::string& key, const bool invert) {
+  screencache::Reader source;
+  if (!source.open(viewerKey, renderer) || !source.readLayer(0, renderer)) return false;
+  if (invert) renderer.invertScreen();
+  screencache::Writer capture;
+  if (!capture.begin(key, renderer, false, false)) return false;
+  capture.addLayer(renderer);
+  return capture.finish();
+}
+
 RenderConfig fitJpeg(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
   const float scale = std::min({static_cast<float>(renderer.getScreenWidth()) / dimensions.width,
                                 static_cast<float>(renderer.getScreenHeight()) / dimensions.height, 1.0f});

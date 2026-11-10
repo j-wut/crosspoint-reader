@@ -19,6 +19,13 @@ std::string cacheKey(const std::string& path, const GfxRenderer& renderer);
 // Nothing is shown; the frame buffer is left with the last layer drawn.
 bool build(GfxRenderer& renderer, const std::string& path, const std::string& key);
 
+// True when a screen is saved under `key`.
+bool hasScreen(const std::string& key, const GfxRenderer& renderer);
+
+// Saves the B/W layer of the screen under `viewerKey` as a B/W screen under
+// `key`, inverted when asked (the sleep screen's B/W filters).
+bool buildBw(GfxRenderer& renderer, const std::string& viewerKey, const std::string& key, bool invert);
+
 // Where a JPEG of this size goes on the screen.
 RenderConfig fitJpeg(const ImageDimensions& dimensions, const GfxRenderer& renderer);
 

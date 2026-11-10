@@ -1302,30 +1302,36 @@ bool SleepActivity::renderGalleryWallpaper(const bool frameWasInverted) const {
 // cache, made here when missing, so it matches the full-screen view. False
 // leaves the normal flow to draw the Gallery's BMP copy.
 bool SleepActivity::renderGalleryImageScreen(const wallpaper::Kind kind, const std::string& path) const {
-  // ponytail: the cached layers cannot be inverted; this filter keeps the BMP copy path.
-  if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
-    return false;
-  }
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("SLP", "gallery image missing: %s", path.c_str());
     return false;
   }
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-  const std::string key = imagescreen::cacheKey(path, renderer);
-  if (key.empty()) return false;
+  const std::string viewerKey = imagescreen::cacheKey(path, renderer);
+  if (viewerKey.empty()) return false;
+  // The B/W filters get their own file, made from the viewer screen's B/W layer.
+  const uint8_t filter = SETTINGS.sleepScreenCoverFilter;
+  const bool filtered = filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::BLACK_AND_WHITE ||
+                        filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE;
+  const std::string key = filtered ? viewerKey + "|filter" + std::to_string(filter) : viewerKey;
   if (renderCachedSleepScreen(key)) {
-    LOG_INF("SLP", "gallery image shown from the viewer cache kind=%u", kind);
+    LOG_INF("SLP", "gallery image shown from the viewer cache kind=%u filter=%u", kind, filter);
     return true;
   }
-  LOG_INF("SLP", "no viewer screen for %s; drawing it", path.c_str());
+  LOG_INF("SLP", "no cached screen for %s filter=%u; drawing it", path.c_str(), filter);
   GUI.drawPopup(renderer, sleepPopupText());
   releaseSdFontCachesForDecode(renderer);
-  if (!imagescreen::build(renderer, path, key) || !renderCachedSleepScreen(key)) {
+  bool ok = imagescreen::hasScreen(viewerKey, renderer) || imagescreen::build(renderer, path, viewerKey);
+  if (ok && filtered) {
+    ok = imagescreen::buildBw(renderer, viewerKey, key,
+                              filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE);
+  }
+  if (!ok || !renderCachedSleepScreen(key)) {
     LOG_ERR("SLP", "viewer screen failed for %s", path.c_str());
     renderer.clearScreen();
     return false;
   }
-  LOG_INF("SLP", "gallery image shown kind=%u", kind);
+  LOG_INF("SLP", "gallery image shown kind=%u filter=%u", kind, filter);
   return true;
 }
 
