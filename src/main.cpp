@@ -441,6 +441,9 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
 
 #if FREEINK_DEVICE_PICCO
 // Charge strip along the bottom of the retained sleep screen.
+// True once the strip was drawn into the panel's saved gray planes, so
+// restoring those planes would not remove it.
+static bool chargeStripInPlanes = false;
 static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
   RenderLock lock;
   const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
@@ -456,15 +459,18 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
     renderer.fillRect(0, y, w, h, false);
     renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
   };
-  // Like the Gallery viewer's bars: the cached sleep screen is shown again
-  // with the strip in every layer.
-  if (SleepActivity::showAgainWith(renderer, drawStrip)) {
-    LOG_INF("SLP", "charge strip drawn into the cached sleep screen (%u%%)", percent);
-    return;
-  }
+  // Only the strip's rows change: a partial gray update when the panel still
+  // holds the sleep screen's gray planes.
   drawStrip(SleepActivity::OverlayLayer::Bw);
   if (renderer.displayRetainedGrayscaleOverlay(0, y, w, h)) {
-    LOG_INF("SLP", "charge strip shown over the retained sleep screen (%u%%)", percent);
+    LOG_INF("SLP", "charge strip: partial update (%u%%)", percent);
+    return;
+  }
+  // Else, like the Gallery viewer's bars: the cached sleep screen is shown
+  // again with the strip in every layer.
+  if (SleepActivity::showAgainWith(renderer, drawStrip)) {
+    chargeStripInPlanes = true;
+    LOG_INF("SLP", "charge strip: partial update failed, cached sleep screen redrawn (%u%%)", percent);
     return;
   }
   // The frame buffer of a gray sleep screen holds a gray plane, not the image.
@@ -478,6 +484,7 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
 // the hold.
 static bool holdSleepWhileUsbPowered() {
   if (!gpio.isUsbConnected()) return false;
+  chargeStripInPlanes = false;
   // Keep the sleep frame so unplugging can remove the strip. 48 KB of PSRAM,
   // freed when the hold ends.
   const size_t frameSize = renderer.getBufferSize();
@@ -486,7 +493,7 @@ static bool holdSleepWhileUsbPowered() {
   const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, drawSleepChargeStrip);
   if (!buttonPressed) {
     RenderLock lock;
-    if (SleepActivity::showAgainWith(renderer, nullptr)) {
+    if (chargeStripInPlanes && SleepActivity::showAgainWith(renderer, nullptr)) {
       LOG_INF("SLP", "charge strip removed: cached sleep screen shown again");
       heap_caps_free(sleepFrame);
       return buttonPressed;
