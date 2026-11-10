@@ -21,6 +21,10 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return running || blinksLeft > 0; }
 
+  // For the main loop while this screen is not shown: once the timer's time
+  // is up, ends it and returns the toast text; otherwise nullptr.
+  static const char* takeBackgroundTimeUp();
+
  private:
   enum class Phase : uint8_t { Focus, Break };
   enum Button : int16_t { START, PAUSE, RESUME, GIVE_UP, SKIP_BREAK, LONGER, SHORTER };
@@ -33,25 +37,28 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   void press(Button button);
   void startPhase(Phase next);
   void finishPhase();
-  uint32_t phaseMs() const;
-  uint32_t remainingMs() const;
-  void loadState();
-  void saveState() const;
+  static void endTimer();
+  static uint32_t phaseMs();
+  static uint32_t remainingMs();
+  static void loadState();
+  static void saveState();
   void tickBlink();
 
   // The timer state is static so the timer keeps going after the screen is
-  // left, like the stock app. It is lost if the device sleeps.
+  // left, like the stock app. It is also saved with a wall-clock end time, so
+  // it survives sleep and power-off when the clock is set.
+  static inline bool stateLoaded = false;
   static inline Phase phase = Phase::Focus;
   static inline bool running = false;
   static inline bool paused = false;
   static inline bool timeUp = false;         // "Time's up" shown until the next button
   static inline uint32_t startedAt = 0;      // millis() when the current run started
   static inline uint32_t elapsedBefore = 0;  // ms run before the last pause
+  static inline uint8_t focusMinutes = 25;
+  static inline uint8_t breakMinutes = 5;
+  static inline uint16_t completed = 0;     // focus sessions finished today
+  static inline int32_t completedDay = -1;  // local day number of `completed`, -1 = clock unset
   uint32_t lastShownSecond = 0;
-  uint8_t focusMinutes = 25;
-  uint8_t breakMinutes = 5;
-  uint16_t completed = 0;       // focus sessions finished today
-  int32_t completedDay = -1;    // local day number of `completed`, -1 = clock unset
   int selected = 0;
   int pending = -1;
   int blinksLeft = 0;

@@ -16,6 +16,8 @@
 #include "HapticFeedback.h"
 #include "OpdsServerStore.h"
 #include "apps/AppsActivity.h"
+#include "apps/PomodoroActivity.h"
+#include "apps/PomodoroToastActivity.h"
 #include "apps/Wallpaper.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
@@ -151,6 +153,15 @@ void ActivityManager::loop() {
 
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
     currentActivity->loop();
+
+    // A Pomodoro timer that ends while its screen is not open, or ended while
+    // the device slept, shows a toast.
+    if (pendingAction == PendingAction::None && currentActivity->name != "Pomodoro" &&
+        currentActivity->name != "Sleep" && currentActivity->name != "Boot") {
+      if (const char* message = PomodoroActivity::takeBackgroundTimeUp()) {
+        pushActivity(std::make_unique<PomodoroToastActivity>(renderer, mappedInput, message));
+      }
+    }
   }
 
   while (pendingAction != PendingAction::None) {

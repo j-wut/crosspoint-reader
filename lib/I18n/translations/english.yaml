@@ -750,6 +750,8 @@ STR_TODO_EMPTY_HINT: "No to-dos yet. Add one here, or on the Apps page of the we
 STR_POMODORO_FOCUS: "Focus"
 STR_POMODORO_BREAK: "Break"
 STR_POMODORO_TIME_UP: "Time's up"
+STR_POMODORO_FOCUS_DONE: "Focus time's up"
+STR_POMODORO_BREAK_DONE: "Break time's up"
 STR_POMODORO_START: "Start"
 STR_POMODORO_START_BREAK: "Start break"
 STR_POMODORO_PAUSE: "Pause"
