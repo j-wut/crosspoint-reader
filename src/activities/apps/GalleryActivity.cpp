@@ -69,10 +69,8 @@ class GalleryImageActivity final : public Activity {
   }
 
   void onExit() override {
-    if (background) {
-      RenderLock lock(*this);
-      renderer.restoreBwBuffer(false);
-    }
+    // The activity manager already holds the render lock here; taking it again deadlocks.
+    if (background) renderer.restoreBwBuffer(false);
     Activity::onExit();
   }
 
