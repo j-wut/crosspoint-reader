@@ -61,6 +61,8 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
 // Whether the last sleep screen shown has grays, which a B/W refresh of the
 // frame buffer would destroy: after a gray pass it holds a gray plane.
 bool sleepScreenGray = false;
+// Screen cache key of the sleep screen on the panel; empty when it was not cached.
+std::string shownSleepKey;
 
 void showSleepGray(const GfxRenderer& renderer) {
   renderer.displayGrayBuffer();
@@ -698,9 +700,42 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 
 bool SleepActivity::screenHasGray() { return sleepScreenGray; }
 
+bool SleepActivity::showAgainWith(GfxRenderer& renderer, const std::function<void(OverlayLayer)>& overlay) {
+  if (shownSleepKey.empty()) return false;
+  screencache::Reader cache;
+  if (!cache.open(shownSleepKey, renderer)) return false;
+  const bool gray = cache.gray();
+  const bool absolute = gray && cache.absolute();
+  if (gray && absolute != renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported()) return false;
+  if (!cache.readLayer(0, renderer)) return false;
+  if (overlay) overlay(OverlayLayer::Bw);
+  if (!gray) {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return true;
+  }
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) return false;
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return false;
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
+  // The overlay goes into both gray planes too, so the grays around it stay gray.
+  bool ready = cache.readLayer(1, renderer);
+  if (ready && overlay) overlay(absolute ? OverlayLayer::AbsolutePlane : OverlayLayer::RelativePlane);
+  if (ready) renderer.copyGrayscaleLsbBuffers();
+  ready = ready && cache.readLayer(2, renderer);
+  if (ready && overlay) overlay(absolute ? OverlayLayer::AbsolutePlane : OverlayLayer::RelativePlane);
+  if (ready) renderer.copyGrayscaleMsbBuffers();
+  if (ready) showSleepGray(renderer);
+  renderer.setRenderMode(GfxRenderer::BW);
+  return ready;
+}
+
 void SleepActivity::onEnter() {
   Activity::onEnter();
   sleepScreenGray = false;
+  shownSleepKey.clear();
 
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -787,6 +822,7 @@ bool SleepActivity::renderCachedSleepScreen(const std::string& key) const {
   if (gray && absolute != cache.absolute()) return false;
   // A failed first read leaves the frame for the normal path to redraw.
   if (!cache.readLayer(0, renderer)) return false;
+  shownSleepKey = key;
   const unsigned long bwLoaded = millis();
   if (!gray) {
     renderer.displayBuffer(kSleepClean);

@@ -445,11 +445,25 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
   RenderLock lock;
   const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
   const int y = renderer.getScreenHeight() - h;
-  renderer.fillRect(0, y, renderer.getScreenWidth(), h, false);
+  const int w = renderer.getScreenWidth();
   char text[48];
   snprintf(text, sizeof(text), "%s  %u%%", charging ? tr(STR_CHARGING) : tr(STR_CHARGED), percent);
-  renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
-  if (renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h)) {
+  const auto drawStrip = [&](const SleepActivity::OverlayLayer layer) {
+    if (layer == SleepActivity::OverlayLayer::RelativePlane) {
+      renderer.fillRect(0, y, w, h, true);
+      return;
+    }
+    renderer.fillRect(0, y, w, h, false);
+    renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
+  };
+  // Like the Gallery viewer's bars: the cached sleep screen is shown again
+  // with the strip in every layer.
+  if (SleepActivity::showAgainWith(renderer, drawStrip)) {
+    LOG_INF("SLP", "charge strip drawn into the cached sleep screen (%u%%)", percent);
+    return;
+  }
+  drawStrip(SleepActivity::OverlayLayer::Bw);
+  if (renderer.displayRetainedGrayscaleOverlay(0, y, w, h)) {
     LOG_INF("SLP", "charge strip shown over the retained sleep screen (%u%%)", percent);
     return;
   }
@@ -472,6 +486,11 @@ static bool holdSleepWhileUsbPowered() {
   const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, drawSleepChargeStrip);
   if (!buttonPressed) {
     RenderLock lock;
+    if (SleepActivity::showAgainWith(renderer, nullptr)) {
+      LOG_INF("SLP", "charge strip removed: cached sleep screen shown again");
+      heap_caps_free(sleepFrame);
+      return buttonPressed;
+    }
     if (sleepFrame) memcpy(renderer.getFrameBuffer(), sleepFrame, frameSize);
     const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
     const int y = renderer.getScreenHeight() - h;
