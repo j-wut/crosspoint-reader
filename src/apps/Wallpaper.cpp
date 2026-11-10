@@ -589,7 +589,7 @@ bool setWallpaper(const std::string& path, const Kind kind, const bool keepAlpha
   return ok;
 }
 
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool keepAlpha, const bool fitScreen) {
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool keepAlpha) {
   DrawResult result;
   HalFile in;
   if (!Storage.openFileForRead("WALL", path, in)) {
@@ -606,12 +606,11 @@ DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool ke
 
   // Stock sizing: shrink to fit (keeping the aspect ratio) only when larger
   // than the screen, round the width down to a multiple of 8, centre.
-  // fitScreen also enlarges smaller images.
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
   int dstW = static_cast<int>(page.width);
   int dstH = static_cast<int>(page.height);
-  if (dstW > screenW || dstH > screenH || (fitScreen && dstW < screenW && dstH < screenH)) {
+  if (dstW > screenW || dstH > screenH) {
     const float scale = std::min(static_cast<float>(screenW) / page.width, static_cast<float>(screenH) / page.height);
     dstW = std::max(1, static_cast<int>(page.width * scale));
     dstH = std::max(1, static_cast<int>(page.height * scale));

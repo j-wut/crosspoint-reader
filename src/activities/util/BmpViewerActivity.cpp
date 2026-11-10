@@ -6,7 +6,6 @@
 #include <Epub/converters/JpegToFramebufferConverter.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <GifImageLayout.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -31,7 +30,6 @@ constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
 constexpr size_t COPY_BUFFER_SIZE = 2048;
 constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0};
 constexpr char SCALED_VIEW_BMP[] = "/.crosspoint/view_scaled.bmp";
-constexpr char GRAY_VIEW_BMP[] = "/.crosspoint/view_gray.bmp";
 
 // PNG size from the IHDR chunk.
 bool pngSize(HalFile& in, int& width, int& height) {
@@ -46,33 +44,9 @@ bool pngSize(HalFile& in, int& width, int& height) {
   return width > 0 && height > 0;
 }
 
-// Scales a BMP to fit width x height into `out`: blended, then dithered once.
-bool scaleBmp(const char* path, Print& out, const int width, const int height, const bool originalThresholds) {
-  HalFile in;
-  return Storage.openFileForRead("BMP", path, in) &&
-         BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
-}
-
-// PNG to a BMP fitted to width x height, dithered after scaling. Enlarging goes
-// through an unscaled gray copy so pixels are blended, not repeated.
-bool scalePng(HalFile& in, Print& out, const int width, const int height, const bool originalThresholds) {
-  int pngWidth = 0;
-  int pngHeight = 0;
-  if (!pngSize(in, pngWidth, pngHeight)) return false;
-  if (pngWidth >= width || pngHeight >= height) {
-    return PngToBmpConverter::pngFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
-  }
-  HalFile gray;
-  if (!Storage.openFileForWrite("BMP", GRAY_VIEW_BMP, gray)) return false;
-  bool ok = PngToBmpConverter::pngFileToGrayBmpStream(in, gray);
-  ok = gray.close() && ok;
-  ok = ok && scaleBmp(GRAY_VIEW_BMP, out, width, height, originalThresholds);
-  Storage.remove(GRAY_VIEW_BMP);
-  return ok;
-}
-
-// Writes the image scaled to fit width x height to SCALED_VIEW_BMP, dithered
-// once after scaling. False when a BMP already fits exactly or the copy fails.
+// Writes the image to SCALED_VIEW_BMP as a 2-bit BMP: shrunk to fit width x height
+// when larger (never enlarged), then dithered. PNGs are always converted; BMPs only
+// when they need shrinking. False when no copy is needed or it fails.
 bool writeScaledImage(const std::string& path, const int width, const int height, const bool originalThresholds) {
   const bool png = FsHelpers::hasPngExtension(path);
   HalFile in;
@@ -83,24 +57,25 @@ bool writeScaledImage(const std::string& path, const int width, const int height
     if (!pngSize(in, sourceWidth, sourceHeight)) return false;
   } else {
     Bitmap source(in);
-    GifCommon::ImageLayout layout;
-    if (source.parseHeaders() != BmpReaderError::Ok ||
-        !GifCommon::calculateLayout(source.getWidth(), source.getHeight(), width, height, false, layout) ||
-        (layout.width == source.getWidth() && layout.height == source.getHeight())) {
-      return false;
-    }
+    if (source.parseHeaders() != BmpReaderError::Ok) return false;
     sourceWidth = source.getWidth();
     sourceHeight = source.getHeight();
   }
+  const bool shrink = sourceWidth > width || sourceHeight > height;
+  if (!png && !shrink) return false;
+  const int targetWidth = shrink ? width : sourceWidth;
+  const int targetHeight = shrink ? height : sourceHeight;
   const unsigned long start = millis();
   HalFile out;
   if (!Storage.openFileForWrite("BMP", SCALED_VIEW_BMP, out)) return false;
-  bool ok = png ? scalePng(in, out, width, height, originalThresholds)
-                : BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
+  bool ok = png ? PngToBmpConverter::pngFileToBmpStreamWithSize(in, out, targetWidth, targetHeight, false,
+                                                                originalThresholds)
+                : BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, targetWidth, targetHeight, false,
+                                                                originalThresholds);
   ok = out.close() && ok;
   if (!ok) Storage.remove(SCALED_VIEW_BMP);
-  LOG_INF("BMP", "scaled %s %dx%d to fit %dx%d: %s, %lu ms", path.c_str(), sourceWidth, sourceHeight, width, height,
-          ok ? "ok" : "failed", millis() - start);
+  LOG_INF("BMP", "converted %s %dx%d to fit %dx%d: %s, %lu ms", path.c_str(), sourceWidth, sourceHeight, targetWidth,
+          targetHeight, ok ? "ok" : "failed", millis() - start);
   return ok;
 }
 
@@ -119,8 +94,8 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   // The BMP draw path also picks its thresholds by controller.
   const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
-  // "fit3" marks screens with every image scaled to fit, then dithered.
-  return file + "|fit3|" + std::to_string(renderer.getScreenWidth()) +
+  // "fit4" marks screens shrunk (never enlarged) before dithering, replacing older ones.
+  return file + "|fit4|" + std::to_string(renderer.getScreenWidth()) +
          'x' + std::to_string(renderer.getScreenHeight()) + '|' +
          std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
          (ssd1677 ? "|ssd1677" : "");
@@ -128,7 +103,7 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
 
 RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
   const float scale = std::min({static_cast<float>(renderer.getScreenWidth()) / dimensions.width,
-                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height});
+                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height, 1.0f});
   const int width = std::max(1, std::min(renderer.getScreenWidth(), static_cast<int>(dimensions.width * scale)));
   const int height = std::max(1, std::min(renderer.getScreenHeight(), static_cast<int>(dimensions.height * scale)));
   RenderConfig config{(renderer.getScreenWidth() - width) / 2, (renderer.getScreenHeight() - height) / 2, width,
@@ -344,7 +319,7 @@ void BmpViewerActivity::onEnter() {
     // Straight from the file into the frame buffer; no converted copy.
     const unsigned long start = millis();
     renderer.clearScreen();
-    const bool ok = wallpaper::drawOpg(renderer, filePath, true, true).ok;
+    const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
     if (ok && capture.begin(cacheKey, renderer, false, false)) {
       capture.addLayer(renderer);
       capture.finish();
@@ -385,7 +360,7 @@ void BmpViewerActivity::onEnter() {
 
   const bool originalThresholds = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
                                   display.getController() == HalDisplay::Controller::SSD1677;
-  // Scale first, then dither at screen size; the original is drawn if that fails.
+  // Shrink if needed, then dither; the original is drawn if that fails.
   ScaledBmpCleanup scaled;
   scaled.active = writeScaledImage(filePath, pageWidth, pageHeight, originalThresholds);
   const std::string drawPath = scaled.active ? std::string(SCALED_VIEW_BMP) : filePath;

@@ -81,6 +81,6 @@ struct DrawResult {
 // alpha channel: transparent pixels keep what is already on screen, and
 // images without alpha clear the screen to white first. With keepAlpha
 // false, transparent pixels are white.
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, bool keepAlpha = true, bool fitScreen = false);
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, bool keepAlpha = true);
 
 }  // namespace wallpaper
