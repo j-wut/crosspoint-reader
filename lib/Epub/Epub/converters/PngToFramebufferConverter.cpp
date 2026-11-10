@@ -341,18 +341,9 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
 
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
-    LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
-    return false;
-  }
-
-  // Heap-allocate PNG decoder (~42 KB) - freed at end of function
-  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
-  if (!png) {
-    LOG_ERR("PNG", "Failed to allocate PNG decoder");
-    return false;
-  }
+  // PNG decoder (~42 KB), freed at end of function
+  auto png = allocateDecoder<PNG>("PNG", MIN_FREE_HEAP_FOR_PNG);
+  if (!png) return false;
 
   PngContext ctx;
   ctx.decoder = png.get();

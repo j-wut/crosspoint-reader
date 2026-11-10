@@ -32,6 +32,7 @@ enum class Feature : uint8_t {
   Todo,
   Countdown,
   FileTransfer,
+  ReaderImages,
   Count
 };
 
@@ -44,6 +45,10 @@ constexpr size_t FILE_MAX_BYTES = 256 * 1024;
 void begin();
 
 bool enabled();
+
+// Writes routed lines that other tasks (the render task) queued. Call from the
+// main task only while no other task uses the card.
+void flushQueued();
 
 // A feature's current log file, open for appending. Converts to false when
 // debug logging is off or the file cannot be opened; writes then do nothing.

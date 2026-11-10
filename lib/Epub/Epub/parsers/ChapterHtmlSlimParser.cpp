@@ -1885,6 +1885,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
                 }
 
+                LOG_INF("EHP", "Image %s: %dx%d shown at %dx%d", resolvedPath.c_str(), dims.width, dims.height,
+                        displayWidth, displayHeight);
+
                 // Flush any pending text block so it appears before the image
                 if (self->partWordBufferIndex > 0) {
                   self->flushPartWordBuffer();
@@ -1983,10 +1986,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 self->depth += 1;
                 return;
               } else {
-                LOG_ERR("EHP", "Failed to get image dimensions");
+                LOG_ERR("EHP", "Failed to get image dimensions, image left out: %s", resolvedPath.c_str());
                 Storage.remove(cachedImagePath.c_str());
               }
             }
+          } else {
+            LOG_ERR("EHP", "Unsupported image format, image left out: %s", resolvedPath.c_str());
           }  // isFormatSupported
         }
       }

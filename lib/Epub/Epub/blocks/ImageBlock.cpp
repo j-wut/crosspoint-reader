@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -79,6 +80,16 @@ bool imageFailedThisRender(const std::string& path) {
     if (failedImageHashes[i] == hash) return true;
   }
   return false;
+}
+
+// Diagnostic for images drawn as an empty box: why, where, and how much memory was free.
+void logPlaceholder(const char* reason, const std::string& path, int x, int y, int w, int h,
+                    const std::array<int, 4>& clip) {
+  LOG_ERR("IMG", "Empty box (%s): %s %dx%d at %d,%d clip %d,%d %dx%d heap %u max %u psram %u", reason, path.c_str(), w,
+          h, x, y, clip[0], clip[1], clip[2], clip[3],
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 }
 
 void rememberImageFailure(const std::string& path) {
@@ -367,6 +378,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // Decoders draw every row, so a clipped image is drawn only from its cache.
   // The scrolling reader decodes such images unclipped first, so the cache exists here.
   if (clipped) {
+    logPlaceholder("clipped, no cache", imagePath, x, y, width, height, clipRect);
     renderPlaceholder(renderer, x, y);
     return;
   }
@@ -386,6 +398,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   if (!Storage.openFileForRead("IMG", imagePath, file)) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
+    logPlaceholder("file not found", imagePath, x, y, width, height, clipRect);
     renderPlaceholder(renderer, x, y);
     return;
   }
@@ -395,6 +408,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   if (fileSize == 0) {
     LOG_ERR("IMG", "Image file is empty: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
+    logPlaceholder("empty file", imagePath, x, y, width, height, clipRect);
     renderPlaceholder(renderer, x, y);
     return;
   }
@@ -416,22 +430,30 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   if (!decoder) {
     LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
+    logPlaceholder("no decoder", imagePath, x, y, width, height, clipRect);
     renderPlaceholder(renderer, x, y);
     return;
   }
 
-  LOG_DBG("IMG", "Using %s decoder", decoder->getFormatName());
+  LOG_INF("IMG", "Decoding %s (%u bytes) to %dx%d at %d,%d with %s, heap %u max %u psram %u", imagePath.c_str(),
+          static_cast<unsigned>(fileSize), width, height, x, y, decoder->getFormatName(),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  const unsigned long decodeStart = millis();
 
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
+    logPlaceholder("decode failed", imagePath, x, y, width, height, clipRect);
     renderPlaceholder(renderer, x, y);
     return;
   }
 
   renderer.preserveImagePolarity(x, y, width, height);
-  LOG_DBG("IMG", "Decode successful");
+  LOG_INF("IMG", "Decoded %s in %lu ms, cache %s", imagePath.c_str(), millis() - decodeStart,
+          hasValidCache() ? "written" : "missing");
 }
 
 bool ImageBlock::serialize(HalFile& file) {
