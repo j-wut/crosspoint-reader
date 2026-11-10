@@ -206,18 +206,20 @@ void LibraryListActivity::refreshOverlap() {
 
 void LibraryListActivity::openSelectedBook() {
   std::string path;
-  if (selectedEntry() < pinnedCount()) {
+  const int entry = selectedBook();
+  if (entry < 0) return;
+  if (entry < pinnedCount()) {
     const auto& books = RECENT_BOOKS.getBooks();
-    if (selectedEntry() >= static_cast<int>(books.size())) return;
-    path = books[static_cast<size_t>(selectedEntry())].path;
+    if (entry >= static_cast<int>(books.size())) return;
+    path = books[static_cast<size_t>(entry)].path;
   } else {
     if (!index.isOpen()) return;
-    const uint16_t ordinal = index.ordinalForRow(sortOrder, static_cast<uint16_t>(rowFor(selectedEntry())));
+    const uint16_t ordinal = index.ordinalForRow(sortOrder, static_cast<uint16_t>(rowFor(entry)));
     if (ordinal == 0xFFFF) return;
 
     library::ClixRecord record{};
     if (!index.readRecord(ordinal, record) || !index.readPath(record, path)) {
-      LOG_ERR("LIB", "cannot resolve path for row %d", selectedEntry());
+      LOG_ERR("LIB", "cannot resolve path for row %d", entry);
       return;
     }
   }
@@ -235,8 +237,12 @@ void LibraryListActivity::openBookByPath(const std::string& path) {
 }
 
 void LibraryListActivity::activateIndex(const int index) {
+  // A fold or unfold redraws different rows under the finger.
+  if (headerRows() || groupsCollapsed) app.clearTapFlash();
   if (groupsCollapsed) {
     expandGroup(index);
+  } else if (headerRows() && bookFor(index) < 0) {
+    collapseGroups(groupStarts[groupAtDisplay(index)]);
   } else {
     openSelectedBook();
   }
@@ -248,7 +254,15 @@ void LibraryListActivity::activateIndex(const int index) {
 // collapse-to-groups. The Recent shelf always opens the row options menu.
 bool LibraryListActivity::deleteEligible() const { return !groupsCollapsed && (!query.empty() || !groupable()); }
 
-void LibraryListActivity::onRowLongPress(const int index) {
+void LibraryListActivity::onRowLongPress(const int display) {
+  int index = display;
+  if (headerRows()) {
+    index = bookFor(display);
+    if (index < 0) {
+      activateIndex(display);
+      return;
+    }
+  }
   // From the Bookshelf every book row gets the same menu, whatever the tab.
   if (isRecentSort(sortOrder) || (fromBookshelf && !groupsCollapsed)) {
     showBookOptions(index);
@@ -290,10 +304,10 @@ void LibraryListActivity::showBookOptions(const int entry) {
 
   // Opened from the Tiles Bookshelf, the menu matches the Bookshelf's: touch
   // boards rebuild from the header, button boards also switch layout here.
-  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT, GROUPS };
+  enum Item : uint8_t { OPEN, REMOVE_RECENT, DELETE, REBUILD, LAYOUT };
   const bool buttonsOnly = !mappedInput.hasTouch();
-  const char* labels[6];
-  std::array<Item, 6> items{};
+  const char* labels[5];
+  std::array<Item, 5> items{};
   int count = 0;
   const auto add = [&](const Item item, const char* label) {
     items[static_cast<size_t>(count)] = item;
@@ -309,40 +323,36 @@ void LibraryListActivity::showBookOptions(const int entry) {
   add(DELETE, tr(STR_DELETE));
   if (!fromBookshelf || buttonsOnly) add(REBUILD, tr(STR_LIBRARY_REBUILD));
   if (fromBookshelf && buttonsOnly) add(LAYOUT, tr(STR_SHOW_AS_GRID));
-  // Hold no longer folds Title/Author into groups here, so the menu offers it.
-  if (fromBookshelf && groupable() && query.empty()) add(GROUPS, tr(STR_SHOW_GROUPS));
   app.clearTapFlash();
-  optionPopup.show(tr(STR_LIBRARY), title.c_str(), labels, count, 0,
-                   [this, path, title, items, entry](const int choice) {
-                     swallowHeldReleases();
-                     if (choice < 0) return;
-                     switch (items[static_cast<size_t>(choice)]) {
-                       case OPEN:
-                         openBookByPath(path);
-                         break;
-                       case REMOVE_RECENT:
-                         promptRemoveRecentBook(path, title);
-                         break;
-                       case DELETE:
-                         promptDeleteBookByPath(path, title);
-                         break;
-                       case REBUILD:
-                         promptRebuildIndex();
-                         break;
-                       case LAYOUT:
-                         activityManager.goToBookshelf();
-                         break;
-                       case GROUPS:
-                         collapseGroups(entry);
-                         break;
-                     }
-                   });
+  optionPopup.show(tr(STR_LIBRARY), title.c_str(), labels, count, 0, [this, path, title, items](const int choice) {
+    swallowHeldReleases();
+    if (choice < 0) return;
+    switch (items[static_cast<size_t>(choice)]) {
+      case OPEN:
+        openBookByPath(path);
+        break;
+      case REMOVE_RECENT:
+        promptRemoveRecentBook(path, title);
+        break;
+      case DELETE:
+        promptDeleteBookByPath(path, title);
+        break;
+      case REBUILD:
+        promptRebuildIndex();
+        break;
+      case LAYOUT:
+        activityManager.goToBookshelf();
+        break;
+    }
+  });
   requestUpdate();
 }
 
 #if FREEINK_CAP_TOUCH
-void LibraryListActivity::swipeDelete(const int entry) {
-  activeNav().selected = entry + 1;
+void LibraryListActivity::swipeDelete(const int display) {
+  const int entry = bookFor(display);
+  if (entry < 0) return;
+  activeNav().selected = display + 1;
   if (isRecentSort(sortOrder) && entry < pinnedCount()) {
     const auto& book = RECENT_BOOKS.getBooks()[static_cast<size_t>(entry)];
     promptDeleteBookByPath(book.path, book.title);
@@ -543,7 +553,10 @@ int LibraryListActivity::bookRowCount() const {
   return static_cast<int>(index.bookCount()) + (pinned > 0 ? pinned - overlapCount : 0);
 }
 
-int LibraryListActivity::listCount() const { return groupsCollapsed ? static_cast<int>(groupCount) : bookRowCount(); }
+int LibraryListActivity::listCount() const {
+  if (groupsCollapsed) return static_cast<int>(groupCount);
+  return bookRowCount() + (headerRows() ? static_cast<int>(groupCount) : 0);
+}
 
 // Entry position on screen to row position in the sort order. Identity while
 // unfiltered and unpinned, so the shelf costs nothing when nothing is typed.
@@ -617,12 +630,52 @@ int LibraryListActivity::groupForBook(const int bookEntry) const {
   return group;
 }
 
+bool LibraryListActivity::headerRows() const {
+  return fromBookshelf && !groupsCollapsed && groupsValid && groupCount > 0 && !degraded && !isRecentSort(sortOrder);
+}
+
+// Group map for heading rows, rebuilt with every filter or order change. One
+// pass over the list (titles' stored folds, or each book's author).
+void LibraryListActivity::ensureGroups() {
+  groupsValid = false;
+  if (fromBookshelf && groupable()) groupsValid = buildGroupStarts();
+}
+
+int LibraryListActivity::displayForGroup(const int group) const { return groupStarts[group] + group; }
+
+int LibraryListActivity::groupAtDisplay(const int display) const {
+  int low = 0;
+  int high = groupCount - 1;
+  while (low < high) {
+    const int mid = (low + high + 1) / 2;
+    if (displayForGroup(mid) <= display) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return low;
+}
+
+int LibraryListActivity::bookFor(const int display) const {
+  if (!headerRows()) return display;
+  const int group = groupAtDisplay(display);
+  if (display == displayForGroup(group)) return -1;
+  return display - group - 1;
+}
+
+int LibraryListActivity::selectedBook() const { return bookFor(selectedEntry()); }
+
 bool LibraryListActivity::collapseGroups(const int bookEntry) {
   if (!groupable() || !buildGroupStarts()) return false;
+  groupsValid = true;
   expandedNav = activeNav();
   groupsCollapsed = true;
   auto& nav = activeNav();
-  nav.reset(groupForBook(bookEntry) + 1);
+  const int group = groupForBook(bookEntry);
+  nav.reset(group + 1);
+  // From the Bookshelf the picked heading scrolls to the top when it can.
+  if (fromBookshelf) nav.top = group;
   requestUpdate();
   return true;
 }
@@ -633,8 +686,10 @@ void LibraryListActivity::expandGroup(const int groupEntry) {
   groupsCollapsed = false;
   activeNav() = expandedNav;
   auto& nav = activeNav();
-  nav.selected = bookEntry + 1;
-  nav.top = bookEntry;
+  // With heading rows the picked heading stays selected.
+  const int target = headerRows() ? displayForGroup(groupEntry) : bookEntry;
+  nav.selected = target + 1;
+  nav.top = target;
   nav.followOnBuild = true;
   requestUpdate();
 }
@@ -651,6 +706,11 @@ void LibraryListActivity::restoreExpandedList() {
 // array is allocated once with the exact upper bound and fails back to an
 // explicit message rather than letting vector growth abort the firmware.
 void LibraryListActivity::applyFilter() {
+  applyQueryFilter();
+  ensureGroups();
+}
+
+void LibraryListActivity::applyQueryFilter() {
   groupsCollapsed = false;
   groupCount = 0;
   filtered.reset();
@@ -789,8 +849,10 @@ bool LibraryListActivity::handleButtons() {
   if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, LONG_PRESS_MS)) {
     if (tabsFocused()) {
       if (!degraded) toggleSortDirection();
+    } else if (headerRows() && selectedBook() < 0) {
+      activateIndex(selectedEntry());
     } else if (isRecentSort(sortOrder) || (fromBookshelf && !groupsCollapsed)) {
-      if (count > 0) showBookOptions(selectedEntry());
+      if (count > 0) showBookOptions(selectedBook());
     } else if (deleteEligible()) {
       if (count > 0) promptDeleteBook(selectedEntry());
     } else if (!groupsCollapsed && groupable()) {
@@ -901,6 +963,24 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
         formatAuthorHeading(author, title);
       } else {
         formatInitialHeading(titleInitialFor(bookEntry), title);
+      }
+    } else if (headerRows()) {
+      const int book = bookFor(entry);
+      if (book < 0) {
+        // A heading row: selectable, bold, no icon.
+        const int bookEntry = groupStarts[groupAtDisplay(entry)];
+        if (authorGrouped) {
+          rowTextFor(bookEntry, title, author);
+          formatAuthorHeading(author, title);
+        } else {
+          formatInitialHeading(titleInitialFor(bookEntry), title);
+        }
+        author.clear();
+        rowFile.clear();
+        item.bold = true;
+      } else {
+        if (!rowTextFor(book, title, author, &rowFile)) continue;
+        if (!authorGrouped && !author.empty()) item.subtitle = author.c_str();
       }
     } else {
       if (!rowTextFor(entry, title, author, &rowFile)) continue;
@@ -1060,7 +1140,15 @@ void LibraryListActivity::drawPositionReadout() const {
 
   char buf[32];
   const char* positionFormat = groupsCollapsed ? tr(STR_LIBRARY_GROUP_POSITION) : tr(STR_LIBRARY_POSITION);
-  snprintf(buf, sizeof(buf), positionFormat, selectedEntry() + 1, count);
+  int position = selectedEntry() + 1;
+  int total = count;
+  if (headerRows()) {
+    // Books only: a heading reads as its group's first book.
+    const int book = selectedBook();
+    position = (book < 0 ? groupStarts[groupAtDisplay(selectedEntry())] : book) + 1;
+    total = bookRowCount();
+  }
+  snprintf(buf, sizeof(buf), positionFormat, position, total);
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int width = renderer.getTextWidth(SMALL_FONT_ID, buf);
   // Bottom-right of the viewable area, clear of the bezel and rounded corner.
@@ -1111,7 +1199,8 @@ void LibraryListActivity::drawFooter() {
 
   const bool backGoesHome = tabsFocused() && !groupsCollapsed && query.empty();
   const char* backLabel = backGoesHome ? tr(STR_HOME) : tr(STR_BACK);
-  const char* confirmLabel = groupsCollapsed ? tr(STR_SELECT) : tr(STR_OPEN);
+  const bool onHeading = headerRows() && !tabsFocused() && selectedBook() < 0;
+  const char* confirmLabel = groupsCollapsed || onHeading ? tr(STR_SELECT) : tr(STR_OPEN);
   const bool canSearch = tabsFocused() && !degraded;
   const auto labels = mappedInput.mapLabels(backLabel, tabsFocused() ? tr(STR_TOGGLE) : confirmLabel,
                                             canSearch ? tr(STR_SEARCH) : tr(STR_DIR_UP), tr(STR_DIR_DOWN));

@@ -110,6 +110,7 @@ class LibraryListActivity final : public UiTabListActivity {
 
   // Data
   void applyFilter();
+  void applyQueryFilter();
   int bookRowCount() const;
   int rowFor(int entry) const;
   // fileName, when asked for, is the on-card name the row's icon derives from
@@ -117,6 +118,15 @@ class LibraryListActivity final : public UiTabListActivity {
   bool rowTextFor(int entry, std::string& title, std::string& author, std::string* fileName = nullptr);
   uint32_t titleInitialFor(int entry);
   bool buildGroupStarts();
+  // From the Bookshelf, Title/Author group headings are rows of their own:
+  // Confirm on one folds or unfolds every group. Entries then count headings
+  // and books together; these map between the two.
+  bool headerRows() const;
+  void ensureGroups();
+  int groupAtDisplay(int display) const;
+  int displayForGroup(int group) const;
+  int bookFor(int display) const;  // -1 for a heading row
+  int selectedBook() const;
   int groupForBook(int bookEntry) const;
   bool groupable() const;
 
@@ -155,6 +165,7 @@ class LibraryListActivity final : public UiTabListActivity {
   // order is discovery order rather than silently showing a wrong one.
   bool degraded = false;
   bool fromBookshelf = false;
+  bool groupsValid = false;  // groupStarts matches the current order and filter
 
   // Rows surviving the current query, as positions in the active sort order.
   // Empty query means no filtering and this owns no allocation, so the ordinary
