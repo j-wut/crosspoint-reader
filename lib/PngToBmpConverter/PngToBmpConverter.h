@@ -13,6 +13,8 @@ class PngToBmpConverter {
   static bool pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight);
   static bool pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight,
                                          bool crop, bool originalThresholds);
+  // Image size from the IHDR chunk; the file position is left at the start.
+  static bool pngFileSize(HalFile& pngFile, int& width, int& height);
   static bool pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight,
                                              bool crop = true);
 };

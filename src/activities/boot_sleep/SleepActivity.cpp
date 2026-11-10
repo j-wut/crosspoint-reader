@@ -822,7 +822,8 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
                             std::to_string(renderer.getScreenHeight()) + (cropMode ? "|c" : "|f") +
                             (useOriginalCoverThresholds(renderer) ? "|t" : "") + "|filter" +
                             std::to_string(SETTINGS.sleepScreenCoverFilter) +
-                            (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "");
+                            (renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() ? "|a" : "") +
+                            "|d2";  // d2: 2-bit images are not dithered again
   if (renderCachedSleepScreen(cacheKey)) return true;
   LOG_INF("SLP", "no cached sleep screen for %s; drawing it", path.c_str());
   screencache::Writer capture;
@@ -832,11 +833,15 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& imagePath) const {
   LOG_DBG("SLP", "Loading: %s", path.c_str());
 
   const bool thresholds = useOriginalCoverThresholds(renderer);
-  const bool screenReady = source.getWidth() == renderer.getScreenWidth() &&
-                           source.getHeight() == renderer.getScreenHeight() && source.getBpp() <= 2;
+  const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  // A 2-bit image is already dithered: dithering it again loses its grays. In fit mode
+  // one that fits on screen (like the Gallery's copy) is drawn as it is, centred.
+  const bool exactSize =
+      source.getWidth() == renderer.getScreenWidth() && source.getHeight() == renderer.getScreenHeight();
+  const bool fits = source.getWidth() <= renderer.getScreenWidth() && source.getHeight() <= renderer.getScreenHeight();
+  const bool screenReady = source.getBpp() <= 2 && (exactSize || (!crop && fits));
   if (!screenReady) {
     // Like book covers: scale and dither once into a cached screen-sized BMP, then draw it without dithering.
-    const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
     // Same-sized BMPs share a byte count, so the key also needs the modification time.
     // fileKey's sampled bytes tell apart same-sized files that share the device's default date.
     const std::string key = path + '|' + std::to_string(file.size()) + '|' + std::to_string(file.modificationTime()) +

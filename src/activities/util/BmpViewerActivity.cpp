@@ -29,20 +29,8 @@ constexpr char TRANSPARENT_SLEEP_ROOT_BMP[] = "/sleep-overlay.bmp";
 constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
 constexpr size_t COPY_BUFFER_SIZE = 2048;
 constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0};
+constexpr int OVERLAY_ARROW_H = 44;
 constexpr char SCALED_VIEW_BMP[] = "/.crosspoint/view_scaled.bmp";
-
-// PNG size from the IHDR chunk.
-bool pngSize(HalFile& in, int& width, int& height) {
-  uint8_t ihdr[24];
-  if (in.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !in.seek(0)) return false;
-  const auto be32 = [&ihdr](const int at) {
-    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
-  };
-  if (be32(16) > 8192 || be32(20) > 8192) return false;
-  width = static_cast<int>(be32(16));
-  height = static_cast<int>(be32(20));
-  return width > 0 && height > 0;
-}
 
 // Writes the image to SCALED_VIEW_BMP as a 2-bit BMP: shrunk to fit width x height
 // when larger (never enlarged), then dithered. PNGs are always converted; BMPs only
@@ -54,7 +42,7 @@ bool writeScaledImage(const std::string& path, const int width, const int height
   int sourceWidth = 0;
   int sourceHeight = 0;
   if (png) {
-    if (!pngSize(in, sourceWidth, sourceHeight)) return false;
+    if (!PngToBmpConverter::pngFileSize(in, sourceWidth, sourceHeight)) return false;
   } else {
     Bitmap source(in);
     if (source.parseHeaders() != BmpReaderError::Ok) return false;
@@ -189,13 +177,16 @@ void BmpViewerActivity::drawHints() const {
 }
 
 // Same sequence as a first draw, with the image layers read from the cache.
-bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
+// The bars go into every layer, so the grays under them stay gray.
+bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache, bool withOverlay) {
+  withOverlay = withOverlay || keepOverlay;
   const unsigned long start = millis();
   if (!cache.readLayer(0, renderer)) return false;
   drawHints();
+  if (withOverlay) drawOverlayContent();
   const unsigned long bwLoaded = millis();
   if (!cache.gray()) {
-    showFrame();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     LOG_INF("GAL", "cached screen %s: load %lu ms, refresh %lu ms", filePath.c_str(), bwLoaded - start,
             millis() - bwLoaded);
     return true;
@@ -215,6 +206,7 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
     }
     renderer.setRenderMode(mode);
     drawHints();
+    if (withOverlay) drawOverlayGrayPlane(absolute);
     if (mode == GfxRenderer::GRAYSCALE_LSB) {
       renderer.copyGrayscaleLsbBuffers();
     } else {
@@ -233,8 +225,8 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
     ready = false;
   }
   drawHints();
+  if (withOverlay) drawOverlayContent();
   renderer.cleanupGrayscaleWithFrameBuffer();
-  if (ready && keepOverlay) drawOverlay();
   if (!ready) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   LOG_INF("GAL", "cached gray screen %s: B/W load %lu ms, base refresh %lu ms, gray load %lu ms, gray refresh %lu ms",
           filePath.c_str(), bwLoaded - start, base - bwLoaded, grayLoaded - base, grayShown - grayLoaded);
@@ -306,6 +298,7 @@ void BmpViewerActivity::onEnter() {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const std::string cacheKey = viewerCacheKey(filePath, renderer);
+  screenKey = cacheKey;
   if (!cacheKey.empty()) {
     screencache::Reader cache;
     if (cache.open(cacheKey, renderer) && showCachedScreen(cache)) return;
@@ -647,7 +640,7 @@ void BmpViewerActivity::drawOverlayContent() {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, name.c_str());
 
   constexpr int ARROW_W = 72;
-  constexpr int ARROW_H = 44;
+  constexpr int ARROW_H = OVERLAY_ARROW_H;
   const int footHeight = ARROW_H + 2 * metrics.verticalSpacing;
   const int footY = height - footHeight;
   renderer.fillRect(0, footY, width, footHeight, false);
@@ -675,7 +668,30 @@ void BmpViewerActivity::drawOverlayContent() {
   overlayShown = true;
 }
 
+// The bars in one gray plane. Absolute planes hold every pixel's level, so the
+// bars are drawn as on the B/W layer; relative planes only mark pixels to gray.
+void BmpViewerActivity::drawOverlayGrayPlane(const bool absolute) {
+  const auto mode = renderer.getRenderMode();
+  renderer.setRenderMode(GfxRenderer::BW);
+  if (absolute) {
+    drawOverlayContent();
+  } else {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int width = renderer.getScreenWidth();
+    const int footHeight = OVERLAY_ARROW_H + 2 * metrics.verticalSpacing;
+    renderer.fillRect(0, 0, width, metrics.topPadding + metrics.headerHeight, true);
+    renderer.fillRect(0, renderer.getScreenHeight() - footHeight, width, footHeight, true);
+  }
+  renderer.setRenderMode(mode);
+}
+
 void BmpViewerActivity::drawOverlay() {
+  // A B/W refresh over a gray image turns its grays black, so gray screens are
+  // shown again from the cache with the bars in every layer.
+  if (!screenKey.empty()) {
+    screencache::Reader cache;
+    if (cache.open(screenKey, renderer) && cache.gray() && showCachedScreen(cache, true)) return;
+  }
   drawOverlayContent();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

@@ -905,6 +905,20 @@ bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpO
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false, crop, originalThresholds);
 }
 
+bool PngToBmpConverter::pngFileSize(HalFile& pngFile, int& width, int& height) {
+  uint8_t ihdr[24];
+  if (!pngFile.seek(0) || pngFile.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !pngFile.seek(0)) {
+    return false;
+  }
+  const auto be32 = [&ihdr](const int at) {
+    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
+  };
+  if (be32(16) == 0 || be32(20) == 0 || be32(16) > 8192 || be32(20) > 8192) return false;
+  width = static_cast<int>(be32(16));
+  height = static_cast<int>(be32(20));
+  return true;
+}
+
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                        int targetMaxHeight, const bool crop) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, crop);

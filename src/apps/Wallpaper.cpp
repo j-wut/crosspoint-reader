@@ -3,6 +3,7 @@
 #include <Bitmap.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
@@ -238,6 +239,22 @@ bool opgToBmp(const std::string& opgPath, const std::string& bmpPath) {
   return ok;
 }
 
+namespace {
+// PNG to a 2-bit BMP the way the full-screen viewer converts it: fitted images
+// are only shrunk, never enlarged, and dithered once after scaling.
+bool pngToScreenBmp(HalFile& src, Print& out, const bool crop, const bool thresholds) {
+  // Portrait screen size, as for book covers.
+  const int screenW = display.getDisplayHeight();
+  const int screenH = display.getDisplayWidth();
+  int width = 0;
+  int height = 0;
+  if (crop || !PngToBmpConverter::pngFileSize(src, width, height) || width > screenW || height > screenH) {
+    return PngToBmpConverter::pngFileToBmpStream(src, out, crop, thresholds);
+  }
+  return PngToBmpConverter::pngFileToBmpStreamWithSize(src, out, width, height, false, thresholds);
+}
+}  // namespace
+
 bool screenBmp(const std::string& path, std::string& bmpPath) {
   if (FsHelpers::hasBmpExtension(path)) {
     bmpPath = path;
@@ -247,8 +264,11 @@ bool screenBmp(const std::string& path, std::string& bmpPath) {
   if (!Storage.openFileForRead("WALL", path, src)) return false;
   const bool crop = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
   // Same-sized files share a byte count, so the key also needs the modification time.
+  // Same thresholds as the full-screen viewer, so the sleep screen matches it.
+  const bool thresholds = display.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
+                          display.getController() == HalDisplay::Controller::SSD1677;
   const std::string key = path + '|' + std::to_string(src.size()) + '|' + std::to_string(src.modificationTime()) +
-                          (crop ? "|c" : "|f") + "|v2";
+                          (crop ? "|c" : "|f") + (thresholds ? "|t" : "") + "|v3";
   bmpPath = "/.crosspoint/wp_" + std::to_string(std::hash<std::string>{}(key)) + ".bmp";
   if (Storage.exists(bmpPath.c_str())) return true;
 
@@ -260,7 +280,7 @@ bool screenBmp(const std::string& path, std::string& bmpPath) {
     const std::string tmp = bmpPath + ".tmp";
     HalFile out;
     ok = Storage.openFileForWrite("WALL", tmp, out) &&
-         (FsHelpers::hasPngExtension(path) ? PngToBmpConverter::pngFileToBmpStream(src, out, crop)
+         (FsHelpers::hasPngExtension(path) ? pngToScreenBmp(src, out, crop, thresholds)
                                            : JpegToBmpConverter::jpegFileToBmpStream(src, out, crop));
     if (out.isOpen()) ok = out.close() && ok;
     ok = ok && Storage.replaceFile(tmp.c_str(), bmpPath.c_str());

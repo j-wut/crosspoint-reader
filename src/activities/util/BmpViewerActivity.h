@@ -24,11 +24,12 @@ class BmpViewerActivity final : public Activity {
   void doSetSleepCover();
   bool canSetSleepCover() const;
   bool renderImage(screencache::Writer* capture, const std::string& cacheKey);
-  bool showCachedScreen(screencache::Reader& cache);
+  bool showCachedScreen(screencache::Reader& cache, bool withOverlay = false);
   void drawHints() const;
   bool saveJpegSleepCover();
   void drawOverlay();
   void drawOverlayContent();
+  void drawOverlayGrayPlane(bool absolute);
   void showFrame();
 
   std::string filePath;
@@ -39,4 +40,5 @@ class BmpViewerActivity final : public Activity {
   bool keepOverlay = false;   // redraw the bars on the next image
   Rect prevArrow{};
   Rect nextArrow{};
+  std::string screenKey;  // cache key of the image on screen; empty when it cannot be cached
 };
