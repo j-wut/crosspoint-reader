@@ -5,6 +5,7 @@
 #include <HalDisplay.h>
 #include <HalFrontlight.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <PersistableStore.h>
 #include <TrustedTime.h>
 
@@ -93,7 +94,11 @@ void PomodoroActivity::loadState() {
     } else {
       phase = Phase::Focus;
     }
+    LOG_INF("POMO", "restore running: endAt=%lld now=%lld restored=%d", static_cast<long long>(endAt),
+            static_cast<long long>(now), running);
   }
+  LOG_INF("POMO", "loaded: mode=%d phase=%d left=%lu ms focus=%u break=%u completed=%u", mode,
+          static_cast<int>(phase), static_cast<unsigned long>(remainingMs()), focusMinutes, breakMinutes, completed);
 }
 
 void PomodoroActivity::saveState() {
@@ -107,6 +112,8 @@ void PomodoroActivity::saveState() {
     doc["mode"] = MODE_RUNNING;
     const int64_t now = trustedtime::trustedNow();
     doc["endAt"] = now > 0 ? now + (remainingMs() + 999) / 1000 : 0;
+    LOG_INF("POMO", "save running: now=%lld left=%lu ms", static_cast<long long>(now),
+            static_cast<unsigned long>(remainingMs()));
   } else if (paused) {
     doc["mode"] = MODE_PAUSED;
     doc["elapsed"] = elapsedBefore;
@@ -154,11 +161,13 @@ const char* PomodoroActivity::takeBackgroundTimeUp() {
   if (!stateLoaded) loadState();
   if (!running || remainingMs() > 0) return nullptr;
   endTimer();
+  LOG_INF("POMO", "time up off screen, phase=%d: toast", static_cast<int>(phase));
   return phase == Phase::Focus ? tr(STR_POMODORO_FOCUS_DONE) : tr(STR_POMODORO_BREAK_DONE);
 }
 
 void PomodoroActivity::finishPhase() {
   endTimer();
+  LOG_INF("POMO", "time up on screen, phase=%d", static_cast<int>(phase));
   // Blink the front light and flash the panel so the end is noticed.
   if (Frontlight.present()) {
     lightWasOn = Frontlight.isOn();
