@@ -50,6 +50,9 @@ bool makeThumb(const std::string& path, int maxWidth, int maxHeight, Thumb& out)
 bool saveThumb(const Thumb& thumb, const std::string& cachePath);
 // Draw a preview centred in the box, clipped to it.
 void drawThumb(GfxRenderer& renderer, const Thumb& thumb, int x, int y, int width, int height);
+// Decode a PNG or JPEG the way previews are made (1-bit, dithered), fitted to
+// the box and drawn straight into the frame buffer as it is decoded.
+bool drawFitted(GfxRenderer& renderer, const std::string& path, int x, int y, int width, int height);
 
 // Write an .opg image's first page as a 1- or 2-bit BMP. False when the file
 // is not an .opg image this code understands.

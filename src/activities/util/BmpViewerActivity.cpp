@@ -3,7 +3,6 @@
 #include <Bitmap.h>
 #include <BoardConfig.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
-#include <Epub/converters/PngToFramebufferConverter.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -182,11 +181,22 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
 }
 
 bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::string& cacheKey) {
-  const bool jpeg = FsHelpers::hasJpgExtension(filePath);
-  JpegToFramebufferConverter jpegDecoder;
-  PngToFramebufferConverter pngDecoder;
-  ImageToFramebufferDecoder& decoder =
-      jpeg ? static_cast<ImageToFramebufferDecoder&>(jpegDecoder) : static_cast<ImageToFramebufferDecoder&>(pngDecoder);
+  if (!FsHelpers::hasJpgExtension(filePath)) {
+    // PNG: decoded like the Gallery previews (sampled, 1-bit) at screen size.
+    const unsigned long start = millis();
+    if (!wallpaper::drawFitted(renderer, filePath, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) {
+      return false;
+    }
+    LOG_INF("GAL", "png %s decoded to screen in %lu ms", filePath.c_str(), millis() - start);
+    if (capture && capture->begin(cacheKey, renderer, false, false)) {
+      capture->addLayer(renderer);
+      capture->finish();
+    }
+    drawHints();
+    showFrame();
+    return true;
+  }
+  JpegToFramebufferConverter decoder;
   ImageDimensions dimensions;
   if (!decoder.getDimensions(filePath, dimensions)) return false;
   if (dimensions.width <= 0 || dimensions.height <= 0) return false;
@@ -206,13 +216,8 @@ bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::str
   };
 
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
-  if (capture) capture->begin(cacheKey, renderer, jpeg, jpeg && absolute);
+  if (capture) capture->begin(cacheKey, renderer, true, absolute);
   if (!drawImage()) return false;
-  if (!jpeg) {
-    if (capture) capture->finish();
-    showFrame();
-    return true;
-  }
 
   if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return false;
   if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);

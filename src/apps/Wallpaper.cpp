@@ -313,10 +313,9 @@ struct ThumbLayout {
   uint32_t dataOffset = 0;
 };
 
-// Checks that the buffer is a whole 1-bit BMP and reads its layout.
-bool thumbLayout(const Thumb& thumb, ThumbLayout& layout) {
-  const uint8_t* p = thumb.data.get();
-  if (!p || thumb.size < THUMB_HEADER || p[0] != 'B' || p[1] != 'M' || (p[28] | p[29] << 8) != 1) return false;
+// Checks that the buffer is a whole 1-bit BMP of `size` bytes and reads its layout.
+bool bmpLayout(const uint8_t* p, const size_t size, ThumbLayout& layout) {
+  if (!p || size < THUMB_HEADER || p[0] != 'B' || p[1] != 'M' || (p[28] | p[29] << 8) != 1) return false;
   layout.dataOffset = le32(p + 10);
   layout.width = static_cast<int32_t>(le32(p + 18));
   const auto height = static_cast<int32_t>(le32(p + 22));
@@ -325,12 +324,13 @@ bool thumbLayout(const Thumb& thumb, ThumbLayout& layout) {
   if (layout.width <= 0 || layout.height <= 0 || layout.width > 4096 || layout.height > 4096) return false;
   layout.rowBytes = (static_cast<uint32_t>(layout.width) + 31) / 32 * 4;
   const uint32_t paletteAt = 14 + le32(p + 14);
-  if (paletteAt + 8 > thumb.size) return false;
+  if (paletteAt + 8 > size) return false;
   const auto luma = [p](const uint32_t at) { return p[at] + p[at + 1] + p[at + 2]; };
   layout.zeroIsBlack = luma(paletteAt) <= luma(paletteAt + 4);
-  return static_cast<uint64_t>(layout.dataOffset) + static_cast<uint64_t>(layout.rowBytes) * layout.height <=
-         thumb.size;
+  return static_cast<uint64_t>(layout.dataOffset) + static_cast<uint64_t>(layout.rowBytes) * layout.height <= size;
 }
+
+bool thumbLayout(const Thumb& thumb, ThumbLayout& layout) { return bmpLayout(thumb.data.get(), thumb.size, layout); }
 
 // One source row as 8-bit gray (0 = black), srcW values.
 using RowFn = std::function<bool(int sy, uint8_t* gray)>;
@@ -528,6 +528,74 @@ void drawThumb(GfxRenderer& renderer, const Thumb& thumb, const int x, const int
       if (one != layout.zeroIsBlack) renderer.drawPixel(left + col, top + row, true);
     }
   }
+}
+
+namespace {
+// Draws a 1-bit BMP stream straight into the frame buffer as the converter
+// writes it, centred in a box: no copy of the image is kept.
+class ScreenBmp final : public Print {
+ public:
+  ScreenBmp(GfxRenderer& renderer, const int boxX, const int boxY, const int boxW, const int boxH)
+      : renderer(renderer), boxX(boxX), boxY(boxY), boxW(boxW), boxH(boxH) {}
+  size_t write(const uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* buf, const size_t len) override {
+    for (size_t i = 0; i < len; i++) put(buf[i]);
+    return failed ? 0 : len;
+  }
+  bool drewAll() const { return !failed && headerRead && pos >= layout.dataOffset + layout.rowBytes * layout.height; }
+
+ private:
+  void put(const uint8_t byte) {
+    if (failed) return;
+    if (!headerRead) {
+      header[pos++] = byte;
+      if (pos == THUMB_HEADER) readHeader();
+      return;
+    }
+    if (pos++ < layout.dataOffset) return;
+    const uint32_t index = pos - 1 - layout.dataOffset;
+    const int fileRow = static_cast<int>(index / layout.rowBytes);
+    if (fileRow >= layout.height) return;
+    const int row = layout.topDown ? fileRow : layout.height - 1 - fileRow;
+    const int y = top + row;
+    const int col0 = static_cast<int>(index % layout.rowBytes) * 8;
+    if (y < boxY || y >= boxY + boxH) return;
+    for (int bit = 0; bit < 8 && col0 + bit < layout.width; bit++) {
+      const int x = left + col0 + bit;
+      const bool one = byte & (0x80 >> bit);
+      if (x >= boxX && x < boxX + boxW && one != layout.zeroIsBlack) renderer.drawPixel(x, y, true);
+    }
+  }
+  void readHeader() {
+    // Only the header is here; the pixel rows are still to come, so allow for them.
+    failed = !bmpLayout(header, SIZE_MAX, layout) || layout.dataOffset < THUMB_HEADER;
+    headerRead = true;
+    left = boxX + (boxW - layout.width) / 2;
+    top = boxY + (boxH - layout.height) / 2;
+  }
+
+  GfxRenderer& renderer;
+  const int boxX, boxY, boxW, boxH;
+  uint8_t header[THUMB_HEADER] = {};
+  ThumbLayout layout;
+  uint32_t pos = 0;
+  int left = 0;
+  int top = 0;
+  bool headerRead = false;
+  bool failed = false;
+};
+}  // namespace
+
+bool drawFitted(GfxRenderer& renderer, const std::string& path, const int x, const int y, const int width,
+                const int height) {
+  if (!FsHelpers::hasPngExtension(path) && !FsHelpers::hasJpgExtension(path)) return false;
+  HalFile in;
+  if (!Storage.openFileForRead("WALL", path, in)) return false;
+  ScreenBmp screen(renderer, x, y, width, height);
+  const bool ok = FsHelpers::hasPngExtension(path)
+                      ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, screen, width, height, false)
+                      : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(in, screen, width, height, false);
+  return ok && screen.drewAll();
 }
 
 bool setAs(const std::string& path, const char* destination) {
