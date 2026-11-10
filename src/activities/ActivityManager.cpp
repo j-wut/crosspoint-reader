@@ -155,10 +155,15 @@ void ActivityManager::loop() {
     currentActivity->loop();
 
     // A Pomodoro timer that ends while its screen is not open, or ended while
-    // the device slept, shows a toast.
-    if (pendingAction == PendingAction::None && currentActivity->name != "Pomodoro" &&
+    // the device slept, shows a toast. It waits until the screen underneath
+    // has painted, since the toast is drawn over that frame.
+    const bool screenPainted = paintedVisit.load(std::memory_order_acquire) == screenVisit &&
+                               !requestedUpdate.load() && !RenderLock::peek();
+    if (pendingAction == PendingAction::None && screenPainted && currentActivity->name != "Pomodoro" &&
         currentActivity->name != "Sleep" && currentActivity->name != "Boot") {
       if (const char* message = PomodoroActivity::takeBackgroundTimeUp()) {
+        LOG_INF("POMO", "toast over %s (visit %lu)", currentActivity->name.c_str(),
+                static_cast<unsigned long>(screenVisit));
         pushActivity(std::make_unique<PomodoroToastActivity>(renderer, mappedInput, message));
       }
     }
