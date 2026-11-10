@@ -6,9 +6,10 @@
 #include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
-// Focus timer: a focus session, then a break. The screen refreshes once a
-// minute while running and the device stays awake; when time is up the screen
-// flashes and the front light blinks.
+// Focus timer: a focus session, then a break. While running, the screen shows
+// minutes and seconds left and refreshes each second, like the stock Picco
+// app. The device stays awake; when time is up the screen flashes and the
+// front light blinks.
 class PomodoroActivity final : public Activity, private UiAppHost {
  public:
   PomodoroActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -44,7 +45,7 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   bool timeUp = false;          // "Time's up" shown until the next button
   uint32_t startedAt = 0;       // millis() when the current run started
   uint32_t elapsedBefore = 0;   // ms run before the last pause
-  uint32_t lastShownMinute = 0;
+  uint32_t lastShownSecond = 0;
   uint8_t focusMinutes = 25;
   uint8_t breakMinutes = 5;
   uint16_t completed = 0;       // focus sessions finished today

@@ -90,7 +90,7 @@ void PomodoroActivity::startPhase(const Phase next) {
   timeUp = false;
   elapsedBefore = 0;
   startedAt = millis();
-  lastShownMinute = (remainingMs() + MINUTE_MS - 1) / MINUTE_MS;
+  lastShownSecond = (remainingMs() + 999) / 1000;
   selected = 0;
 }
 
@@ -202,9 +202,9 @@ void PomodoroActivity::loop() {
       requestUpdate();
       return;
     }
-    const uint32_t minute = (left + MINUTE_MS - 1) / MINUTE_MS;
-    if (minute != lastShownMinute) {
-      lastShownMinute = minute;
+    const uint32_t second = (left + 999) / 1000;
+    if (second != lastShownSecond) {
+      lastShownSecond = second;
       requestUpdate();
     }
   }
@@ -258,12 +258,10 @@ void PomodoroActivity::draw(UiScreen& screen) {
                        title);
   y = static_cast<int16_t>(y + titleHeight + theme.spaceLg * 2);
 
-  // Running: whole minutes left (the screen refreshes once a minute).
-  // Paused or stopped: the exact time left.
   const uint32_t left = timeUp && phase == Phase::Focus ? static_cast<uint32_t>(breakMinutes) * MINUTE_MS
                         : timeUp                         ? phaseMs()
                                                          : remainingMs();
-  uint32_t secs = running ? ((left + MINUTE_MS - 1) / MINUTE_MS) * 60 : (left + 999) / 1000;
+  const uint32_t secs = (left + 999) / 1000;
   char digits[8];
   snprintf(digits, sizeof(digits), "%02u:%02u", static_cast<unsigned>(secs / 60), static_cast<unsigned>(secs % 60));
   const int16_t digitsWidth = bigdigits::width(digits, DIGIT_HEIGHT);
