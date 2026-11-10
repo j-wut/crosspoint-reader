@@ -158,6 +158,7 @@ size_t used = 0;
 size_t dropped = 0;
 bool open = false;  // buffer is collecting; card writes allowed
 bool started = false;
+bool headerWritten = false;
 TaskHandle_t owner = nullptr;
 #if defined(ARDUINO_ARCH_ESP32)
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -223,12 +224,15 @@ void flush() {
   if (total == 0 && lost == 0) return;
   {
     debuglog::File file = debuglog::open(debuglog::Feature::WakeUp);
-    if (file) {
+    if (file && !headerWritten) {
+      headerWritten = true;
       const time_t now = time(nullptr);
       struct tm local;
       localtime_r(&now, &local);
       file.printf("[%04d-%02d-%02d %02d:%02d:%02d +%lums] sleep log:\n", local.tm_year + 1900, local.tm_mon + 1,
                   local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec, static_cast<unsigned long>(millis()));
+    }
+    if (file) {
       file.write(reinterpret_cast<const uint8_t*>(buffer), total);
       if (lost > 0) file.printf("  (sleep log full, %u bytes dropped)\n", static_cast<unsigned>(lost));
       file.close();
