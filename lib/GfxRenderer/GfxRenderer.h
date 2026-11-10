@@ -324,9 +324,8 @@ class GfxRenderer {
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int size) const;
   bool drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0, float cropY = 0,
-                  bool whiteAsTransparent = false, bool upscale = false) const;
-  // upscale: also enlarge images smaller than maxWidth x maxHeight to fit.
-  bool drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, bool upscale = false) const;
+                  bool whiteAsTransparent = false) const;
+  bool drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
   // Counter-invert content images in the logical framebuffer so output-level
   // dark mode leaves their original polarity unchanged.
   void preserveImagePolarity(int x, int y, int width, int height) const;

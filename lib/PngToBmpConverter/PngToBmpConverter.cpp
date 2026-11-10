@@ -445,7 +445,7 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
 }
 
 bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpOut, int targetWidth, int targetHeight,
-                                                   bool oneBit, bool crop, bool originalThresholds) {
+                                                   bool oneBit, bool crop, bool originalThresholds, bool rawGray) {
   LOG_DBG("PNG", "Converting PNG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
   // Verify PNG signature
@@ -659,7 +659,8 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
 
   // Write BMP header
   int bytesPerRow;
-  if (USE_8BIT_OUTPUT && !oneBit) {
+  const bool eightBit = rawGray || (USE_8BIT_OUTPUT && !oneBit);
+  if (eightBit) {
     writeBmpHeader8bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth + 3) / 4 * 4;
   } else if (oneBit) {
@@ -691,7 +692,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
 
       return false;
     }
-  } else if (!USE_8BIT_OUTPUT) {
+  } else if (!eightBit) {
     if (USE_ATKINSON) {
       atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(outWidth, originalThresholds);
       if (!atkinsonDitherer || !atkinsonDitherer->isValid()) {
@@ -755,9 +756,9 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       // Direct output (no scaling)
       memset(rowBuffer, 0, bytesPerRow);
 
-      if (USE_8BIT_OUTPUT && !oneBit) {
+      if (eightBit) {
         for (int x = 0; x < outWidth; x++) {
-          rowBuffer[x] = adjustPixel(grayRow[x]);
+          rowBuffer[x] = rawGray ? grayRow[x] : adjustPixel(grayRow[x]);
         }
       } else if (oneBit) {
         for (int x = 0; x < outWidth; x++) {
@@ -821,10 +822,10 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       while (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {
         memset(rowBuffer, 0, bytesPerRow);
 
-        if (USE_8BIT_OUTPUT && !oneBit) {
+        if (eightBit) {
           for (int x = 0; x < outWidth; x++) {
             const uint8_t gray = (rowCount[x] > 0) ? (rowAccum[x] / rowCount[x]) : 0;
-            rowBuffer[x] = adjustPixel(gray);
+            rowBuffer[x] = rawGray ? gray : adjustPixel(gray);
           }
         } else if (oneBit) {
           for (int x = 0; x < outWidth; x++) {
@@ -897,6 +898,16 @@ bool PngToBmpConverter::pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool
 bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                    int targetMaxHeight) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false);
+}
+
+bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, const int targetMaxWidth,
+                                                   const int targetMaxHeight, const bool crop,
+                                                   const bool originalThresholds) {
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, false, crop, originalThresholds);
+}
+
+bool PngToBmpConverter::pngFileToGrayBmpStream(HalFile& pngFile, Print& bmpOut) {
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, 0, 0, false, false, false, true);
 }
 
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,

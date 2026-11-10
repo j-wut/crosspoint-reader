@@ -1,14 +1,17 @@
 #include "BmpViewerActivity.h"
 
 #include <Bitmap.h>
+#include <BmpToBmpConverter.h>
 #include <BoardConfig.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <GifImageLayout.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <PngToBmpConverter.h>
 
 #include <algorithm>
 
@@ -27,6 +30,87 @@ constexpr char TRANSPARENT_SLEEP_ROOT_BMP[] = "/sleep-overlay.bmp";
 constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
 constexpr size_t COPY_BUFFER_SIZE = 2048;
 constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0};
+constexpr char SCALED_VIEW_BMP[] = "/.crosspoint/view_scaled.bmp";
+constexpr char GRAY_VIEW_BMP[] = "/.crosspoint/view_gray.bmp";
+
+// PNG size from the IHDR chunk.
+bool pngSize(HalFile& in, int& width, int& height) {
+  uint8_t ihdr[24];
+  if (in.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !in.seek(0)) return false;
+  const auto be32 = [&ihdr](const int at) {
+    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
+  };
+  if (be32(16) > 8192 || be32(20) > 8192) return false;
+  width = static_cast<int>(be32(16));
+  height = static_cast<int>(be32(20));
+  return width > 0 && height > 0;
+}
+
+// Scales a BMP to fit width x height into `out`: blended, then dithered once.
+bool scaleBmp(const char* path, Print& out, const int width, const int height, const bool originalThresholds) {
+  HalFile in;
+  return Storage.openFileForRead("BMP", path, in) &&
+         BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
+}
+
+// PNG to a BMP fitted to width x height, dithered after scaling. Enlarging goes
+// through an unscaled gray copy so pixels are blended, not repeated.
+bool scalePng(HalFile& in, Print& out, const int width, const int height, const bool originalThresholds) {
+  int pngWidth = 0;
+  int pngHeight = 0;
+  if (!pngSize(in, pngWidth, pngHeight)) return false;
+  if (pngWidth >= width || pngHeight >= height) {
+    return PngToBmpConverter::pngFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
+  }
+  HalFile gray;
+  if (!Storage.openFileForWrite("BMP", GRAY_VIEW_BMP, gray)) return false;
+  bool ok = PngToBmpConverter::pngFileToGrayBmpStream(in, gray);
+  ok = gray.close() && ok;
+  ok = ok && scaleBmp(GRAY_VIEW_BMP, out, width, height, originalThresholds);
+  Storage.remove(GRAY_VIEW_BMP);
+  return ok;
+}
+
+// Writes the image scaled to fit width x height to SCALED_VIEW_BMP, dithered
+// once after scaling. False when a BMP already fits exactly or the copy fails.
+bool writeScaledImage(const std::string& path, const int width, const int height, const bool originalThresholds) {
+  const bool png = FsHelpers::hasPngExtension(path);
+  HalFile in;
+  if (!Storage.openFileForRead("BMP", path, in)) return false;
+  int sourceWidth = 0;
+  int sourceHeight = 0;
+  if (png) {
+    if (!pngSize(in, sourceWidth, sourceHeight)) return false;
+  } else {
+    Bitmap source(in);
+    GifCommon::ImageLayout layout;
+    if (source.parseHeaders() != BmpReaderError::Ok ||
+        !GifCommon::calculateLayout(source.getWidth(), source.getHeight(), width, height, false, layout) ||
+        (layout.width == source.getWidth() && layout.height == source.getHeight())) {
+      return false;
+    }
+    sourceWidth = source.getWidth();
+    sourceHeight = source.getHeight();
+  }
+  const unsigned long start = millis();
+  HalFile out;
+  if (!Storage.openFileForWrite("BMP", SCALED_VIEW_BMP, out)) return false;
+  bool ok = png ? scalePng(in, out, width, height, originalThresholds)
+                : BmpToBmpConverter::bmpFileToBmpStreamWithSize(in, out, width, height, false, originalThresholds);
+  ok = out.close() && ok;
+  if (!ok) Storage.remove(SCALED_VIEW_BMP);
+  LOG_INF("BMP", "scaled %s %dx%d to fit %dx%d: %s, %lu ms", path.c_str(), sourceWidth, sourceHeight, width, height,
+          ok ? "ok" : "failed", millis() - start);
+  return ok;
+}
+
+// Removes the scaled copy once the viewer is done with it.
+struct ScaledBmpCleanup {
+  bool active = false;
+  ~ScaledBmpCleanup() {
+    if (active) Storage.remove(SCALED_VIEW_BMP);
+  }
+};
 
 // Everything that changes the viewer's finished layers. Empty when the file cannot be read.
 std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer) {
@@ -35,8 +119,8 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   // The BMP draw path also picks its thresholds by controller.
   const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
-  // "fit1" marks screens with every image scaled to fit, replacing older ones.
-  return file + "|fit1|" + std::to_string(renderer.getScreenWidth()) +
+  // "fit3" marks screens with every image scaled to fit, then dithered.
+  return file + "|fit3|" + std::to_string(renderer.getScreenWidth()) +
          'x' + std::to_string(renderer.getScreenHeight()) + '|' +
          std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
          (ssd1677 ? "|ssd1677" : "");
@@ -183,21 +267,6 @@ bool BmpViewerActivity::showCachedScreen(screencache::Reader& cache) {
 }
 
 bool BmpViewerActivity::renderImage(screencache::Writer* capture, const std::string& cacheKey) {
-  if (!FsHelpers::hasJpgExtension(filePath)) {
-    // PNG: decoded like the Gallery previews (sampled, 1-bit) at screen size.
-    const unsigned long start = millis();
-    if (!wallpaper::drawPngFitted(renderer, filePath, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) {
-      return false;
-    }
-    LOG_INF("GAL", "png %s decoded to screen in %lu ms", filePath.c_str(), millis() - start);
-    if (capture && capture->begin(cacheKey, renderer, false, false)) {
-      capture->addLayer(renderer);
-      capture->finish();
-    }
-    drawHints();
-    showFrame();
-    return true;
-  }
   JpegToFramebufferConverter decoder;
   ImageDimensions dimensions;
   if (!decoder.getDimensions(filePath, dimensions)) return false;
@@ -302,7 +371,7 @@ void BmpViewerActivity::onEnter() {
     return;
   }
 
-  if (FsHelpers::hasPngExtension(filePath) || FsHelpers::hasJpgExtension(filePath)) {
+  if (FsHelpers::hasJpgExtension(filePath)) {
     renderer.clearScreen();
     if (!renderImage(&capture, cacheKey)) {
       renderer.clearScreen();
@@ -314,19 +383,32 @@ void BmpViewerActivity::onEnter() {
     return;
   }
 
+  const bool originalThresholds = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
+                                  display.getController() == HalDisplay::Controller::SSD1677;
+  // Scale first, then dither at screen size; the original is drawn if that fails.
+  ScaledBmpCleanup scaled;
+  scaled.active = writeScaledImage(filePath, pageWidth, pageHeight, originalThresholds);
+  const std::string drawPath = scaled.active ? std::string(SCALED_VIEW_BMP) : filePath;
+  if (!scaled.active && FsHelpers::hasPngExtension(filePath)) {
+    renderer.clearScreen();
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    return;
+  }
+
   HalFile file;
   // 1. Open the BMP file
-  if (Storage.openFileForRead("BMP", filePath, file)) {
-    Bitmap bitmap(file, true,
-                  renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
-                      display.getController() == HalDisplay::Controller::SSD1677);
+  if (Storage.openFileForRead("BMP", drawPath, file)) {
+    Bitmap bitmap(file, true, originalThresholds);
 
     // 2. Parse headers to get dimensions
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       int x, y;
 
-      // Every image is scaled to fit the screen, keeping its aspect ratio.
-      {
+      // Centre the image; one that does not fit is shrunk, keeping its aspect ratio.
+      if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
         float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
         const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
 
@@ -339,6 +421,9 @@ void BmpViewerActivity::onEnter() {
           x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
           y = 0;
         }
+      } else {
+        x = (pageWidth - bitmap.getWidth()) / 2;
+        y = (pageHeight - bitmap.getHeight()) / 2;
       }
 
       // 4. Prepare Rendering
@@ -352,7 +437,7 @@ void BmpViewerActivity::onEnter() {
       GUI.fillPopupProgress(renderer, popupRect, 50);
 
       renderer.clearScreen();
-      if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
+      if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
         renderer.clearScreen();
         renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
         renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -377,7 +462,7 @@ void BmpViewerActivity::onEnter() {
           }
           renderer.clearScreen(absolute ? 0xFF : 0x00);
           renderer.setRenderMode(mode);
-          if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
+          if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
             planesReady = false;
             break;
           }
@@ -396,7 +481,7 @@ void BmpViewerActivity::onEnter() {
         renderer.setRenderMode(GfxRenderer::BW);
         renderer.clearScreen();
         if (bitmap.rewindToData() != BmpReaderError::Ok ||
-            !renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
+            !renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
           LOG_ERR("BMP", "Failed to rewind bitmap to restore the BW framebuffer");
           renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
           planesReady = false;

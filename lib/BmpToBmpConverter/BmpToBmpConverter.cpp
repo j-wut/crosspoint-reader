@@ -49,6 +49,14 @@ int upscaleSource(const int i, const int dst, const int src) {
 
 bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, const bool crop,
                                            const bool originalThresholds) {
+  // Display dimensions swapped for portrait, as for book covers.
+  return bmpFileToBmpStreamWithSize(bmpFile, bmpOut, display.getDisplayHeight(), display.getDisplayWidth(), crop,
+                                    originalThresholds);
+}
+
+bool BmpToBmpConverter::bmpFileToBmpStreamWithSize(HalFile& bmpFile, Print& bmpOut, const int targetWidth,
+                                                   const int targetHeight, const bool crop,
+                                                   const bool originalThresholds) {
   Bitmap src(bmpFile);
   const BmpReaderError err = src.parseHeaders();
   if (err != BmpReaderError::Ok) {
@@ -56,10 +64,8 @@ bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, cons
     return false;
   }
 
-  // Display dimensions swapped for portrait, as for book covers.
   GifCommon::ImageLayout layout;
-  if (!GifCommon::calculateLayout(src.getWidth(), src.getHeight(), display.getDisplayHeight(),
-                                  display.getDisplayWidth(), crop, layout)) {
+  if (!GifCommon::calculateLayout(src.getWidth(), src.getHeight(), targetWidth, targetHeight, crop, layout)) {
     LOG_ERR("BMP", "Invalid BMP layout %dx%d", src.getWidth(), src.getHeight());
     return false;
   }
