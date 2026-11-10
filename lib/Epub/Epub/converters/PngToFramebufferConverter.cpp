@@ -12,6 +12,7 @@
 #include <memory>
 #include <new>
 
+#include "DecoderAllocation.h"
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
 #include "PixelCache.h"
