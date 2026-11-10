@@ -35,8 +35,8 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   // The BMP draw path also picks its thresholds by controller.
   const bool ssd1677 = display.getController() == HalDisplay::Controller::SSD1677;
-  // "png1" marks PNG screens from the preview decoder, replacing older ones.
-  return file + (FsHelpers::hasPngExtension(path) ? "|png1" : "") + '|' + std::to_string(renderer.getScreenWidth()) +
+  // "fit1" marks screens with every image scaled to fit, replacing older ones.
+  return file + "|fit1|" + std::to_string(renderer.getScreenWidth()) +
          'x' + std::to_string(renderer.getScreenHeight()) + '|' +
          std::to_string(static_cast<int>(renderer.getOrientation())) + (absolute ? "|a" : "") +
          (ssd1677 ? "|ssd1677" : "");
@@ -44,7 +44,7 @@ std::string viewerCacheKey(const std::string& path, const GfxRenderer& renderer)
 
 RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
   const float scale = std::min({static_cast<float>(renderer.getScreenWidth()) / dimensions.width,
-                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height, 1.0f});
+                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height});
   const int width = std::max(1, std::min(renderer.getScreenWidth(), static_cast<int>(dimensions.width * scale)));
   const int height = std::max(1, std::min(renderer.getScreenHeight(), static_cast<int>(dimensions.height * scale)));
   RenderConfig config{(renderer.getScreenWidth() - width) / 2, (renderer.getScreenHeight() - height) / 2, width,
@@ -275,7 +275,7 @@ void BmpViewerActivity::onEnter() {
     // Straight from the file into the frame buffer; no converted copy.
     const unsigned long start = millis();
     renderer.clearScreen();
-    const bool ok = wallpaper::drawOpg(renderer, filePath).ok;
+    const bool ok = wallpaper::drawOpg(renderer, filePath, true, true).ok;
     if (ok && capture.begin(cacheKey, renderer, false, false)) {
       capture.addLayer(renderer);
       capture.finish();
@@ -325,7 +325,8 @@ void BmpViewerActivity::onEnter() {
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       int x, y;
 
-      if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
+      // Every image is scaled to fit the screen, keeping its aspect ratio.
+      {
         float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
         const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
 
@@ -338,10 +339,6 @@ void BmpViewerActivity::onEnter() {
           x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
           y = 0;
         }
-      } else {
-        // Center small images
-        x = (pageWidth - bitmap.getWidth()) / 2;
-        y = (pageHeight - bitmap.getHeight()) / 2;
       }
 
       // 4. Prepare Rendering
@@ -355,7 +352,7 @@ void BmpViewerActivity::onEnter() {
       GUI.fillPopupProgress(renderer, popupRect, 50);
 
       renderer.clearScreen();
-      if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
+      if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
         renderer.clearScreen();
         renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
         renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -380,7 +377,7 @@ void BmpViewerActivity::onEnter() {
           }
           renderer.clearScreen(absolute ? 0xFF : 0x00);
           renderer.setRenderMode(mode);
-          if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
+          if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
             planesReady = false;
             break;
           }
@@ -399,7 +396,7 @@ void BmpViewerActivity::onEnter() {
         renderer.setRenderMode(GfxRenderer::BW);
         renderer.clearScreen();
         if (bitmap.rewindToData() != BmpReaderError::Ok ||
-            !renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
+            !renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0, false, true)) {
           LOG_ERR("BMP", "Failed to rewind bitmap to restore the BW framebuffer");
           renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
           planesReady = false;

@@ -593,17 +593,8 @@ bool drawPngFitted(GfxRenderer& renderer, const std::string& path, const int x, 
   if (!FsHelpers::hasPngExtension(path)) return false;
   HalFile in;
   if (!Storage.openFileForRead("WALL", path, in)) return false;
-  // Image size from the IHDR chunk: small images stay 1:1 instead of being scaled up.
-  uint8_t ihdr[24];
-  if (in.read(ihdr, sizeof(ihdr)) != static_cast<int>(sizeof(ihdr)) || !in.seek(0)) return false;
-  const auto be32 = [&ihdr](const int at) {
-    return static_cast<uint32_t>(ihdr[at]) << 24 | ihdr[at + 1] << 16 | ihdr[at + 2] << 8 | ihdr[at + 3];
-  };
-  const int targetW = static_cast<int>(std::min<uint32_t>(static_cast<uint32_t>(width), be32(16)));
-  const int targetH = static_cast<int>(std::min<uint32_t>(static_cast<uint32_t>(height), be32(20)));
-  if (targetW <= 0 || targetH <= 0) return false;
   ScreenBmp screen(renderer, x, y, width, height);
-  const bool ok = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, screen, targetW, targetH, false);
+  const bool ok = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(in, screen, width, height, false);
   return ok && screen.drewAll();
 }
 
@@ -666,7 +657,7 @@ bool setWallpaper(const std::string& path, const Kind kind, const bool keepAlpha
   return ok;
 }
 
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool keepAlpha) {
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool keepAlpha, const bool fitScreen) {
   DrawResult result;
   HalFile in;
   if (!Storage.openFileForRead("WALL", path, in)) {
@@ -683,11 +674,12 @@ DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, const bool ke
 
   // Stock sizing: shrink to fit (keeping the aspect ratio) only when larger
   // than the screen, round the width down to a multiple of 8, centre.
+  // fitScreen also enlarges smaller images.
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
   int dstW = static_cast<int>(page.width);
   int dstH = static_cast<int>(page.height);
-  if (dstW > screenW || dstH > screenH) {
+  if (dstW > screenW || dstH > screenH || (fitScreen && dstW < screenW && dstH < screenH)) {
     const float scale = std::min(static_cast<float>(screenW) / page.width, static_cast<float>(screenH) / page.height);
     dstW = std::max(1, static_cast<int>(page.width * scale));
     dstH = std::max(1, static_cast<int>(page.height * scale));

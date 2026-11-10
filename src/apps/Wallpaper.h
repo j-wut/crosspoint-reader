@@ -51,7 +51,7 @@ bool saveThumb(const Thumb& thumb, const std::string& cachePath);
 // Draw a preview centred in the box, clipped to it.
 void drawThumb(GfxRenderer& renderer, const Thumb& thumb, int x, int y, int width, int height);
 // Decode a PNG the way previews are made (1-bit, dithered), fitted to the box
-// (never enlarged) and drawn straight into the frame buffer as it is decoded.
+// (enlarged or shrunk to fit) and drawn straight into the frame buffer as it is decoded.
 bool drawPngFitted(GfxRenderer& renderer, const std::string& path, int x, int y, int width, int height);
 
 // Write an .opg image's first page as a 1- or 2-bit BMP. False when the file
@@ -84,6 +84,6 @@ struct DrawResult {
 // alpha channel: transparent pixels keep what is already on screen, and
 // images without alpha clear the screen to white first. With keepAlpha
 // false, transparent pixels are white.
-DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, bool keepAlpha = true);
+DrawResult drawOpg(GfxRenderer& renderer, const std::string& path, bool keepAlpha = true, bool fitScreen = false);
 
 }  // namespace wallpaper

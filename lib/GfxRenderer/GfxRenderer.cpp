@@ -1418,11 +1418,12 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
 }
 
 bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
-                             const float cropX, const float cropY, const bool whiteAsTransparent) const {
+                             const float cropX, const float cropY, const bool whiteAsTransparent,
+                             const bool upscale) const {
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return false;
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
-    return drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
+    return drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight, upscale);
   }
 
   float scale = 1.0f;
@@ -1448,7 +1449,7 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     hasTargetBounds = true;
   }
 
-  if (hasTargetBounds && fitScale < 1.0f) {
+  if (hasTargetBounds && (fitScale < 1.0f || (upscale && fitScale > 1.0f))) {
     scale = fitScale;
     isScaled = true;
   }
@@ -1471,9 +1472,13 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   for (int bmpY = 0; bmpY < (bitmap.getHeight() - cropPixY); bmpY++) {
     // The BMP's (0, 0) is the bottom-left corner (if the height is positive, top-left if negative).
     // Screen's (0, 0) is the top-left corner.
-    int screenY = -cropPixY + (bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY);
+    const int srcY = -cropPixY + (bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY);
+    int screenY = srcY;
+    // Enlarged rows cover more than one screen row.
+    int rowSpan = 1;
     if (isScaled) {
-      screenY = std::floor(screenY * scale);
+      screenY = std::floor(srcY * scale);
+      rowSpan = std::max(1, static_cast<int>(std::floor((srcY + 1) * scale)) - screenY);
     }
     screenY += y;  // the offset should not be scaled
     if (screenY >= getScreenHeight()) {
@@ -1496,9 +1501,12 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     }
 
     for (int bmpX = cropPixX; bmpX < bitmap.getWidth() - cropPixX; bmpX++) {
-      int screenX = bmpX - cropPixX;
+      const int srcX = bmpX - cropPixX;
+      int screenX = srcX;
+      int colSpan = 1;
       if (isScaled) {
-        screenX = std::floor(screenX * scale);
+        screenX = std::floor(srcX * scale);
+        colSpan = std::max(1, static_cast<int>(std::floor((srcX + 1) * scale)) - screenX);
       }
       screenX += x;  // the offset should not be scaled
       if (screenX >= getScreenWidth()) {
@@ -1511,25 +1519,38 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
       if (whiteAsTransparent && val == 3) continue;
 
+      bool write = false;
+      bool black = true;
       if (renderMode == BW && val < 3) {
-        drawPixel(screenX, screenY);
+        write = true;
       } else if (renderMode == GRAYSCALE_LSB || renderMode == GRAYSCALE_MSB) {
         const auto pixel = grayPlanePixel(val, renderMode == GRAYSCALE_MSB, absoluteGrayPlanes);
-        if (pixel.write) drawPixel(screenX, screenY, pixel.black);
+        write = pixel.write;
+        black = pixel.black;
+      }
+      if (!write) continue;
+      for (int dy = 0; dy < rowSpan; dy++) {
+        for (int dx = 0; dx < colSpan; dx++) drawPixel(screenX + dx, screenY + dy, black);
       }
     }
   }
 
   const int sourceWidth = bitmap.getWidth() - cropPixX * 2;
   const int sourceHeight = bitmap.getHeight() - cropPixY * 2;
-  const int renderedWidth = isScaled ? static_cast<int>(std::floor((sourceWidth - 1) * scale)) + 1 : sourceWidth;
-  const int renderedHeight = isScaled ? static_cast<int>(std::floor((sourceHeight - 1) * scale)) + 1 : sourceHeight;
+  const int renderedWidth =
+      isScaled ? std::max(static_cast<int>(std::floor((sourceWidth - 1) * scale)) + 1,
+                          static_cast<int>(std::floor(sourceWidth * scale)))
+               : sourceWidth;
+  const int renderedHeight =
+      isScaled ? std::max(static_cast<int>(std::floor((sourceHeight - 1) * scale)) + 1,
+                          static_cast<int>(std::floor(sourceHeight * scale)))
+               : sourceHeight;
   preserveImagePolarity(x, y, renderedWidth, renderedHeight);
   return true;
 }
 
 bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
-                                 const int maxHeight) const {
+                                 const int maxHeight, const bool upscale) const {
   float scale = 1.0f;
   bool isScaled = false;
   if (maxWidth > 0 && bitmap.getWidth() > maxWidth) {
@@ -1539,6 +1560,12 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   if (maxHeight > 0 && bitmap.getHeight() > maxHeight) {
     scale = std::min(scale, static_cast<float>(maxHeight) / static_cast<float>(bitmap.getHeight()));
     isScaled = true;
+  }
+  if (upscale && !isScaled && maxWidth > 0 && maxHeight > 0) {
+    scale = std::min(static_cast<float>(maxWidth) / static_cast<float>(bitmap.getWidth()),
+                     static_cast<float>(maxHeight) / static_cast<float>(bitmap.getHeight()));
+    isScaled = scale > 1.0f;
+    if (!isScaled) scale = 1.0f;
   }
 
   // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow)
@@ -1565,6 +1592,8 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
     // Calculate screen Y based on whether BMP is top-down or bottom-up
     const int bmpYOffset = bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY;
     int screenY = y + (isScaled ? static_cast<int>(std::floor(bmpYOffset * scale)) : bmpYOffset);
+    const int rowSpan =
+        isScaled ? std::max(1, static_cast<int>(std::floor((bmpYOffset + 1) * scale)) - (screenY - y)) : 1;
     if (screenY >= getScreenHeight()) {
       continue;  // Continue reading to keep row counter in sync
     }
@@ -1574,6 +1603,8 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 
     for (int bmpX = 0; bmpX < bitmap.getWidth(); bmpX++) {
       int screenX = x + (isScaled ? static_cast<int>(std::floor(bmpX * scale)) : bmpX);
+      const int colSpan =
+          isScaled ? std::max(1, static_cast<int>(std::floor((bmpX + 1) * scale)) - (screenX - x)) : 1;
       if (screenX >= getScreenWidth()) {
         break;
       }
@@ -1587,16 +1618,20 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
       // For 1-bit source: 0 or 1 -> map to black (0,1,2) or white (3)
       // val < 3 means black pixel (draw it)
       if (val < 3) {
-        drawPixel(screenX, screenY, true);
+        for (int dy = 0; dy < rowSpan; dy++) {
+          for (int dx = 0; dx < colSpan; dx++) drawPixel(screenX + dx, screenY + dy, true);
+        }
       }
       // White pixels (val == 3) are not drawn (leave background)
     }
   }
 
-  const int renderedWidth =
-      isScaled ? static_cast<int>(std::floor((bitmap.getWidth() - 1) * scale)) + 1 : bitmap.getWidth();
-  const int renderedHeight =
-      isScaled ? static_cast<int>(std::floor((bitmap.getHeight() - 1) * scale)) + 1 : bitmap.getHeight();
+  const int renderedWidth = isScaled ? std::max(static_cast<int>(std::floor((bitmap.getWidth() - 1) * scale)) + 1,
+                                                static_cast<int>(std::floor(bitmap.getWidth() * scale)))
+                                     : bitmap.getWidth();
+  const int renderedHeight = isScaled ? std::max(static_cast<int>(std::floor((bitmap.getHeight() - 1) * scale)) + 1,
+                                                 static_cast<int>(std::floor(bitmap.getHeight() * scale)))
+                                      : bitmap.getHeight();
   preserveImagePolarity(x, y, renderedWidth, renderedHeight);
   return true;
 }
