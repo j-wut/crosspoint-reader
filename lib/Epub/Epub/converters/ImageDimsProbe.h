@@ -40,6 +40,7 @@ class ImageDimsProbe : public Print {
     Failed,
   };
   State state = State::Sniff;
+  bool png = false;       // PNGs take a larger size limit
   uint32_t pos = 0;       // absolute stream offset (PNG fixed-offset parsing)
   uint32_t skipLeft = 0;  // remaining segment bytes to skip
   uint16_t segLen = 0;

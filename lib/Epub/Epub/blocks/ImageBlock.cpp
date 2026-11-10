@@ -5,8 +5,10 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -62,6 +64,9 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
 // Clear before the next page render so transient memory/storage failures retry.
 constexpr size_t MAX_RENDER_IMAGE_FAILURES = 16;
 uint64_t failedImageHashes[MAX_RENDER_IMAGE_FAILURES];
+// Box text for each failure, so every pass draws the same reason.
+constexpr size_t FAILURE_TEXT_SIZE = 48;
+char failedImageTexts[MAX_RENDER_IMAGE_FAILURES][FAILURE_TEXT_SIZE];
 size_t failedImageCount = 0;
 
 uint64_t imagePathHash(const std::string& path) {
@@ -73,17 +78,40 @@ uint64_t imagePathHash(const std::string& path) {
   return hash;
 }
 
-bool imageFailedThisRender(const std::string& path) {
+// Box text of an image that failed earlier in this page render, or null.
+const char* failureTextThisRender(const std::string& path) {
   const uint64_t hash = imagePathHash(path);
   for (size_t i = 0; i < failedImageCount; i++) {
-    if (failedImageHashes[i] == hash) return true;
+    if (failedImageHashes[i] == hash) return failedImageTexts[i];
   }
-  return false;
+  return nullptr;
 }
 
-void rememberImageFailure(const std::string& path) {
+bool imageFailedThisRender(const std::string& path) { return failureTextThisRender(path) != nullptr; }
+
+void formatFailureText(char* out, const char* reason, const bool hasCode = false, const int code = 0) {
+  if (hasCode) {
+    snprintf(out, FAILURE_TEXT_SIZE, "Image not shown: %s %d", reason, code);
+  } else {
+    snprintf(out, FAILURE_TEXT_SIZE, "Image not shown: %s", reason);
+  }
+}
+
+// Diagnostic for images drawn as an empty box: why, where, and how much memory was free.
+void logPlaceholder(const char* reason, const std::string& path, int x, int y, int w, int h,
+                    const std::array<int, 4>& clip) {
+  LOG_ERR("IMG", "Empty box (%s): %s %dx%d at %d,%d clip %d,%d %dx%d heap %u max %u psram %u", reason, path.c_str(), w,
+          h, x, y, clip[0], clip[1], clip[2], clip[3],
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+}
+
+void rememberImageFailure(const std::string& path, const char* text) {
   if (failedImageCount == MAX_RENDER_IMAGE_FAILURES || imageFailedThisRender(path)) return;
-  failedImageHashes[failedImageCount++] = imagePathHash(path);
+  failedImageHashes[failedImageCount] = imagePathHash(path);
+  snprintf(failedImageTexts[failedImageCount], FAILURE_TEXT_SIZE, "%s", text);
+  failedImageCount++;
 }
 
 // --- Per-page-render RAM slot for the pixel cache ----------------------------
@@ -314,7 +342,36 @@ void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int
   }
 }
 
-void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
+void ImageBlock::renderFailure(GfxRenderer& renderer, const int fontId, const int x, const int y,
+                               const char* text) const {
+  // BW pass only: in a gray plane the box's white fill marks the text pixels,
+  // which turns the black text gray.
+  if (renderer.getRenderMode() != GfxRenderer::BW) return;
+  renderPlaceholder(renderer, x, y);
+  // Centered on one line, or on two split after the colon when the line is too
+  // wide. Left out when it still does not fit inside the border.
+  constexpr int PADDING = 4;
+  const int maxWidth = width - 2 * PADDING;
+  const int lineHeight = renderer.getLineHeight(fontId);
+  const int textWidth = renderer.getTextWidth(fontId, text);
+  if (textWidth <= maxWidth && lineHeight <= height - 2 * PADDING) {
+    renderer.drawText(fontId, x + (width - textWidth) / 2, y + (height - lineHeight) / 2, text);
+    return;
+  }
+  const char* colon = strchr(text, ':');
+  if (!colon || colon[1] != ' ' || 2 * lineHeight > height - 2 * PADDING) return;
+  char first[FAILURE_TEXT_SIZE];
+  snprintf(first, sizeof(first), "%.*s", static_cast<int>(colon + 1 - text), text);
+  const char* second = colon + 2;
+  const int firstWidth = renderer.getTextWidth(fontId, first);
+  const int secondWidth = renderer.getTextWidth(fontId, second);
+  if (firstWidth > maxWidth || secondWidth > maxWidth) return;
+  const int top = y + (height - 2 * lineHeight) / 2;
+  renderer.drawText(fontId, x + (width - firstWidth) / 2, top, first);
+  renderer.drawText(fontId, x + (width - secondWidth) / 2, top + lineHeight, second);
+}
+
+void ImageBlock::render(GfxRenderer& renderer, const int fontId, const int x, const int y) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
@@ -352,10 +409,12 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     return;
   }
 
-  if (imageFailedThisRender(imagePath)) {
-    renderPlaceholder(renderer, x, y);
+  if (const char* failureText = failureTextThisRender(imagePath)) {
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
+
+  char failureText[FAILURE_TEXT_SIZE];
 
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
@@ -367,7 +426,9 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // Decoders draw every row, so a clipped image is drawn only from its cache.
   // The scrolling reader decodes such images unclipped first, so the cache exists here.
   if (clipped) {
-    renderPlaceholder(renderer, x, y);
+    logPlaceholder("clipped, no cache", imagePath, x, y, width, height, clipRect);
+    formatFailureText(failureText, "not decoded yet");
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
 
@@ -385,8 +446,10 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   HalFile file;
   if (!Storage.openFileForRead("IMG", imagePath, file)) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
-    rememberImageFailure(imagePath);
-    renderPlaceholder(renderer, x, y);
+    formatFailureText(failureText, "file missing");
+    rememberImageFailure(imagePath, failureText);
+    logPlaceholder("file not found", imagePath, x, y, width, height, clipRect);
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
   size_t fileSize = file.size();
@@ -394,8 +457,10 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   if (fileSize == 0) {
     LOG_ERR("IMG", "Image file is empty: %s", imagePath.c_str());
-    rememberImageFailure(imagePath);
-    renderPlaceholder(renderer, x, y);
+    formatFailureText(failureText, "file empty");
+    rememberImageFailure(imagePath, failureText);
+    logPlaceholder("empty file", imagePath, x, y, width, height, clipRect);
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
 
@@ -415,23 +480,34 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
     LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
-    rememberImageFailure(imagePath);
-    renderPlaceholder(renderer, x, y);
+    formatFailureText(failureText, "unsupported format");
+    rememberImageFailure(imagePath, failureText);
+    logPlaceholder("no decoder", imagePath, x, y, width, height, clipRect);
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
 
-  LOG_DBG("IMG", "Using %s decoder", decoder->getFormatName());
+  LOG_INF("IMG", "Decoding %s (%u bytes) to %dx%d at %d,%d with %s, heap %u max %u psram %u", imagePath.c_str(),
+          static_cast<unsigned>(fileSize), width, height, x, y, decoder->getFormatName(),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  const unsigned long decodeStart = millis();
 
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
   if (!success) {
-    LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
-    rememberImageFailure(imagePath);
-    renderPlaceholder(renderer, x, y);
+    const auto& failure = decoder->lastFailure();
+    formatFailureText(failureText, failure.reason ? failure.reason : "decode failed", failure.hasCode, failure.code);
+    LOG_ERR("IMG", "Failed to decode image: %s (%s)", imagePath.c_str(), failureText);
+    rememberImageFailure(imagePath, failureText);
+    logPlaceholder("decode failed", imagePath, x, y, width, height, clipRect);
+    renderFailure(renderer, fontId, x, y, failureText);
     return;
   }
 
   renderer.preserveImagePolarity(x, y, width, height);
-  LOG_DBG("IMG", "Decode successful");
+  LOG_INF("IMG", "Decoded %s in %lu ms, cache %s", imagePath.c_str(), millis() - decodeStart,
+          hasValidCache() ? "written" : "missing");
 }
 
 bool ImageBlock::serialize(HalFile& file) {

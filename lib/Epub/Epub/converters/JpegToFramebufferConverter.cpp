@@ -12,6 +12,7 @@
 #include <memory>
 #include <new>
 
+#include "DecoderAllocation.h"
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
 #include "PixelCache.h"
@@ -372,11 +373,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 }  // namespace
 
 bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
-    return false;
-  }
+  if (!decoderMemoryAvailable("JPG", MIN_FREE_HEAP_FOR_JPEG)) return false;
 
   std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {
@@ -408,18 +405,15 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                      const RenderConfig& config, bool& cacheWritten) {
   cacheWritten = false;
+  clearFailure();
   LOG_DBG("JPG", "Decoding JPEG: %s", imagePath.c_str());
 
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
-    return false;
-  }
+  if (!decoderMemoryAvailable("JPG", MIN_FREE_HEAP_FOR_JPEG)) return fail("out of memory");
 
   std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {
     LOG_ERR("JPG", "Failed to allocate JPEG decoder");
-    return false;
+    return fail("out of memory");
   }
 
   JpegContext ctx;
@@ -432,13 +426,13 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
-    return false;
+    return fail("open error", jpeg->getLastError());
   }
 
   ImageDimensions sourceDimensions;
   if (!validateAndStoreDimensions(jpeg->getWidth(), jpeg->getHeight(), sourceDimensions, "JPEG",
                                   MAX_SCALED_SOURCE_PIXELS)) {
-    return false;
+    return fail(jpeg->getWidth() > 0 && jpeg->getHeight() > 0 ? "image too large" : "bad image size");
   }
   const int srcWidth = sourceDimensions.width;
   const int srcHeight = sourceDimensions.height;
@@ -488,7 +482,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   if (destWidth <= 0 || destHeight <= 0) {
     LOG_ERR("JPG", "Degenerate output dimensions %dx%d for %s, skipping render", destWidth, destHeight,
             imagePath.c_str());
-    return false;
+    return fail("bad image size");
   }
 
   ctx.scaledSrcWidth = (srcWidth + jpegScaleDenom - 1) / jpegScaleDenom;
@@ -496,7 +490,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   if (static_cast<int64_t>(ctx.scaledSrcWidth) * ctx.scaledSrcHeight > MAX_SOURCE_PIXELS) {
     LOG_ERR("JPG", "JPEG too large (%dx%d at 1/%d), max supported: %lld pixels", srcWidth, srcHeight, jpegScaleDenom,
             static_cast<long long>(MAX_SOURCE_PIXELS));
-    return false;
+    return fail("image too large");
   }
   ctx.cropLeft = static_cast<int>(ctx.scaledSrcWidth * cropX / 2);
   ctx.cropTop = static_cast<int>(ctx.scaledSrcHeight * cropY / 2);
@@ -537,7 +531,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   if (rc != 1) {
     LOG_ERR("JPG", "Decode failed (rc=%d, lastError=%d)", rc, jpeg->getLastError());
     if (ctx.caching) ctx.cache.abort();
-    return false;
+    return fail("decode error", jpeg->getLastError());
   }
 
   LOG_DBG("JPG", "JPEG decoding complete - render time: %lu ms", decodeTime);

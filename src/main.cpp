@@ -1114,6 +1114,12 @@ void loop() {
     if (lock.ownsLock()) gaugeCapacityPending = BatteryMonitor::loadDesignCapacity();
   }
 
+  // Reader image lines queued by the render task; written while it is idle.
+  if (debuglog::enabled()) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock()) debuglog::flushQueued();
+  }
+
   renderer.setFadingFix(SETTINGS.fadingFix && CrossPointSettings::fadingFixSupported());
   display.setQuickRefresh(BoardConfig::isPicco() && SETTINGS.refreshSpeed == CrossPointSettings::REFRESH_SPEED_FAST);
 

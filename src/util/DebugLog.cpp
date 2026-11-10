@@ -23,8 +23,8 @@ namespace debuglog {
 namespace {
 
 constexpr const char* FEATURE_NAMES[] = {
-    "boox-cloud", "boox-cloud-sdfat", "boox-lan", "boox-lan-sdfat", "boox-bind",
-    "wake-up",    "gallery",          "todo",     "countdown",      "file-transfer",
+    "boox-cloud", "boox-cloud-sdfat", "boox-lan",      "boox-lan-sdfat", "boox-bind", "wake-up", "gallery",
+    "todo",       "countdown",        "file-transfer", "reader-images",
 };
 static_assert(sizeof(FEATURE_NAMES) / sizeof(FEATURE_NAMES[0]) == static_cast<size_t>(Feature::Count),
               "one file name per feature");
@@ -37,9 +37,19 @@ struct Route {
   Feature feature;
 };
 constexpr Route ROUTES[] = {
-    {"SLP", Feature::Gallery}, {"GAL", Feature::Gallery},   {"WALL", Feature::Gallery},
-    {"TODO", Feature::Todo},   {"CDN", Feature::Countdown},
+    {"SLP", Feature::Gallery},      {"GAL", Feature::Gallery},      {"WALL", Feature::Gallery},
+    {"TODO", Feature::Todo},        {"CDN", Feature::Countdown},    {"IMG", Feature::ReaderImages},
+    {"JPG", Feature::ReaderImages}, {"PNG", Feature::ReaderImages}, {"GIF", Feature::ReaderImages},
+    {"DEC", Feature::ReaderImages}, {"EHP", Feature::ReaderImages}, {"MEM", Feature::ReaderImages},
 };
+
+// Lines from other tasks wait here until the main task writes them, because
+// SdFat must not be used from two tasks at once. The cap bounds the heap used
+// while the card is busy; lines past it are counted, not kept.
+constexpr size_t QUEUE_MAX_BYTES = 8 * 1024;
+std::mutex queueLock;
+std::string queued;  // reader image lines, one per "\n"
+size_t droppedLines = 0;
 
 // The current file of each feature. Kept in RTC memory so a wake from deep
 // sleep or a restart continues the same file inside its 10 minutes.
@@ -132,14 +142,18 @@ void currentPath(const Feature feature, char* path, const size_t len) {
   }
 }
 
-void writeLine(const Feature feature, const char* text, size_t len) {
-  while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) --len;
-  char stamp[48];
+void formatStamp(char* out, const size_t len) {
   const time_t now = time(nullptr);
   struct tm local;
   localtime_r(&now, &local);
-  snprintf(stamp, sizeof(stamp), "[%04d-%02d-%02d %02d:%02d:%02d +%lums] ", local.tm_year + 1900, local.tm_mon + 1,
-           local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec, static_cast<unsigned long>(millis()));
+  snprintf(out, len, "[%04d-%02d-%02d %02d:%02d:%02d +%lums] ", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+           local.tm_hour, local.tm_min, local.tm_sec, static_cast<unsigned long>(millis()));
+}
+
+void writeLine(const Feature feature, const char* text, size_t len) {
+  while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) --len;
+  char stamp[48];
+  formatStamp(stamp, sizeof(stamp));
   File file = open(feature);
   if (!file) return;
   file.print(stamp);
@@ -152,12 +166,23 @@ void writeLine(const Feature feature, const char* text, size_t len) {
 // from the main task are written here; SdFat must not be used from two tasks
 // at once.
 void route(const char* origin, const char* text) {
-  if (writing || !enabled() || xTaskGetCurrentTaskHandle() != mainTask) return;
+  if (writing || !enabled()) return;
   for (const Route& r : ROUTES) {
-    if (strcmp(origin, r.origin) == 0) {
+    if (strcmp(origin, r.origin) != 0) continue;
+    if (xTaskGetCurrentTaskHandle() == mainTask) {
       writeLine(r.feature, text, strlen(text));
-      return;
+    } else if (r.feature == Feature::ReaderImages) {
+      size_t len = strlen(text);
+      while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) --len;
+      std::lock_guard<std::mutex> guard(queueLock);
+      if (queued.size() + len + 1 > QUEUE_MAX_BYTES) {
+        droppedLines++;
+        return;
+      }
+      queued.append(text, len);
+      queued.push_back('\n');
     }
+    return;
   }
 }
 
@@ -169,6 +194,32 @@ void begin() {
 }
 
 bool enabled() { return SETTINGS.debugLogging != 0; }
+
+void flushQueued() {
+  std::string lines;
+  size_t dropped;
+  {
+    std::lock_guard<std::mutex> guard(queueLock);
+    if (queued.empty() && droppedLines == 0) return;
+    lines.swap(queued);
+    dropped = droppedLines;
+    droppedLines = 0;
+  }
+  File file = open(Feature::ReaderImages);
+  if (!file) return;
+  char stamp[48];
+  formatStamp(stamp, sizeof(stamp));
+  size_t start = 0;
+  while (start < lines.size()) {
+    size_t end = lines.find('\n', start);
+    if (end == std::string::npos) end = lines.size();
+    file.print(stamp);
+    file.write(reinterpret_cast<const uint8_t*>(lines.data() + start), end - start);
+    file.print('\n');
+    start = end + 1;
+  }
+  if (dropped > 0) file.printf("%s%u lines dropped while the card was busy\n", stamp, static_cast<unsigned>(dropped));
+}
 
 size_t File::write(const uint8_t c) { return write(&c, 1); }
 
