@@ -1443,7 +1443,15 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       RenderLock lock;
       int page = section->currentPage;
       int offset = currentScrollOffset();
-      const int travelled = scrollTarget(isForwardTurn, steps, page, offset);
+      const int align = isForwardTurn ? imageAlign.forward : imageAlign.back;
+      int travelled = 0;
+      if (!scroll && align > 0 && imageAlign.spine == currentSpineIndex && imageAlign.page == page &&
+          imageAlign.offset == offset) {
+        shiftScrollPosition(isForwardTurn ? align : -align, page, offset);
+        travelled = align;
+      } else {
+        travelled = scrollTarget(isForwardTurn, steps, page, offset);
+      }
       moved = travelled > 0 ? 1 : 0;
       if (moved > 0) {
         section->currentPage = page;
@@ -2217,6 +2225,25 @@ void EpubReaderActivity::renderBook() {
     // Joining stops at MAX_VIEW_PAGES; a flip must not move past what was drawn.
     const int drawnBottom = pages.back().top + heightOf(*pages.back().page);
     visibleViewHeight = std::max(1, std::min(viewBottom, drawnBottom) - viewTop);
+    // A flip brings an image cut at the bottom edge to the top, or one cut at the top edge to the bottom.
+    imageAlign = {currentSpineIndex, section->currentPage, currentScrollOffset(), 0, 0};
+    if (SETTINGS.epubScrollEnabled()) {
+      for (const ViewPage& view : pages) {
+        for (const auto& element : view.page->elements) {
+          if (element->getTag() != TAG_PageImage) continue;
+          const int top = view.top + element->yPos - viewTop;
+          const int bottom = top + static_cast<const PageImage&>(*element).getImageBlock().getHeight();
+          if (top > 0 && top < visibleViewHeight && bottom > visibleViewHeight &&
+              (imageAlign.forward == 0 || top < imageAlign.forward)) {
+            imageAlign.forward = top;
+          }
+          const int up = viewHeight - bottom;
+          if (top < 0 && bottom > 0 && up > 0 && (imageAlign.back == 0 || up < imageAlign.back)) {
+            imageAlign.back = up;
+          }
+        }
+      }
+    }
     // Mark the lines that following forward scrolls bring to the top, so the reader keeps their place.
     scrollMarkerCount = 0;
     if (SETTINGS.epubScrollEnabled() && SETTINGS.scrollGuides != CrossPointSettings::SCROLL_GUIDES_OFF) {

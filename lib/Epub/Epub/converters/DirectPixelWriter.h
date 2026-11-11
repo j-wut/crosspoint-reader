@@ -20,6 +20,7 @@ struct DirectPixelWriter {
   GfxRenderer::RenderMode mode;
   bool absolute = false;
   bool ditherBw = false;       // images on a B/W-only page: dither in BW, skip the gray planes
+  bool lineArt = false;        // with ditherBw: ink every non-white pixel instead of dithering
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
   // Active write target: for tiled grayscale, fb is the band scratch, originY is
   // the band's top physical row, and clipRows is the band height. Off-band
@@ -157,7 +158,7 @@ struct DirectPixelWriter {
     bool state;
     switch (mode) {
       case GfxRenderer::BW:
-        if (ditherBw) {
+        if (ditherBw && !lineArt) {
           // 2x2 Bayer cell (0 2 / 3 1): dark gray inks 3 of 4 pixels, light gray 1 of 4.
           static constexpr uint8_t BAYER[4] = {0, 2, 3, 1};
           const uint8_t threshold = BAYER[((rowLogicalY & 1) << 1) | (logicalX & 1)];
@@ -215,13 +216,21 @@ struct DirectCacheWriter {
   int bandRows;
   int originX;
   uint8_t* rowPtr;  // Pre-computed for current row; nullptr if row is out of band
+  // 4-bit gray band of the line-art check (PixelCache::grayBand), or nullptr.
+  uint8_t* grayBuffer;
+  int grayBytesPerRow;
+  uint8_t* grayRowPtr;
 
-  void init(uint8_t* cacheBuffer, int cacheBytesPerRow, int cacheBandRows, int cacheOriginX) {
+  void init(uint8_t* cacheBuffer, int cacheBytesPerRow, int cacheBandRows, int cacheOriginX,
+            uint8_t* cacheGrayBand = nullptr, int cacheGrayBytesPerRow = 0) {
     buffer = cacheBuffer;
     bytesPerRow = cacheBytesPerRow;
     bandRows = cacheBandRows;
     originX = cacheOriginX;
     rowPtr = nullptr;
+    grayBuffer = cacheGrayBand;
+    grayBytesPerRow = cacheGrayBytesPerRow;
+    grayRowPtr = nullptr;
   }
 
   // Call once per row before the column loop. Drops rows outside the band.
@@ -230,16 +239,22 @@ struct DirectCacheWriter {
     rowPtr = (static_cast<unsigned>(localRow) < static_cast<unsigned>(bandRows))
                  ? buffer + (size_t)localRow * bytesPerRow
                  : nullptr;
+    grayRowPtr = rowPtr && grayBuffer ? grayBuffer + (size_t)localRow * grayBytesPerRow : nullptr;
   }
 
   // Write a 2-bit pixel value. Drops the write if the row is out of band or the
   // column is out of range.
-  inline void writePixel(int screenX, uint8_t value) const {
+  // gray is the pixel before dithering, kept for the line-art check.
+  inline void writePixel(int screenX, uint8_t value, uint8_t gray) const {
     if (!rowPtr) return;
     const int localX = screenX - originX;
     const int byteIdx = localX >> 2;  // localX / 4
     if (static_cast<unsigned>(byteIdx) >= static_cast<unsigned>(bytesPerRow)) return;
     const int bitShift = 6 - (localX & 3) * 2;  // MSB first: pixel 0 at bits 6-7
     rowPtr[byteIdx] = (rowPtr[byteIdx] & ~(0x03 << bitShift)) | ((value & 0x03) << bitShift);
+    if (grayRowPtr && (localX >> 1) < grayBytesPerRow) {
+      uint8_t& cell = grayRowPtr[localX >> 1];
+      cell = (localX & 1) ? (cell & 0xF0) | (gray >> 4) : (cell & 0x0F) | (gray & 0xF0);
+    }
   }
 };

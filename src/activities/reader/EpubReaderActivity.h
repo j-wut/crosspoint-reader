@@ -84,6 +84,15 @@ class EpubReaderActivity final : public ReaderActivity {
   size_t heightCacheNext = 0;
   // Height of the content the last render showed; a flip never moves further, so nothing is skipped.
   int visibleViewHeight = 0;
+  // An image cut by the last render's bottom (top) edge: how far a forward (back) flip moves to bring
+  // its top to the screen top (its bottom to the screen bottom). 0 when there is none.
+  struct ImageAlign {
+    int spine = -1;
+    int page = -1;
+    int offset = 0;
+    int forward = 0;
+    int back = 0;
+  } imageAlign;
   bool changeChapter(bool isForwardTurn);
   struct ViewPage {
     std::unique_ptr<Page> page;

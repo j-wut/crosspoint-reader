@@ -199,7 +199,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
       caching = false;
       ctx->caching = false;
     } else {
-      cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
+      cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX, ctx->cache.grayBand,
+              ctx->cache.grayBytesPerRow);
       cacheOriginY = ctx->config->y + ctx->cache.bandStart;
     }
   }
@@ -222,7 +223,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           if (dithered > 3) dithered = 3;
         }
         pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        if (caching) cw.writePixel(outX, dithered, gray);
       }
     }
     return 1;
@@ -281,7 +282,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           if (dithered > 3) dithered = 3;
         }
         pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        if (caching) cw.writePixel(outX, dithered, gray);
       }
 
       // Interior (no X boundary checks — lx0 and lx0+1 guaranteed in bounds)
@@ -304,7 +305,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           if (dithered > 3) dithered = 3;
         }
         pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        if (caching) cw.writePixel(outX, dithered, gray);
       }
 
       // Right edge (with X boundary clamping)
@@ -330,7 +331,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           if (dithered > 3) dithered = 3;
         }
         pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        if (caching) cw.writePixel(outX, dithered, gray);
       }
     }
     return 1;
@@ -363,7 +364,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         if (dithered > 3) dithered = 3;
       }
       pw.writePixel(outX, dithered);
-      if (caching) cw.writePixel(outX, dithered);
+      if (caching) cw.writePixel(outX, dithered, gray);
     }
   }
 
@@ -517,7 +518,8 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     const int maxBlockDstRows = (int)(((int64_t)16 * ctx.fineScaleFPY) >> FP_SHIFT) + 2;
-    if (!ctx.cache.begin(config.cachePath, destWidth, destHeight, config.x, config.y, maxBlockDstRows)) {
+    if (!ctx.cache.begin(config.cachePath, destWidth, destHeight, config.x, config.y, maxBlockDstRows,
+                         config.classifyLineArt)) {
       LOG_ERR("JPG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }
