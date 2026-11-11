@@ -6,8 +6,9 @@
 #include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
-// Focus timer: a focus session, then a break. The screen refreshes once a
-// minute while running and the device stays awake; when time is up the screen
+// Focus timer: a focus session, then a break. While running, the screen shows
+// minutes and seconds left and refreshes each second, like the stock Picco
+// app. The device stays awake on this screen; when time is up the screen
 // flashes and the front light blinks.
 class PomodoroActivity final : public Activity, private UiAppHost {
  public:
@@ -19,6 +20,10 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return running || blinksLeft > 0; }
+
+  // For the main loop while this screen is not shown: once the timer's time
+  // is up, ends it and returns the toast text; otherwise nullptr.
+  static const char* takeBackgroundTimeUp();
 
  private:
   enum class Phase : uint8_t { Focus, Break };
@@ -32,23 +37,28 @@ class PomodoroActivity final : public Activity, private UiAppHost {
   void press(Button button);
   void startPhase(Phase next);
   void finishPhase();
-  uint32_t phaseMs() const;
-  uint32_t remainingMs() const;
-  void loadState();
-  void saveState() const;
+  static void endTimer();
+  static uint32_t phaseMs();
+  static uint32_t remainingMs();
+  static void loadState();
+  static void saveState();
   void tickBlink();
 
-  Phase phase = Phase::Focus;
-  bool running = false;
-  bool paused = false;
-  bool timeUp = false;          // "Time's up" shown until the next button
-  uint32_t startedAt = 0;       // millis() when the current run started
-  uint32_t elapsedBefore = 0;   // ms run before the last pause
-  uint32_t lastShownMinute = 0;
-  uint8_t focusMinutes = 25;
-  uint8_t breakMinutes = 5;
-  uint16_t completed = 0;       // focus sessions finished today
-  int32_t completedDay = -1;    // local day number of `completed`, -1 = clock unset
+  // The timer state is static so the timer keeps going after the screen is
+  // left, like the stock app. It is also saved with a wall-clock end time, so
+  // it survives sleep and power-off when the clock is set.
+  static inline bool stateLoaded = false;
+  static inline Phase phase = Phase::Focus;
+  static inline bool running = false;
+  static inline bool paused = false;
+  static inline bool timeUp = false;         // "Time's up" shown until the next button
+  static inline uint32_t startedAt = 0;      // millis() when the current run started
+  static inline uint32_t elapsedBefore = 0;  // ms run before the last pause
+  static inline uint8_t focusMinutes = 25;
+  static inline uint8_t breakMinutes = 5;
+  static inline uint16_t completed = 0;     // focus sessions finished today
+  static inline int32_t completedDay = -1;  // local day number of `completed`, -1 = clock unset
+  uint32_t lastShownSecond = 0;
   int selected = 0;
   int pending = -1;
   int blinksLeft = 0;

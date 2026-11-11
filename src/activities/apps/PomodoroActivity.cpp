@@ -5,6 +5,7 @@
 #include <HalDisplay.h>
 #include <HalFrontlight.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <PersistableStore.h>
 #include <TrustedTime.h>
 
@@ -28,6 +29,11 @@ constexpr int16_t DIGIT_HEIGHT = 120;
 constexpr int16_t BUTTON_HEIGHT = 56;
 constexpr uint8_t MIN_FOCUS = 5;
 constexpr uint8_t MAX_FOCUS = 90;
+// Timer state saved in STATE_PATH.
+constexpr int MODE_IDLE = 0;
+constexpr int MODE_RUNNING = 1;
+constexpr int MODE_PAUSED = 2;
+constexpr int MODE_TIME_UP = 3;
 
 // Local day number, or -1 while the clock is unset.
 int32_t today() {
@@ -55,6 +61,8 @@ void PomodoroActivity::onExit() {
 }
 
 void PomodoroActivity::loadState() {
+  const bool firstLoad = !stateLoaded;
+  stateLoaded = true;
   JsonDocument doc;
   if (!PersistableStoreBase::readDocFromFile(STATE_PATH, doc)) return;
   focusMinutes = std::clamp<int>(doc["focus"] | 25, MIN_FOCUS, MAX_FOCUS);
@@ -63,22 +71,63 @@ void PomodoroActivity::loadState() {
   completedDay = doc["day"] | -1;
   const int32_t day = today();
   if (day >= 0 && completedDay != day) completed = 0;
+  if (!firstLoad) return;
+
+  // After a reboot or wake, restore the timer saved before sleep.
+  phase = (doc["phase"] | 0) == 1 ? Phase::Break : Phase::Focus;
+  const int mode = doc["mode"] | MODE_IDLE;
+  startedAt = millis();
+  if (mode == MODE_PAUSED) {
+    paused = true;
+    elapsedBefore = std::min<uint32_t>(doc["elapsed"] | 0, phaseMs());
+  } else if (mode == MODE_TIME_UP) {
+    timeUp = true;
+    elapsedBefore = phaseMs();
+  } else if (mode == MODE_RUNNING) {
+    // The end time is wall-clock seconds; without a trusted clock it is lost.
+    const int64_t endAt = doc["endAt"] | static_cast<int64_t>(0);
+    const int64_t now = trustedtime::trustedNow();
+    if (endAt > 0 && now > 0) {
+      const int64_t leftMs = std::max<int64_t>(0, (endAt - now) * 1000);
+      running = true;
+      elapsedBefore = leftMs >= phaseMs() ? 0 : phaseMs() - static_cast<uint32_t>(leftMs);
+    } else {
+      phase = Phase::Focus;
+    }
+    LOG_INF("POMO", "restore running: endAt=%lld now=%lld restored=%d", static_cast<long long>(endAt),
+            static_cast<long long>(now), running);
+  }
+  LOG_INF("POMO", "loaded: mode=%d phase=%d left=%lu ms focus=%u break=%u completed=%u", mode,
+          static_cast<int>(phase), static_cast<unsigned long>(remainingMs()), focusMinutes, breakMinutes, completed);
 }
 
-void PomodoroActivity::saveState() const {
+void PomodoroActivity::saveState() {
   JsonDocument doc;
   doc["focus"] = focusMinutes;
   doc["break"] = breakMinutes;
   doc["completed"] = completed;
   doc["day"] = completedDay;
+  doc["phase"] = phase == Phase::Break ? 1 : 0;
+  if (running) {
+    doc["mode"] = MODE_RUNNING;
+    const int64_t now = trustedtime::trustedNow();
+    doc["endAt"] = now > 0 ? now + (remainingMs() + 999) / 1000 : 0;
+    LOG_INF("POMO", "save running: now=%lld left=%lu ms", static_cast<long long>(now),
+            static_cast<unsigned long>(remainingMs()));
+  } else if (paused) {
+    doc["mode"] = MODE_PAUSED;
+    doc["elapsed"] = elapsedBefore;
+  } else {
+    doc["mode"] = timeUp ? MODE_TIME_UP : MODE_IDLE;
+  }
   PersistableStoreBase::writeDocToFile(STATE_PATH, doc);
 }
 
-uint32_t PomodoroActivity::phaseMs() const {
+uint32_t PomodoroActivity::phaseMs() {
   return static_cast<uint32_t>(phase == Phase::Focus ? focusMinutes : breakMinutes) * MINUTE_MS;
 }
 
-uint32_t PomodoroActivity::remainingMs() const {
+uint32_t PomodoroActivity::remainingMs() {
   const uint32_t elapsed = elapsedBefore + (running ? millis() - startedAt : 0);
   return elapsed >= phaseMs() ? 0 : phaseMs() - elapsed;
 }
@@ -90,11 +139,11 @@ void PomodoroActivity::startPhase(const Phase next) {
   timeUp = false;
   elapsedBefore = 0;
   startedAt = millis();
-  lastShownMinute = (remainingMs() + MINUTE_MS - 1) / MINUTE_MS;
+  lastShownSecond = (remainingMs() + 999) / 1000;
   selected = 0;
 }
 
-void PomodoroActivity::finishPhase() {
+void PomodoroActivity::endTimer() {
   running = false;
   paused = false;
   timeUp = true;
@@ -104,8 +153,21 @@ void PomodoroActivity::finishPhase() {
     if (day >= 0 && day != completedDay) completed = 0;
     completedDay = day;
     ++completed;
-    saveState();
   }
+  saveState();
+}
+
+const char* PomodoroActivity::takeBackgroundTimeUp() {
+  if (!stateLoaded) loadState();
+  if (!running || remainingMs() > 0) return nullptr;
+  endTimer();
+  LOG_INF("POMO", "time up off screen, phase=%d: toast", static_cast<int>(phase));
+  return phase == Phase::Focus ? tr(STR_POMODORO_FOCUS_DONE) : tr(STR_POMODORO_BREAK_DONE);
+}
+
+void PomodoroActivity::finishPhase() {
+  endTimer();
+  LOG_INF("POMO", "time up on screen, phase=%d", static_cast<int>(phase));
   // Blink the front light and flash the panel so the end is noticed.
   if (Frontlight.present()) {
     lightWasOn = Frontlight.isOn();
@@ -151,16 +213,19 @@ void PomodoroActivity::press(const Button button) {
     case START:
       // After a focus session the next start is its break.
       startPhase(timeUp && phase == Phase::Focus ? Phase::Break : Phase::Focus);
+      saveState();
       break;
     case PAUSE:
       elapsedBefore += millis() - startedAt;
       running = false;
       paused = true;
+      saveState();
       break;
     case RESUME:
       startedAt = millis();
       running = true;
       paused = false;
+      saveState();
       break;
     case GIVE_UP:
     case SKIP_BREAK:
@@ -170,6 +235,7 @@ void PomodoroActivity::press(const Button button) {
       phase = Phase::Focus;
       elapsedBefore = 0;
       selected = 0;
+      saveState();
       break;
     case LONGER:
     case SHORTER: {
@@ -202,9 +268,9 @@ void PomodoroActivity::loop() {
       requestUpdate();
       return;
     }
-    const uint32_t minute = (left + MINUTE_MS - 1) / MINUTE_MS;
-    if (minute != lastShownMinute) {
-      lastShownMinute = minute;
+    const uint32_t second = (left + 999) / 1000;
+    if (second != lastShownSecond) {
+      lastShownSecond = second;
       requestUpdate();
     }
   }
@@ -258,12 +324,10 @@ void PomodoroActivity::draw(UiScreen& screen) {
                        title);
   y = static_cast<int16_t>(y + titleHeight + theme.spaceLg * 2);
 
-  // Running: whole minutes left (the screen refreshes once a minute).
-  // Paused or stopped: the exact time left.
   const uint32_t left = timeUp && phase == Phase::Focus ? static_cast<uint32_t>(breakMinutes) * MINUTE_MS
                         : timeUp                         ? phaseMs()
                                                          : remainingMs();
-  uint32_t secs = running ? ((left + MINUTE_MS - 1) / MINUTE_MS) * 60 : (left + 999) / 1000;
+  const uint32_t secs = (left + 999) / 1000;
   char digits[8];
   snprintf(digits, sizeof(digits), "%02u:%02u", static_cast<unsigned>(secs / 60), static_cast<unsigned>(secs % 60));
   const int16_t digitsWidth = bigdigits::width(digits, DIGIT_HEIGHT);
