@@ -35,6 +35,16 @@ class ImageToFramebufferDecoder {
 
   virtual const char* getFormatName() const = 0;
 
+  // Why the last decodeToFramebuffer call failed, shown in the reader's empty
+  // image box. reason is null when the decoder gave none. code is the decoder
+  // library's error number, valid when hasCode is set.
+  struct Failure {
+    const char* reason = nullptr;
+    int code = 0;
+    bool hasCode = false;
+  };
+  const Failure& lastFailure() const { return failure; }
+
   // Call from per-row/per-MCU decode callbacks (free functions, hence public):
   // yields one tick at most every 250 ms so multi-second decodes keep the idle
   // task (and its watchdog) fed. `lastYieldMs` is caller-held state,
@@ -45,6 +55,11 @@ class ImageToFramebufferDecoder {
   // representation. Shared by header probing and decoder fallbacks.
   static bool validateAndStoreDimensions(int64_t width, int64_t height, ImageDimensions& out, const char* format,
                                          int64_t maxPixels = MAX_SOURCE_PIXELS);
+
+  // PNGs over MAX_SOURCE_PIXELS are decoded by the Gallery's PNG converter
+  // (PngToBmpConverter), which streams rows and scales to the box. Its limit.
+  static constexpr int64_t LARGE_PNG_MAX_DIMENSION = 8192;
+  static constexpr int64_t LARGE_PNG_MAX_PIXELS = LARGE_PNG_MAX_DIMENSION * LARGE_PNG_MAX_DIMENSION;
 
  protected:
   // Size validation helpers. The cap bounds decode TIME, not memory: both decoders
@@ -58,4 +73,16 @@ class ImageToFramebufferDecoder {
   static constexpr int64_t MAX_SOURCE_PIXELS = 8388608;  // 8 MP (e.g. 2048 * 4096)
 
   void warnUnsupportedFeature(const std::string& feature, const std::string& imagePath);
+
+  void clearFailure() { failure = Failure{}; }
+  bool fail(const char* reason) {
+    failure = Failure{reason, 0, false};
+    return false;
+  }
+  bool fail(const char* reason, const int code) {
+    failure = Failure{reason, code, true};
+    return false;
+  }
+
+  Failure failure;
 };

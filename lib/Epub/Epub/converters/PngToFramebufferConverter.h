@@ -14,4 +14,8 @@ class PngToFramebufferConverter final : public ImageToFramebufferDecoder {
 
   static bool supportsFormat(const std::string& extension);
   const char* getFormatName() const override { return "PNG"; }
+
+ private:
+  bool decodeLarge(HalFile& pngFile, GfxRenderer& renderer, const RenderConfig& config, int sourceWidth,
+                   int sourceHeight);
 };

@@ -38,7 +38,8 @@ class ImageBlock final : public Block {
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
-  void render(GfxRenderer& renderer, const int x, const int y);
+  // fontId is used for the reason text drawn in the box when the image fails.
+  void render(GfxRenderer& renderer, int fontId, int x, int y);
   bool serialize(HalFile& file);
   static std::unique_ptr<ImageBlock> deserialize(HalFile& file);
 
@@ -47,6 +48,8 @@ class ImageBlock final : public Block {
   std::string srcPath;  // book-internal source href; empty once known-extracted
   int16_t width;
   int16_t height;
+
+  void renderFailure(GfxRenderer& renderer, int fontId, int x, int y, const char* text) const;
 
   static void* extractCtx;
   static ExtractFn extractFn;

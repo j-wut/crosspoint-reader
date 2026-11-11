@@ -98,8 +98,7 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
 }
 
 void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
-  // Images don't use fontId or text rendering
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
+  imageBlock->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
 
 void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset) const {

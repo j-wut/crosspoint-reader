@@ -18,6 +18,7 @@ bool ImageDimsProbe::feed(const uint8_t b) {
         state = State::JpegSoi;
       } else if (b == PNG_SIG[0]) {
         state = State::PngHeader;
+        png = true;
       } else if (b == 'G') {
         state = State::GifHeader;
       } else {
@@ -153,6 +154,12 @@ size_t ImageDimsProbe::write(const uint8_t* data, const size_t len) {
 }
 
 bool ImageDimsProbe::getDimensions(ImageDimensions& out) const {
-  return state == State::Done &&
-         ImageToFramebufferDecoder::validateAndStoreDimensions(width, height, out, "image header");
+  if (state != State::Done) return false;
+  if (png) {
+    return width <= ImageToFramebufferDecoder::LARGE_PNG_MAX_DIMENSION &&
+           height <= ImageToFramebufferDecoder::LARGE_PNG_MAX_DIMENSION &&
+           ImageToFramebufferDecoder::validateAndStoreDimensions(width, height, out, "image header",
+                                                                 ImageToFramebufferDecoder::LARGE_PNG_MAX_PIXELS);
+  }
+  return ImageToFramebufferDecoder::validateAndStoreDimensions(width, height, out, "image header");
 }

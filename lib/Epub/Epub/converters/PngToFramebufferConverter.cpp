@@ -6,6 +6,8 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <PNGdec.h>
+#include <PngToBmpConverter.h>
+#include <Print.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -311,6 +313,122 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   return 1;
 }
 
+// Takes the 2-bit top-down BMP stream of PngToBmpConverter, draws each row at
+// the image position and copies it into the pixel cache.
+class LargePngSink final : public Print {
+ public:
+  LargePngSink(GfxRenderer& renderer, const RenderConfig& config) : renderer(renderer), config(config) {}
+  ~LargePngSink() override {
+    if (cache.isOpen()) dropCache();
+  }
+
+  size_t write(const uint8_t b) override { return write(&b, 1); }
+
+  size_t write(const uint8_t* data, const size_t len) override {
+    if (failed) return 0;
+    for (size_t i = 0; i < len; i++) {
+      if (headerFill < HEADER_BYTES) {
+        header[headerFill++] = data[i];
+        if (headerFill == HEADER_BYTES && !startRows()) return 0;
+        continue;
+      }
+      if (rowIndex >= height) continue;  // never expected: stream longer than its header
+      row[rowFill++] = data[i];
+      if (rowFill == bmpRowBytes) {
+        emitRow();
+        rowFill = 0;
+      }
+    }
+    return len;
+  }
+
+  // True when every row arrived; closes the cache file.
+  bool finish() {
+    if (failed || headerFill < HEADER_BYTES || rowIndex != height) return false;
+    if (cache.isOpen() && !cache.close()) {
+      LOG_ERR("PNG", "Failed to close cache: %s", config.cachePath.c_str());
+      Storage.remove(config.cachePath.c_str());
+    }
+    return true;
+  }
+
+  int width = 0;
+  int height = 0;
+  bool failed = false;
+
+ private:
+  // writeBmpHeader2bit in PngToBmpConverter: 14 file + 40 info + 16 palette bytes.
+  static constexpr size_t HEADER_BYTES = 70;
+
+  static int32_t le32(const uint8_t* p) {
+    return static_cast<int32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24));
+  }
+
+  bool startRows() {
+    width = le32(header + 18);
+    height = -le32(header + 22);  // negative height: rows are top-down
+    const int bpp = header[28] | (header[29] << 8);
+    // The pixel cache must match the box within 1 px, or every pass re-decodes.
+    if (le32(header + 10) != static_cast<int32_t>(HEADER_BYTES) || bpp != 2 || width <= 0 || height <= 0 ||
+        abs(width - config.maxWidth) > 1 || abs(height - config.maxHeight) > 1) {
+      LOG_ERR("PNG", "Unexpected large PNG output %dx%d bpp %d for box %dx%d", width, height, bpp, config.maxWidth,
+              config.maxHeight);
+      failed = true;
+      return false;
+    }
+    bmpRowBytes = (width * 2 + 31) / 32 * 4;
+    pxcRowBytes = (width + 3) / 4;
+    row = makeUniqueNoThrow<uint8_t[]>(bmpRowBytes);
+    if (!row) {
+      LOG_ERR("PNG", "OOM: large PNG row (%d bytes)", bmpRowBytes);
+      failed = true;
+      return false;
+    }
+    if (!config.cachePath.empty() && Storage.openFileForWrite("PNG", config.cachePath, cache)) {
+      const uint16_t size[2] = {static_cast<uint16_t>(width), static_cast<uint16_t>(height)};
+      if (cache.write(size, sizeof(size)) != sizeof(size)) dropCache();
+    }
+    pw.init(renderer);
+    drawCols = std::min(width, renderer.getScreenWidth() - config.x);
+    return true;
+  }
+
+  void emitRow() {
+    const int y = config.y + rowIndex;
+    if (y >= 0 && y < renderer.getScreenHeight() && drawCols > 0) {
+      pw.beginRow(y);
+      int colStart, colEnd;
+      pw.bandColRange(config.x, drawCols, colStart, colEnd);
+      for (int col = colStart; col < colEnd; col++) {
+        pw.writePixel(config.x + col, (row[col >> 2] >> (6 - (col & 3) * 2)) & 0x03);
+      }
+    }
+    if (cache.isOpen() && cache.write(row.get(), pxcRowBytes) != static_cast<size_t>(pxcRowBytes)) {
+      LOG_ERR("PNG", "Cache write error at row %d", rowIndex);
+      dropCache();
+    }
+    rowIndex++;
+  }
+
+  void dropCache() {
+    cache.close();
+    Storage.remove(config.cachePath.c_str());
+  }
+
+  GfxRenderer& renderer;
+  const RenderConfig& config;
+  uint8_t header[HEADER_BYTES] = {};
+  size_t headerFill = 0;
+  std::unique_ptr<uint8_t[]> row;
+  int bmpRowBytes = 0;
+  int pxcRowBytes = 0;
+  int rowFill = 0;
+  int rowIndex = 0;
+  int drawCols = 0;
+  HalFile cache;
+  DirectPixelWriter pw;
+};
+
 }  // namespace
 
 bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
@@ -331,20 +449,59 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
     return false;
   }
 
-  return validateAndStoreDimensions(png->getWidth(), png->getHeight(), out, "PNG");
+  // Over MAX_SOURCE_PIXELS, decodeLarge() takes the image.
+  if (png->getWidth() > LARGE_PNG_MAX_DIMENSION || png->getHeight() > LARGE_PNG_MAX_DIMENSION) return false;
+  return validateAndStoreDimensions(png->getWidth(), png->getHeight(), out, "PNG", LARGE_PNG_MAX_PIXELS);
+}
+
+bool PngToFramebufferConverter::decodeLarge(HalFile& pngFile, GfxRenderer& renderer, const RenderConfig& config,
+                                            const int sourceWidth, const int sourceHeight) {
+  if (sourceWidth > LARGE_PNG_MAX_DIMENSION || sourceHeight > LARGE_PNG_MAX_DIMENSION || config.preserveAlpha ||
+      config.sourceCropX > 0.0f || config.sourceCropY > 0.0f || !config.useExactDimensions) {
+    LOG_ERR("PNG", "PNG too large (%dx%d)", sourceWidth, sourceHeight);
+    return fail("image too large");
+  }
+  if (!decoderMemoryAvailable("PNG", MIN_FREE_HEAP_FOR_PNG)) return fail("out of memory");
+
+  LOG_INF("PNG", "Large PNG %dx%d: scaling to %dx%d with the Gallery converter", sourceWidth, sourceHeight,
+          config.maxWidth, config.maxHeight);
+  const unsigned long start = millis();
+  LargePngSink sink(renderer, config);
+  const bool converted =
+      PngToBmpConverter::pngFileToBmpStreamWithSize(pngFile, sink, config.maxWidth, config.maxHeight, false, false);
+  if (!converted || !sink.finish()) {
+    LOG_ERR("PNG", "Large PNG decode failed (converter %s, output %dx%d)", converted ? "ok" : "failed", sink.width,
+            sink.height);
+    return fail("decode error");
+  }
+  LOG_INF("PNG", "Large PNG done in %lu ms", millis() - start);
+  return true;
 }
 
 bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
+  clearFailure();
 
-  if (!decoderMemoryAvailable("PNG", MIN_FREE_HEAP_FOR_PNG)) return false;
+  // PNGdec stops at MAX_SOURCE_PIXELS; bigger PNGs take the Gallery converter.
+  {
+    HalFile pngFile;
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+    if (Storage.openFileForRead("PNG", imagePath, pngFile) &&
+        PngToBmpConverter::pngFileSize(pngFile, sourceWidth, sourceHeight) &&
+        static_cast<int64_t>(sourceWidth) * sourceHeight > MAX_SOURCE_PIXELS) {
+      return decodeLarge(pngFile, renderer, config, sourceWidth, sourceHeight);
+    }
+  }
+
+  if (!decoderMemoryAvailable("PNG", MIN_FREE_HEAP_FOR_PNG)) return fail("out of memory");
 
   // Heap-allocate PNG decoder (~42 KB) - freed at end of function
   std::unique_ptr<PNG> png(new (std::nothrow) PNG());
   if (!png) {
     LOG_ERR("PNG", "Failed to allocate PNG decoder");
-    return false;
+    return fail("out of memory");
   }
 
   PngContext ctx;
@@ -359,11 +516,13 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   const ScopedCleanup cleanup{[&png]() { png->close(); }};
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Failed to open PNG: %d", rc);
-    return false;
+    return fail("open error", rc);
   }
 
   ImageDimensions sourceDimensions;
-  if (!validateAndStoreDimensions(png->getWidth(), png->getHeight(), sourceDimensions, "PNG")) return false;
+  if (!validateAndStoreDimensions(png->getWidth(), png->getHeight(), sourceDimensions, "PNG")) {
+    return fail(png->getWidth() > 0 && png->getHeight() > 0 ? "image too large" : "bad image size");
+  }
 
   // Calculate output dimensions
   ctx.srcWidth = sourceDimensions.width;
@@ -374,7 +533,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   ctx.visibleHeight = ctx.srcHeight - 2 * ctx.cropTop;
   if (ctx.visibleWidth <= 0 || ctx.visibleHeight <= 0) {
     LOG_ERR("PNG", "PNG crop leaves no visible pixels");
-    return false;
+    return fail("bad image size");
   }
 
   if (config.useExactDimensions && config.maxWidth > 0 && config.maxHeight > 0) {
@@ -406,13 +565,13 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
         "PNG row buffer too small: need %d bytes for width=%d type=%d bpp=%d, configured PNG_MAX_BUFFERED_PIXELS=%d",
         requiredInternal, ctx.srcWidth, pixelType, bitsPerSample, PNG_MAX_BUFFERED_PIXELS);
     LOG_ERR("PNG", "Aborting decode to avoid PNGdec internal buffer overflow");
-    return false;
+    return fail("image too wide");
   }
 
   if (!isSupportedBitDepth(pixelType, bitsPerSample)) {
     warnUnsupportedFeature(
         "bit depth (" + std::to_string(bitsPerSample) + "bpp) for pixel type " + std::to_string(pixelType), imagePath);
-    return false;
+    return fail("unsupported format");
   }
 
   // The converter expands each source row to 8-bit grayscale before dithering,
@@ -423,7 +582,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   if (grayBufSize > MAX_GRAY_LINE_BUFFER_BYTES) {
     LOG_ERR("PNG", "Expanded gray row too wide: need %u bytes for width=%d, max=%u", static_cast<unsigned>(grayBufSize),
             ctx.srcWidth, static_cast<unsigned>(MAX_GRAY_LINE_BUFFER_BYTES));
-    return false;
+    return fail("image too wide");
   }
 
   // tRNS chunks are parsed during decode(), so hasAlpha() is not reliable yet
@@ -434,7 +593,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   auto lineBuffers = makeUniqueNoThrow<uint8_t[]>(lineBufferBytes);
   if (!lineBuffers) {
     LOG_ERR("PNG", "Failed to allocate PNG line buffers (%u bytes)", static_cast<unsigned>(lineBufferBytes));
-    return false;
+    return fail("out of memory");
   }
   ctx.grayLineBuffer = lineBuffers.get();
   ctx.alphaLineBuffer = retainAlpha ? ctx.grayLineBuffer + grayBufSize : nullptr;
@@ -464,7 +623,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Decode failed: %d", rc);
     if (ctx.caching) ctx.cache.abort();
-    return false;
+    return fail("decode error", rc);
   }
 
   LOG_DBG("PNG", "PNG decoding complete - render time: %lu ms", decodeTime);

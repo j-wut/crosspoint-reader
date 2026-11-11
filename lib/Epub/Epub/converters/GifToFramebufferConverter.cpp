@@ -241,38 +241,41 @@ bool GifToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
 bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
   LOG_DBG("GIF", "Decoding GIF: %s", imagePath.c_str());
+  clearFailure();
 
   GifBasicInfo info;
   if (!readGifInfoFromPath(imagePath, info)) {
     LOG_ERR("GIF", "Failed to parse GIF header: %s", imagePath.c_str());
-    return false;
+    return fail("bad GIF header");
   }
   if (info.interlaced) {
     warnUnsupportedFeature("interlaced GIF", imagePath);
-    return false;
+    return fail("unsupported format");
   }
   if (info.canvasWidth > MAX_WIDTH) {
     LOG_ERR("GIF",
             "GIF canvas too wide for AnimatedGIF: canvas=%ux%u MAX_WIDTH=%d "
             "renderTarget=%dx%d file=%s",
             info.canvasWidth, info.canvasHeight, MAX_WIDTH, config.maxWidth, config.maxHeight, imagePath.c_str());
-    return false;
+    return fail("image too wide");
   }
   ImageDimensions sourceDimensions;
-  if (!validateAndStoreDimensions(info.canvasWidth, info.canvasHeight, sourceDimensions, "GIF")) return false;
+  if (!validateAndStoreDimensions(info.canvasWidth, info.canvasHeight, sourceDimensions, "GIF")) {
+    return fail(info.canvasWidth > 0 && info.canvasHeight > 0 ? "image too large" : "bad image size");
+  }
 
-  if (!decoderMemoryAvailable("GIF", MIN_FREE_HEAP_FOR_GIF)) return false;
+  if (!decoderMemoryAvailable("GIF", MIN_FREE_HEAP_FOR_GIF)) return fail("out of memory");
 
   auto gif = makeUniqueNoThrow<AnimatedGIF>();
   if (!gif) {
     LOG_ERR("GIF", "OOM: AnimatedGIF decoder");
-    return false;
+    return fail("out of memory");
   }
 
   auto ctxPtr = makeUniqueNoThrow<GifContext>();
   if (!ctxPtr) {
     LOG_ERR("GIF", "OOM: GIF context");
-    return false;
+    return fail("out of memory");
   }
   GifContext& ctx = *ctxPtr;
   ctx.renderer = &renderer;
@@ -296,14 +299,14 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   }
   if (ctx.dstWidth <= 0 || ctx.dstHeight <= 0) {
     LOG_ERR("GIF", "Degenerate output dimensions %dx%d for %s", ctx.dstWidth, ctx.dstHeight, imagePath.c_str());
-    return false;
+    return fail("bad image size");
   }
 
   ctx.grayRow = makeUniqueNoThrow<uint8_t[]>(ctx.srcWidth);
   ctx.whiteRow = makeUniqueNoThrow<uint8_t[]>(ctx.srcWidth);
   if (!ctx.grayRow || !ctx.whiteRow) {
     LOG_ERR("GIF", "OOM: GIF row buffers (%d bytes each)", ctx.srcWidth);
-    return false;
+    return fail("out of memory");
   }
   memset(ctx.whiteRow.get(), 255, static_cast<size_t>(ctx.srcWidth));
 
@@ -322,7 +325,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     const int err = gif->getLastError();
     LOG_ERR("GIF", "AnimatedGIF open failed: err=%d canvas=%ux%u MAX_WIDTH=%d file=%s", err, info.canvasWidth,
             info.canvasHeight, MAX_WIDTH, imagePath.c_str());
-    return false;
+    return fail("open error", err);
   }
 
   ctx.caching = !config.cachePath.empty();
@@ -339,7 +342,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   if (!ctx.success || (gif->getLastError() != GIF_SUCCESS && gif->getLastError() != GIF_EMPTY_FRAME)) {
     LOG_ERR("GIF", "GIF decode failed (state=%d, err=%d)", frameState, gif->getLastError());
     if (ctx.caching) ctx.cache.abort();
-    return false;
+    return fail("decode error", gif->getLastError());
   }
 
   processGapRowsUpTo(ctx.srcHeight, ctx);
