@@ -23,6 +23,7 @@ struct RenderConfig {
   float sourceCropY = 0.0f;         // Fraction cropped equally from the top and bottom edges
   bool preserveAlpha = false;       // Skip transparent pixels instead of compositing them against white
   std::string cachePath;            // If non-empty, decoder will write pixel cache to this path
+  bool classifyLineArt = false;     // Cache gets a line-art trailer byte (see PixelCache)
 };
 
 class ImageToFramebufferDecoder {

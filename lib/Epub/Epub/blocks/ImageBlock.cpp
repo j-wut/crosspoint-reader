@@ -15,11 +15,14 @@
 
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+#include "Epub/converters/PixelCache.h"
 
 // Cache file format:
 // - uint16_t width
 // - uint16_t height
 // - uint8_t pixels[...] - 2 bits per pixel, packed (4 pixels per byte), row-major order
+// - uint8_t trailer - PixelCache::TRAILER_LINE_ART or TRAILER_GRAY. Older caches without it are
+//   decoded again.
 
 ImageBlock::ImageBlock(const std::string& imagePath, const std::string& srcPath, int16_t width, int16_t height)
     : imagePath(imagePath), srcPath(srcPath), width(width), height(height) {}
@@ -43,8 +46,9 @@ std::string getCachePath(const std::string& imagePath) {
   return imagePath + ".pxc";
 }
 
+// Leaves cacheFile just past the header.
 bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
-                          uint16_t& cachedHeight) {
+                          uint16_t& cachedHeight, bool* lineArt = nullptr) {
   if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) {
     return false;
   }
@@ -57,7 +61,14 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
 
   const size_t bytesPerRow = (cachedWidth + 3) / 4;
   const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
-  return cacheFile.size() >= expectedSize;
+  uint8_t trailer = 0;
+  if (cacheFile.size() < expectedSize + 1 || !cacheFile.seek(expectedSize) || cacheFile.read(&trailer, 1) != 1 ||
+      !cacheFile.seek(4)) {
+    return false;
+  }
+  if (trailer != PixelCache::TRAILER_LINE_ART && trailer != PixelCache::TRAILER_GRAY) return false;
+  if (lineArt) *lineArt = trailer == PixelCache::TRAILER_LINE_ART;
+  return true;
 }
 
 // Suppress repeated failures across the BW/grayscale passes of one page render.
@@ -139,12 +150,14 @@ std::unique_ptr<uint8_t[]> pxcChunks[PXC_MAX_CHUNKS];
 uint64_t pxcSlotHash = 0;
 uint16_t pxcSlotWidth = 0;
 uint16_t pxcSlotHeight = 0;
+bool pxcSlotLineArt = false;
 
 void releasePxcSlot() {
   for (auto& chunk : pxcChunks) chunk.reset();
   pxcSlotHash = 0;
   pxcSlotWidth = 0;
   pxcSlotHeight = 0;
+  pxcSlotLineArt = false;
 }
 
 const uint8_t* pxcRowPtr(size_t rowStart, int bytesPerRow, uint8_t* tempRow) {
@@ -161,7 +174,8 @@ const uint8_t* pxcRowPtr(size_t rowStart, int bytesPerRow, uint8_t* tempRow) {
 
 // cacheFile is positioned just past the header. True when the slot holds the
 // full pixel payload for this cache path afterward.
-bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, uint16_t cachedHeight, int bytesPerRow) {
+bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, uint16_t cachedHeight, int bytesPerRow,
+                 bool lineArt) {
   releasePxcSlot();
   if (bytesPerRow > PXC_MAX_BYTES_PER_ROW) {
     return false;
@@ -187,6 +201,7 @@ bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, u
   pxcSlotHash = cacheHash;
   pxcSlotWidth = cachedWidth;
   pxcSlotHeight = cachedHeight;
+  pxcSlotLineArt = lineArt;
   return true;
 }
 
@@ -197,6 +212,7 @@ void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y, int rowBegin, in
 
   DirectPixelWriter pw;
   pw.init(renderer);
+  pw.lineArt = pxcSlotLineArt;
 
   rowEnd = std::min(rowEnd, static_cast<int>(pxcSlotHeight));
   for (int row = rowBegin; row < rowEnd; row++) {
@@ -229,7 +245,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   }
 
   uint16_t cachedWidth, cachedHeight;
-  if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cachedWidth, cachedHeight)) {
+  bool lineArt = false;
+  if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cachedWidth, cachedHeight, &lineArt)) {
     LOG_ERR("IMG", "Invalid image cache: %s", cachePath.c_str());
     return false;
   }
@@ -245,7 +262,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   // here would make 2+ image pages reload each other from SD on every pass
   // (all the SD traffic of streaming plus the slot alloc churn); instead later
   // images take the streaming path below, unchanged from pre-cache behavior.
-  if (pxcSlotHash == 0 && loadPxcSlot(cacheHash, cacheFile, cachedWidth, cachedHeight, bytesPerRow)) {
+  if (pxcSlotHash == 0 && loadPxcSlot(cacheHash, cacheFile, cachedWidth, cachedHeight, bytesPerRow, lineArt)) {
     renderRowsFromPxcSlot(renderer, x, y, rowBegin, rowEnd);
     LOG_DBG("IMG", "Cache render complete (payload now in RAM)");
     return true;
@@ -277,6 +294,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
   DirectPixelWriter pw;
   pw.init(renderer);
+  pw.lineArt = lineArt;
 
   int rowsInBuffer = 0;
   int bufferRow = 0;
@@ -319,6 +337,11 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 }  // namespace
 
 bool ImageBlock::hasValidCache() const {
+  bool lineArt;
+  return cacheIsLineArt(lineArt);
+}
+
+bool ImageBlock::cacheIsLineArt(bool& lineArt) const {
   const auto cachePath = getCachePath(imagePath);
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
@@ -326,7 +349,7 @@ bool ImageBlock::hasValidCache() const {
   }
 
   uint16_t cachedWidth, cachedHeight;
-  return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
+  return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight, &lineArt);
 }
 
 bool ImageBlock::needsDecode() const { return !imageFailedThisRender(imagePath) && !hasValidCache(); }
@@ -476,6 +499,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int fontId, const int x, co
   config.performanceMode = false;
   config.useExactDimensions = true;  // Use pre-calculated dimensions to avoid rounding mismatches
   config.cachePath = cachePath;      // Enable caching during decode
+  config.classifyLineArt = true;
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
@@ -505,9 +529,16 @@ void ImageBlock::render(GfxRenderer& renderer, const int fontId, const int x, co
     return;
   }
 
+  // The decode drew the dithered image before the line-art check finished. A line-art image inks
+  // every non-white pixel, a superset of the dither, so drawing it again from the cache is enough.
+  bool lineArt = false;
+  if (renderer.imagesDitheredInBw() && renderer.getRenderMode() == GfxRenderer::BW && cacheIsLineArt(lineArt) &&
+      lineArt) {
+    renderFromCache(renderer, cachePath, x, y, width, height, 0, height);
+  }
   renderer.preserveImagePolarity(x, y, width, height);
-  LOG_INF("IMG", "Decoded %s in %lu ms, cache %s", imagePath.c_str(), millis() - decodeStart,
-          hasValidCache() ? "written" : "missing");
+  LOG_INF("IMG", "Decoded %s in %lu ms, cache %s%s", imagePath.c_str(), millis() - decodeStart,
+          hasValidCache() ? "written" : "missing", lineArt ? ", line art" : "");
 }
 
 bool ImageBlock::serialize(HalFile& file) {

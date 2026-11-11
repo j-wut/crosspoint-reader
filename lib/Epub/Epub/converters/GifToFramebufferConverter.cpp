@@ -83,7 +83,8 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
         ctx.success = false;
         return;
       } else {
-        cw.init(ctx.cache.buffer, ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX);
+        cw.init(ctx.cache.buffer, ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX, ctx.cache.grayBand,
+                ctx.cache.grayBytesPerRow);
         cw.beginRow(outY, ctx.config->y + ctx.cache.bandStart);
       }
     }
@@ -105,7 +106,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
           if (ditheredGray > 3) ditheredGray = 3;
         }
         pw.writePixel(outX, ditheredGray);
-        if (caching) cw.writePixel(outX, ditheredGray);
+        if (caching) cw.writePixel(outX, ditheredGray, gray);
       }
 
       error += ctx.srcWidth;
@@ -330,7 +331,8 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
+    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
+                         config.classifyLineArt)) {
       LOG_ERR("GIF", "Failed to start cache stream");
       return false;
     }

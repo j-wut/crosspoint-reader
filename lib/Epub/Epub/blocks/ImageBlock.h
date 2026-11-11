@@ -50,6 +50,8 @@ class ImageBlock final : public Block {
   int16_t height;
 
   void renderFailure(GfxRenderer& renderer, int fontId, int x, int y, const char* text) const;
+  // False when there is no valid cache; otherwise lineArt tells how the cache was classified.
+  bool cacheIsLineArt(bool& lineArt) const;
 
   static void* extractCtx;
   static ExtractFn extractFn;

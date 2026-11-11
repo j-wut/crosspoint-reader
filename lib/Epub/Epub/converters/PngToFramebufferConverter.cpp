@@ -275,7 +275,8 @@ int pngDrawCallback(PNGDRAW* pDraw) {
         caching = false;
         ctx->caching = false;
       } else {
-        cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
+        cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX, ctx->cache.grayBand,
+                ctx->cache.grayBytesPerRow);
         cw.beginRow(outY, ctx->config->y + ctx->cache.bandStart);
       }
     }
@@ -297,7 +298,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
             ditheredGray = gray >> 6;
           }
           pw.writePixel(outX, ditheredGray, ctx->alphaLineBuffer != nullptr);
-          if (caching) cw.writePixel(outX, ditheredGray);
+          if (caching) cw.writePixel(outX, ditheredGray, gray);
         }
       }
 
@@ -345,6 +346,9 @@ class LargePngSink final : public Print {
   // True when every row arrived; closes the cache file.
   bool finish() {
     if (failed || headerFill < HEADER_BYTES || rowIndex != height) return false;
+    // Pixels arrive already dithered here, so the line-art check cannot run: the image counts as gray.
+    const uint8_t trailer = PixelCache::TRAILER_GRAY;
+    if (cache.isOpen() && config.classifyLineArt && cache.write(&trailer, 1) != 1) dropCache();
     if (cache.isOpen() && !cache.close()) {
       LOG_ERR("PNG", "Failed to close cache: %s", config.cachePath.c_str());
       Storage.remove(config.cachePath.c_str());
@@ -606,7 +610,8 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   // re-decode on every one of an image page's ~14 render passes.
   ctx.caching = !config.preserveAlpha && !config.cachePath.empty();
   if (ctx.caching) {
-    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
+    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
+                         config.classifyLineArt)) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }

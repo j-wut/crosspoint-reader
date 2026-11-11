@@ -40,6 +40,15 @@ struct PixelCache {
   std::string cachePathStr;
   bool ok;
 
+  // Line-art check (classifyLineArt): 4-bit gray of the band rows, 2 pixels per byte, plus the two
+  // rows above the band, so each finished row can be compared with its neighbours.
+  uint8_t* grayBand = nullptr;  // bandRows rows, then a zero row, then the 2 history rows
+  int grayBytesPerRow = 0;
+  bool classify = false;
+  uint32_t flatPixels = 0;
+  int classifiedRows = 0;  // finished rows fed to the check
+  bool lineArt = false;    // valid after finalize() when the trailer was written
+
   PixelCache()
       : buffer(nullptr),
         zeroRow(nullptr),
@@ -52,6 +61,15 @@ struct PixelCache {
         bandStart(0),
         flushedRows(0),
         ok(false) {}
+
+  // Trailer byte after the pixel rows, written when the decode asked for the line-art check.
+  static constexpr uint8_t TRAILER_LINE_ART = 'L';
+  static constexpr uint8_t TRAILER_GRAY = 'G';
+  // A line-art image has at most 1.25% flat gray pixels (gray, and its 3x3 neighbours within one
+  // 4-bit step). Plain line figures measure 0-1%, figures with gray fills and photos 1.5% and up.
+  static constexpr uint32_t LINE_ART_MAX_FLAT_PER_10000 = 125;
+  // The check is skipped (image counts as gray) when its band would need more than this.
+  static constexpr size_t LINE_ART_MAX_BYTES = 12 * 1024;
   PixelCache(const PixelCache&) = delete;
   PixelCache& operator=(const PixelCache&) = delete;
 
@@ -60,7 +78,8 @@ struct PixelCache {
 
   // Open the cache file, write the header, and allocate a band buffer big enough
   // to hold the tallest single decode block (maxBlockDstRows output rows).
-  bool begin(const std::string& cachePath, int w, int h, int ox, int oy, int maxBlockDstRows) {
+  bool begin(const std::string& cachePath, int w, int h, int ox, int oy, int maxBlockDstRows,
+             bool classifyLineArt = false) {
     width = w;
     height = h;
     originX = ox;
@@ -95,6 +114,20 @@ struct PixelCache {
     }
     memset(buffer, 0, bufSize);
     zeroRow = buffer + (size_t)bandRows * bytesPerRow;
+
+    classify = classifyLineArt;
+    flatPixels = 0;
+    classifiedRows = 0;
+    lineArt = false;
+    if (classify) {
+      grayBytesPerRow = (w + 1) / 2;
+      const size_t graySize = (size_t)(bandRows + 3) * grayBytesPerRow;
+      grayBand = graySize <= LINE_ART_MAX_BYTES ? (uint8_t*)calloc(1, graySize) : nullptr;
+      if (!grayBand) {
+        LOG_DBG("IMG", "Line-art check skipped (%u bytes)", (unsigned)graySize);
+        grayBytesPerRow = 0;
+      }
+    }
 
     if (!Storage.openFileForWrite("IMG", cachePath, file)) {
       LOG_ERR("IMG", "Failed to open cache file for writing: %s", cachePath.c_str());
@@ -133,10 +166,12 @@ struct PixelCache {
         ok = false;
         return false;
       }
+      classifyRow(idx);
     }
     flushedRows = newTopRow;
     bandStart = newTopRow;
     memset(buffer, 0, (size_t)bandRows * bytesPerRow);  // fresh band (gaps stay black)
+    if (grayBand) memset(grayBand, 0, (size_t)bandRows * grayBytesPerRow);
     return true;
   }
 
@@ -155,6 +190,19 @@ struct PixelCache {
         abort();
         return false;
       }
+      classifyRow(idx);
+    }
+    if (classify) {
+      // No line-art check (band too big): the image counts as gray.
+      lineArt = grayBand && flatPixels * 10000ULL <= (uint64_t)LINE_ART_MAX_FLAT_PER_10000 * width * height;
+      const uint8_t trailer = lineArt ? TRAILER_LINE_ART : TRAILER_GRAY;
+      if (file.write(&trailer, 1) != 1) {
+        LOG_ERR("IMG", "Cache write error at trailer");
+        abort();
+        return false;
+      }
+      LOG_DBG("IMG", "Line-art check: %u flat of %d px -> %s", (unsigned)flatPixels, width * height,
+              lineArt ? "line art" : "gray");
     }
     if (!file.close()) {
       LOG_ERR("IMG", "Failed to close cache: %s", cachePathStr.c_str());
@@ -187,5 +235,41 @@ struct PixelCache {
       free(buffer);
       buffer = nullptr;
     }
+    free(grayBand);
+    grayBand = nullptr;
+  }
+
+ private:
+  uint8_t* grayRow(int idx) const {
+    return grayBand +
+           (size_t)(static_cast<unsigned>(idx) < static_cast<unsigned>(bandRows) ? idx : bandRows) * grayBytesPerRow;
+  }
+  static int grayAt(const uint8_t* row, int x) { return (x & 1) ? (row[x >> 1] & 0x0F) : (row[x >> 1] >> 4); }
+
+  // Feeds the next finished row (band index idx) to the line-art check. The row above it is now
+  // complete with both neighbours, so its pixels are counted. Edge rows and columns are not.
+  void classifyRow(int idx) {
+    if (!grayBand) return;
+    uint8_t* above = grayBand + (size_t)(bandRows + 1) * grayBytesPerRow;
+    uint8_t* middle = above + grayBytesPerRow;
+    const uint8_t* below = grayRow(idx);
+    if (classifiedRows >= 2) {
+      for (int x = 1; x + 1 < width; ++x) {
+        const int g = grayAt(middle, x);
+        if (g < 2 || g > 14) continue;  // white, black and near-black are not fills
+        int lo = g, hi = g;
+        for (const uint8_t* row : {static_cast<const uint8_t*>(above), static_cast<const uint8_t*>(middle), below}) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int v = grayAt(row, x + dx);
+            lo = v < lo ? v : lo;
+            hi = v > hi ? v : hi;
+          }
+        }
+        if (hi - lo <= 1) ++flatPixels;
+      }
+    }
+    memcpy(above, middle, grayBytesPerRow);
+    memcpy(middle, below, grayBytesPerRow);
+    ++classifiedRows;
   }
 };
