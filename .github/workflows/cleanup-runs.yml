@@ -29,3 +29,8 @@ jobs:
             deleted=$((deleted+1))
           done < runs.txt
           echo "Deleted $deleted runs"
+          gh api "repos/$REPO/actions/workflows/cleanup-runs.yml/runs?per_page=100" \
+            --jq '.workflow_runs[].id' | while read -r id; do
+            [ "$id" = "${{ github.run_id }}" ] && continue
+            gh api -X DELETE "repos/$REPO/actions/runs/$id" && echo "deleted cleanup run $id"
+          done
